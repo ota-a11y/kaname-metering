@@ -1,4 +1,4 @@
-# KANAME Metering
+# KANAMETER
 
 KANAMEから検針データ管理を業務機能として分離するための独立フロントエンドです。
 
