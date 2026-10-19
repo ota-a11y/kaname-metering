@@ -1181,7 +1181,7 @@ td ul {
 }
 .meter-display-settings {
   display: grid;
-  grid-template-columns: 180px 110px 110px 360px auto;
+  grid-template-columns: 180px 110px 110px 210px auto;
   align-items: end;
   gap: 16px;
   padding: 14px 26px 18px;
@@ -1199,16 +1199,6 @@ td ul {
   border-radius: 4px;
   background: #fff;
 }
-.meter-display-settings fieldset {
-  position: relative;
-  display: grid;
-  grid-template-columns: 120px 220px;
-  gap: 12px;
-  margin: 0;
-  padding: 0;
-  border: 0;
-}
-.meter-display-settings legend { position: absolute; bottom: calc(100% + 5px); left: 0; padding: 0; color: #65756f; font-size: 10px; font-weight: 700; }
 .meter-settings-table { min-width: 720px; }
 .meter-settings-table th:first-child,
 .meter-settings-table td.drag-cell { width: 44px; padding-inline: 8px; }
@@ -1306,7 +1296,6 @@ td ul {
   }
   .meter-add-form, .meter-add-form.is-locked { grid-template-columns: 1fr; }
   .meter-display-settings { grid-template-columns: 1fr; }
-  .meter-display-settings fieldset { grid-template-columns: 1fr; }
   .main-tabs button {
     min-width: 76px;
     padding-inline: 14px;

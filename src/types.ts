@@ -68,6 +68,9 @@ export type MeterReadingRow = {
     category: UtilityCategory;
     sub_item_name: string;
     input_mode: "usage" | "reading";
+    input_decimal_digits: number;
+    aggregation_decimal_digits: number;
+    usage_rounding_mode: "floor" | "round" | "ceil";
   };
   assignments: Array<{
     asset_meter_unit_assignment_id: string;
@@ -112,7 +115,6 @@ export type MeterSubItem = {
   input_mode: "usage" | "reading";
   input_decimal_digits: number;
   aggregation_decimal_digits: number;
-  usage_rounding_digits: number;
   usage_rounding_mode: "floor" | "round" | "ceil";
 };
 

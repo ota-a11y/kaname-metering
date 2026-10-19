@@ -98,7 +98,7 @@ export async function loadMeterReadings(
     client
       .from("asset_meter")
       .select(
-        `asset_meter_id, sort_order, meter_code, meter_label, subItem:asset_meter_sub_item!inner(asset_meter_sub_item_id, category, sub_item_name, input_mode), assignments:asset_meter_unit_assignment(asset_meter_unit_assignment_id, unit_id, effective_from, effective_to, unit:unit_master(unit_id, unit_code, unit_name, floor_label))`,
+        `asset_meter_id, sort_order, meter_code, meter_label, subItem:asset_meter_sub_item!inner(asset_meter_sub_item_id, category, sub_item_name, input_mode, input_decimal_digits, aggregation_decimal_digits, usage_rounding_mode), assignments:asset_meter_unit_assignment(asset_meter_unit_assignment_id, unit_id, effective_from, effective_to, unit:unit_master(unit_id, unit_code, unit_name, floor_label))`,
       )
       .eq("asset_id", assetId)
       .eq("is_active", true)
@@ -145,7 +145,7 @@ export async function loadMeterManagement(
     client
       .from("asset_meter")
       .select(
-        `asset_meter_id, sort_order, meter_code, meter_label, subItem:asset_meter_sub_item!inner(asset_meter_sub_item_id, category, sub_item_name, input_mode), assignments:asset_meter_unit_assignment(asset_meter_unit_assignment_id, unit_id, effective_from, effective_to, unit:unit_master(unit_id, unit_code, unit_name, floor_label))`,
+        `asset_meter_id, sort_order, meter_code, meter_label, subItem:asset_meter_sub_item!inner(asset_meter_sub_item_id, category, sub_item_name, input_mode, input_decimal_digits, aggregation_decimal_digits, usage_rounding_mode), assignments:asset_meter_unit_assignment(asset_meter_unit_assignment_id, unit_id, effective_from, effective_to, unit:unit_master(unit_id, unit_code, unit_name, floor_label))`,
       )
       .eq("asset_id", assetId)
       .eq("is_active", true)
@@ -222,7 +222,6 @@ export async function updateMeterSubItemDisplaySettings(
     inputMode: "usage" | "reading";
     inputDecimalDigits: number;
     aggregationDecimalDigits: number;
-    usageRoundingDigits: number;
     usageRoundingMode: "floor" | "round" | "ceil";
   },
 ) {
@@ -232,7 +231,6 @@ export async function updateMeterSubItemDisplaySettings(
       input_mode: settings.inputMode,
       input_decimal_digits: settings.inputDecimalDigits,
       aggregation_decimal_digits: settings.aggregationDecimalDigits,
-      usage_rounding_digits: settings.usageRoundingDigits,
       usage_rounding_mode: settings.usageRoundingMode,
       updated_at: new Date().toISOString(),
     })
@@ -291,7 +289,7 @@ export async function loadMeteringConfiguration(
     client
       .from("asset_meter_sub_item")
       .select(
-        "asset_meter_sub_item_id, category, sub_item_name, sub_item_kind, asset_billing_line_item_id, sort_order, input_mode, input_decimal_digits, aggregation_decimal_digits, usage_rounding_digits, usage_rounding_mode",
+        "asset_meter_sub_item_id, category, sub_item_name, sub_item_kind, asset_billing_line_item_id, sort_order, input_mode, input_decimal_digits, aggregation_decimal_digits, usage_rounding_mode",
       )
       .eq("asset_id", assetId)
       .order("sort_order"),

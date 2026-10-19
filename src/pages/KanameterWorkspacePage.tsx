@@ -672,7 +672,6 @@ function SettingsView({
   const [inputMode, setInputMode] = useState<"usage" | "reading">(activeSubItem?.input_mode ?? "usage");
   const [inputDecimalDigits, setInputDecimalDigits] = useState(activeSubItem?.input_decimal_digits ?? 1);
   const [aggregationDecimalDigits, setAggregationDecimalDigits] = useState(activeSubItem?.aggregation_decimal_digits ?? 1);
-  const [usageRoundingDigits, setUsageRoundingDigits] = useState(activeSubItem?.usage_rounding_digits ?? 1);
   const [usageRoundingMode, setUsageRoundingMode] = useState<"floor" | "round" | "ceil">(activeSubItem?.usage_rounding_mode ?? "round");
   const [orderedMeters, setOrderedMeters] = useState(meters);
   const [draggingMeterId, setDraggingMeterId] = useState<string | null>(null);
@@ -682,7 +681,6 @@ function SettingsView({
     setInputMode(activeSubItem.input_mode);
     setInputDecimalDigits(activeSubItem.input_decimal_digits);
     setAggregationDecimalDigits(activeSubItem.aggregation_decimal_digits);
-    setUsageRoundingDigits(activeSubItem.usage_rounding_digits);
     setUsageRoundingMode(activeSubItem.usage_rounding_mode);
   }, [activeSubItem]);
   useEffect(() => {
@@ -717,7 +715,6 @@ function SettingsView({
         inputMode,
         inputDecimalDigits,
         aggregationDecimalDigits,
-        usageRoundingDigits,
         usageRoundingMode,
       });
       onSubItemSettingsChanged({
@@ -725,7 +722,6 @@ function SettingsView({
         input_mode: inputMode,
         input_decimal_digits: inputDecimalDigits,
         aggregation_decimal_digits: aggregationDecimalDigits,
-        usage_rounding_digits: usageRoundingDigits,
         usage_rounding_mode: usageRoundingMode,
       });
       await onChanged();
@@ -794,11 +790,7 @@ function SettingsView({
         <label>データ入力方法<select value={inputMode} onChange={(event) => setInputMode(event.target.value as "usage" | "reading")}><option value="reading">読取値を入力</option><option value="usage">使用量を入力</option></select></label>
         <label>入力桁数<input type="number" min={0} max={3} step={1} value={inputDecimalDigits} onChange={(event) => setInputDecimalDigits(Math.min(3, Math.max(0, Number(event.target.value))))} /></label>
         <label>集計桁数<input type="number" min={0} max={3} step={1} value={aggregationDecimalDigits} onChange={(event) => setAggregationDecimalDigits(Math.min(3, Math.max(0, Number(event.target.value))))} /></label>
-        <fieldset>
-          <legend>使用量の小数点処理</legend>
-          <label>処理する桁数<input type="number" min={1} max={3} step={1} value={usageRoundingDigits} onChange={(event) => setUsageRoundingDigits(Math.min(3, Math.max(1, Number(event.target.value))))} /></label>
-          <label>処理方法<select value={usageRoundingMode} onChange={(event) => setUsageRoundingMode(event.target.value as "floor" | "round" | "ceil")}><option value="ceil">切り上げ</option><option value="round">四捨五入</option><option value="floor">切り捨て</option></select></label>
-        </fieldset>
+        <label>使用量の小数点処理<select value={usageRoundingMode} onChange={(event) => setUsageRoundingMode(event.target.value as "floor" | "round" | "ceil")}><option value="ceil">切り上げ</option><option value="round">四捨五入</option><option value="floor">切り捨て</option></select></label>
         <button type="button" className="primary compact" disabled={saving} onClick={() => void saveDisplaySettings()}>{saving ? "保存中…" : "設定を保存"}</button>
       </div>
       <div className="table-wrap">
@@ -986,7 +978,9 @@ function CustomItemTable({
             const state =
               saveStates[meter.asset_meter_id] ??
               (meter.entry ? "saved" : "idle");
-            const unitUsage = orderedMeters
+            const aggregationDigits = meter.subItem.aggregation_decimal_digits ?? 1;
+            const usageRoundingMode = meter.subItem.usage_rounding_mode ?? "round";
+            const unitUsageRaw = orderedMeters
               .filter(
                 (row) =>
                   row.assignments[0]?.unit_id &&
@@ -995,6 +989,7 @@ function CustomItemTable({
               .reduce((sum, row) => {
                 return sum + meterUsage(row);
               }, 0);
+            const unitUsage = roundToDigits(unitUsageRaw, aggregationDigits, usageRoundingMode);
             const unitAmount =
               contract && price != null
                 ? roundUtilityAmount(
@@ -1002,7 +997,11 @@ function CustomItemTable({
                     contract.utility_amount_rounding_mode,
                   )
                 : null;
-            const tenantUsage = tenantMeters.reduce((sum, row) => sum + meterUsage(row), 0);
+            const tenantUsage = roundToDigits(
+              tenantMeters.reduce((sum, row) => sum + meterUsage(row), 0),
+              aggregationDigits,
+              usageRoundingMode,
+            );
             const tenantUnitGroups = new Map<string, MeterReadingRow[]>();
             tenantMeters.forEach((row) => {
               const key = unitKey(row);
@@ -1013,7 +1012,11 @@ function CustomItemTable({
               const unitContract = contractFor(firstMeter);
               const priceForUnit = unitPrice(firstMeter);
               if (!unitContract || priceForUnit == null) return sum;
-              const usage = unitMeters.reduce((unitSum, row) => unitSum + meterUsage(row), 0);
+              const usage = roundToDigits(
+                unitMeters.reduce((unitSum, row) => unitSum + meterUsage(row), 0),
+                firstMeter.subItem.aggregation_decimal_digits ?? 1,
+                firstMeter.subItem.usage_rounding_mode ?? "round",
+              );
               return sum + roundUtilityAmount(usage * Number(priceForUnit), unitContract.utility_amount_rounding_mode);
             }, 0);
             return (
@@ -1055,7 +1058,7 @@ function CustomItemTable({
                 </td>
                 {firstInUnit && (
                   <td className={`numeric unit-total ${unitEndsTenant ? "tenant-boundary" : ""}`} rowSpan={unitMeterCount}>
-                    <span className="merged-value">{unit ? unitUsage.toLocaleString("ja-JP") : "—"}</span>
+                    <span className="merged-value">{unit ? formatUsage(unitUsage, aggregationDigits) : "—"}</span>
                   </td>
                 )}
                 {firstInUnit && (
@@ -1065,7 +1068,7 @@ function CustomItemTable({
                 )}
                 {firstInTenant && (
                   <>
-                    <td className="numeric tenant-total" rowSpan={tenantMeters.length}><span className="merged-value">{tenantUsage.toLocaleString("ja-JP")}</span></td>
+                    <td className="numeric tenant-total" rowSpan={tenantMeters.length}><span className="merged-value">{formatUsage(tenantUsage, aggregationDigits)}</span></td>
                     <td className="numeric tenant-total" rowSpan={tenantMeters.length}><span className="merged-value">{formatYen(tenantAmount)}</span></td>
                   </>
                 )}
@@ -1261,6 +1264,20 @@ function roundUtilityAmount(
   if (mode === "ceil") return Math.ceil(value);
   if (mode === "round") return Math.round(value);
   return Math.floor(value);
+}
+
+function roundToDigits(value: number, digits: number, mode: "floor" | "round" | "ceil") {
+  const factor = 10 ** digits;
+  if (mode === "ceil") return Math.ceil(value * factor) / factor;
+  if (mode === "floor") return Math.floor(value * factor) / factor;
+  return Math.round(value * factor) / factor;
+}
+
+function formatUsage(value: number, digits: number) {
+  return value.toLocaleString("ja-JP", {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  });
 }
 
 function formatFloor(value: string | null | undefined) {
