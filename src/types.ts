@@ -41,7 +41,6 @@ export type ContractUnit = {
     tax_mode: TaxMode;
     item: {
       line_item_name: string;
-      utility_kind: UtilityCategory | null;
     } | null;
   }>;
   categoryPrices: Array<{

@@ -46,7 +46,7 @@ export async function loadContractUnits(
   const { data, error } = await client
     .from("lease_contract_unit")
     .select(
-      `lease_contract_unit_id, utility_amount_rounding_mode, unit:unit_master!inner(unit_code, unit_name, floor_label, property_id), contract:lease_contract!inner(lease_contract_id, tenant:tenant_master(tenant_name)), prices:lease_contract_unit_utility_price(asset_billing_line_item_id, unit_price, tax_mode, item:asset_billing_line_item(line_item_name, utility_kind)), categoryPrices:lease_contract_unit_category_price(category, unit_price, tax_mode), basics:lease_contract_unit_basic_charge(category, amount, tax_mode)`,
+      `lease_contract_unit_id, utility_amount_rounding_mode, unit:unit_master!inner(unit_code, unit_name, floor_label, property_id), contract:lease_contract!inner(lease_contract_id, tenant:tenant_master(tenant_name)), prices:lease_contract_unit_utility_price(asset_billing_line_item_id, unit_price, tax_mode, item:asset_billing_line_item(line_item_name)), categoryPrices:lease_contract_unit_category_price(category, unit_price, tax_mode), basics:lease_contract_unit_basic_charge(category, amount, tax_mode)`,
     )
     .eq("unit.property_id", assetId)
     .order("lease_contract_unit_id");
