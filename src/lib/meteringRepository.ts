@@ -48,7 +48,7 @@ export async function loadContractUnits(
     client
       .from("lease_contract_unit")
       .select(
-        `lease_contract_unit_id, utility_amount_rounding_mode, unit:unit_master!inner(unit_id, unit_code, unit_name, floor_label, property_id), contract:lease_contract!inner(lease_contract_id, tenant_id, tenant:tenant_master(tenant_name)), prices:lease_contract_unit_utility_price(asset_billing_line_item_id, unit_price, tax_mode, item:asset_billing_line_item(line_item_name)), categoryPrices:lease_contract_unit_category_price(category, unit_price, tax_mode), basics:lease_contract_unit_basic_charge(category, amount, tax_mode)`,
+        `lease_contract_unit_id, utility_amount_rounding_mode, unit:unit_master!inner(unit_id, unit_code, unit_name, floor_label, unit_type, property_id), contract:lease_contract!inner(lease_contract_id, tenant_id, tenant:tenant_master(tenant_name)), prices:lease_contract_unit_utility_price(asset_billing_line_item_id, unit_price, tax_mode, item:asset_billing_line_item(line_item_name)), categoryPrices:lease_contract_unit_category_price(category, unit_price, tax_mode), basics:lease_contract_unit_basic_charge(category, amount, tax_mode)`,
       )
       .eq("unit.property_id", assetId)
       .order("lease_contract_unit_id"),
@@ -98,7 +98,7 @@ export async function loadMeterReadings(
     client
       .from("asset_meter")
       .select(
-        `asset_meter_id, meter_code, meter_label, subItem:asset_meter_sub_item!inner(asset_meter_sub_item_id, category, sub_item_name, input_mode), assignments:asset_meter_unit_assignment(asset_meter_unit_assignment_id, unit_id, effective_from, effective_to, unit:unit_master(unit_id, unit_code, unit_name, floor_label))`,
+        `asset_meter_id, sort_order, meter_code, meter_label, subItem:asset_meter_sub_item!inner(asset_meter_sub_item_id, category, sub_item_name, input_mode), assignments:asset_meter_unit_assignment(asset_meter_unit_assignment_id, unit_id, effective_from, effective_to, unit:unit_master(unit_id, unit_code, unit_name, floor_label))`,
       )
       .eq("asset_id", assetId)
       .eq("is_active", true)
@@ -145,7 +145,7 @@ export async function loadMeterManagement(
     client
       .from("asset_meter")
       .select(
-        `asset_meter_id, meter_code, meter_label, subItem:asset_meter_sub_item!inner(asset_meter_sub_item_id, category, sub_item_name, input_mode), assignments:asset_meter_unit_assignment(asset_meter_unit_assignment_id, unit_id, effective_from, effective_to, unit:unit_master(unit_id, unit_code, unit_name, floor_label))`,
+        `asset_meter_id, sort_order, meter_code, meter_label, subItem:asset_meter_sub_item!inner(asset_meter_sub_item_id, category, sub_item_name, input_mode), assignments:asset_meter_unit_assignment(asset_meter_unit_assignment_id, unit_id, effective_from, effective_to, unit:unit_master(unit_id, unit_code, unit_name, floor_label))`,
       )
       .eq("asset_id", assetId)
       .eq("is_active", true)
@@ -201,6 +201,79 @@ export async function deleteMeter(client: SupabaseClient, meterId: string) {
   fail("メーターを削除できませんでした", error);
 }
 
+export async function reorderMeters(
+  client: SupabaseClient,
+  assetId: string,
+  subItemId: string,
+  meterIds: string[],
+) {
+  const { error } = await client.rpc("reorder_kanameter_meters", {
+    p_asset_id: assetId,
+    p_asset_meter_sub_item_id: subItemId,
+    p_asset_meter_ids: meterIds,
+  });
+  fail("メーターの並び順を保存できませんでした", error);
+}
+
+export async function updateMeterSubItemDisplaySettings(
+  client: SupabaseClient,
+  subItemId: string,
+  settings: {
+    inputMode: "usage" | "reading";
+    inputDecimalDigits: number;
+    aggregationDecimalDigits: number;
+    usageRoundingDigits: number;
+    usageRoundingMode: "floor" | "round" | "ceil";
+  },
+) {
+  const { error } = await client
+    .from("asset_meter_sub_item")
+    .update({
+      input_mode: settings.inputMode,
+      input_decimal_digits: settings.inputDecimalDigits,
+      aggregation_decimal_digits: settings.aggregationDecimalDigits,
+      usage_rounding_digits: settings.usageRoundingDigits,
+      usage_rounding_mode: settings.usageRoundingMode,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("asset_meter_sub_item_id", subItemId);
+  fail("メーターの桁数設定を保存できませんでした", error);
+}
+
+export async function loadMeterReadingPeriod(
+  client: SupabaseClient,
+  assetId: string,
+  billingMonth: string,
+): Promise<{ meterDate: string | null; previousMeterDate: string | null }> {
+  const month = `${billingMonth}-01`;
+  const previousMonth = new Date(Date.UTC(Number(billingMonth.slice(0, 4)), Number(billingMonth.slice(5, 7)) - 2, 1))
+    .toISOString()
+    .slice(0, 10);
+  const [current, previous] = await Promise.all([
+    client.from("meter_reading_month").select("meter_date").eq("asset_id", assetId).eq("billing_month", month).maybeSingle(),
+    client.from("meter_reading_month").select("meter_date").eq("asset_id", assetId).eq("billing_month", previousMonth).maybeSingle(),
+  ]);
+  fail("検針日を読み込めませんでした", current.error);
+  fail("前月の検針日を読み込めませんでした", previous.error);
+  return {
+    meterDate: current.data?.meter_date ?? null,
+    previousMeterDate: previous.data?.meter_date ?? null,
+  };
+}
+
+export async function saveMeterReadingDate(
+  client: SupabaseClient,
+  assetId: string,
+  billingMonth: string,
+  meterDate: string,
+) {
+  const { error } = await client.from("meter_reading_month").upsert(
+    { asset_id: assetId, billing_month: `${billingMonth}-01`, meter_date: meterDate },
+    { onConflict: "asset_id,billing_month" },
+  );
+  fail("検針日を保存できませんでした", error);
+}
+
 export async function loadMeteringConfiguration(
   client: SupabaseClient,
   assetId: string,
@@ -218,7 +291,7 @@ export async function loadMeteringConfiguration(
     client
       .from("asset_meter_sub_item")
       .select(
-        "asset_meter_sub_item_id, category, sub_item_name, sub_item_kind, asset_billing_line_item_id, sort_order",
+        "asset_meter_sub_item_id, category, sub_item_name, sub_item_kind, asset_billing_line_item_id, sort_order, input_mode, input_decimal_digits, aggregation_decimal_digits, usage_rounding_digits, usage_rounding_mode",
       )
       .eq("asset_id", assetId)
       .order("sort_order"),

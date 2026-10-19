@@ -31,6 +31,7 @@ export type ContractUnit = {
     unit_code: string;
     unit_name: string | null;
     floor_label: string | null;
+    unit_type: string;
   } | null;
   contract: {
     lease_contract_id: string;
@@ -59,6 +60,7 @@ export type ContractUnit = {
 
 export type MeterReadingRow = {
   asset_meter_id: string;
+  sort_order: number;
   meter_code: string;
   meter_label: string | null;
   subItem: {
@@ -107,6 +109,11 @@ export type MeterSubItem = {
   sub_item_kind: "basic" | "custom";
   asset_billing_line_item_id: string | null;
   sort_order: number;
+  input_mode: "usage" | "reading";
+  input_decimal_digits: number;
+  aggregation_decimal_digits: number;
+  usage_rounding_digits: number;
+  usage_rounding_mode: "floor" | "round" | "ceil";
 };
 
 export type MeterSurcharge = {
