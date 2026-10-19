@@ -1,10 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import {
+  assignMeterUnit,
   confirmMeterReadingMonth,
+  createMeter,
+  deleteMeter,
   loadAssetUtilitySettings,
   loadBillingAssets,
   loadContractUnits,
   loadMeteringConfiguration,
+  loadMeterManagement,
   loadMeterReadings,
   saveMeterReading,
 } from "../lib/meteringRepository";
@@ -17,6 +21,7 @@ import type {
   MeterReadingRow,
   MeterSubItem,
   MeterSurcharge,
+  MeterUnitOption,
   UserProfile,
   UtilityCategory,
 } from "../types";
@@ -53,6 +58,11 @@ export function KanameterWorkspacePage({
   const [surcharges, setSurcharges] = useState<MeterSurcharge[]>([]);
   const [contracts, setContracts] = useState<ContractUnit[]>([]);
   const [meters, setMeters] = useState<MeterReadingRow[]>([]);
+  const [managedMeters, setManagedMeters] = useState<MeterReadingRow[]>([]);
+  const [units, setUnits] = useState<MeterUnitOption[]>([]);
+  const [sidebarPinned, setSidebarPinned] = useState(
+    () => localStorage.getItem("kanameter-sidebar-pinned") !== "false",
+  );
   const [values, setValues] = useState<Record<string, string>>({});
   const [saveStates, setSaveStates] = useState<Record<string, SaveState>>({});
   const [status, setStatus] = useState<"draft" | "confirmed" | null>(null);
@@ -83,13 +93,16 @@ export function KanameterWorkspacePage({
       loadAssetUtilitySettings(supabase!, assetId),
       loadMeteringConfiguration(supabase!, assetId),
       loadContractUnits(supabase!, assetId),
+      loadMeterManagement(supabase!, assetId),
     ])
-      .then(([prices, config, contractRows]) => {
+      .then(([prices, config, contractRows, management]) => {
         setUtilitySettings(prices);
         setCategorySettings(config.categories);
         setSubItems(config.subItems);
         setSurcharges(config.surcharges);
         setContracts(contractRows);
+        setManagedMeters(management.meters);
+        setUnits(management.units);
       })
       .catch((reason: Error) => setError(reason.message))
       .finally(() => setLoading(false));
@@ -98,6 +111,20 @@ export function KanameterWorkspacePage({
   const activeCategory = categories.includes(mainTab as UtilityCategory)
     ? (mainTab as UtilityCategory)
     : null;
+  const refreshMeterData = async () => {
+    const management = await loadMeterManagement(supabase!, assetId);
+    setManagedMeters(management.meters);
+    setUnits(management.units);
+    if (activeCategory) {
+      const readings = await loadMeterReadings(
+        supabase!,
+        assetId,
+        billingMonth,
+        activeCategory,
+      );
+      setMeters(readings.rows);
+    }
+  };
   useEffect(() => {
     if (!assetId || !activeCategory) {
       setMeters([]);
@@ -244,8 +271,24 @@ export function KanameterWorkspacePage({
   );
 
   return (
-    <div className="workspace-shell">
+    <div
+      className={`workspace-shell ${sidebarPinned ? "sidebar-pinned" : "sidebar-unpinned"}`}
+    >
       <aside className="building-sidebar">
+        <button
+          type="button"
+          className={`kanameter-sidebar-pin ${sidebarPinned ? "is-pinned" : "is-unpinned"}`}
+          aria-pressed={sidebarPinned}
+          aria-label={sidebarPinned ? "サイドバーのピン留めを解除" : "サイドバーをピン留め"}
+          title={sidebarPinned ? "ピン留め中（クリックで解除）" : "ピン留めする"}
+          onClick={() => {
+            const next = !sidebarPinned;
+            setSidebarPinned(next);
+            localStorage.setItem("kanameter-sidebar-pinned", String(next));
+          }}
+        >
+          <span aria-hidden="true">📌</span>
+        </button>
         <div className="sidebar-brand">
           <span>K</span>
           <div>
@@ -357,7 +400,15 @@ export function KanameterWorkspacePage({
             contracts={contracts}
           />
         ) : mainTab === "settings" ? (
-          <SettingsView />
+          <SettingsView
+            assetId={assetId}
+            subItems={subItems.filter((item) => item.sub_item_kind === "custom")}
+            meters={managedMeters}
+            units={units}
+            onChanged={refreshMeterData}
+            onNotice={setNotice}
+            onError={setError}
+          />
         ) : (
           <>
             <nav className="sub-tabs">
@@ -484,12 +535,145 @@ function SummaryView({
     </section>
   );
 }
-function SettingsView() {
+function SettingsView({
+  assetId,
+  subItems,
+  meters,
+  units,
+  onChanged,
+  onNotice,
+  onError,
+}: {
+  assetId: string;
+  subItems: MeterSubItem[];
+  meters: MeterReadingRow[];
+  units: MeterUnitOption[];
+  onChanged: () => Promise<void>;
+  onNotice: (message: string) => void;
+  onError: (message: string) => void;
+}) {
+  const [subItemId, setSubItemId] = useState("");
+  const [meterCode, setMeterCode] = useState("");
+  const [unitId, setUnitId] = useState("");
+  const [saving, setSaving] = useState(false);
+  useEffect(() => {
+    if (!subItems.some((item) => item.asset_meter_sub_item_id === subItemId))
+      setSubItemId(subItems[0]?.asset_meter_sub_item_id ?? "");
+    if (!units.some((unit) => unit.unit_id === unitId))
+      setUnitId(units[0]?.unit_id ?? "");
+  }, [subItems, units, subItemId, unitId]);
+
+  const add = async () => {
+    if (!subItemId || !unitId || !meterCode.trim()) return;
+    setSaving(true);
+    onError("");
+    try {
+      await createMeter(supabase!, assetId, subItemId, meterCode, unitId);
+      await onChanged();
+      setMeterCode("");
+      onNotice("メーターを追加しました。");
+    } catch (reason) {
+      onError((reason as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
+  const changeUnit = async (meterId: string, nextUnitId: string) => {
+    onError("");
+    try {
+      await assignMeterUnit(supabase!, meterId, nextUnitId);
+      await onChanged();
+      onNotice("メーターの区画を変更しました。");
+    } catch (reason) {
+      onError((reason as Error).message);
+    }
+  };
+  const remove = async (meter: MeterReadingRow) => {
+    if (!window.confirm(`メーター「${meter.meter_code}」を削除しますか？`)) return;
+    onError("");
+    try {
+      await deleteMeter(supabase!, meter.asset_meter_id);
+      await onChanged();
+      onNotice("メーターを削除しました。");
+    } catch (reason) {
+      onError((reason as Error).message);
+    }
+  };
+  const activeAssignment = (meter: MeterReadingRow) => {
+    const today = new Date().toISOString().slice(0, 10);
+    return [...meter.assignments]
+      .filter(
+        (row) =>
+          row.effective_from <= today &&
+          (!row.effective_to || row.effective_to >= today),
+      )
+      .sort((a, b) => b.effective_from.localeCompare(a.effective_from))[0];
+  };
+
   return (
-    <section className="settings-placeholder">
-      <span>⚙</span>
-      <h1>KANAMETER設定</h1>
-      <p>設定項目は今後追加します。</p>
+    <section className="meter-settings">
+      <header>
+        <p className="eyebrow">METER SETTINGS</p>
+        <h1>メーター設定</h1>
+        <p>メーターの追加・削除と、設置区画の紐づけを管理します。</p>
+      </header>
+      <div className="meter-add-form">
+        <label>
+          小分類
+          <select value={subItemId} onChange={(event) => setSubItemId(event.target.value)}>
+            {subItems.map((item) => (
+              <option key={item.asset_meter_sub_item_id} value={item.asset_meter_sub_item_id}>
+                {labels[item.category]} / {item.sub_item_name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          メーター番号
+          <input value={meterCode} onChange={(event) => setMeterCode(event.target.value)} />
+        </label>
+        <label>
+          区画
+          <select value={unitId} onChange={(event) => setUnitId(event.target.value)}>
+            {units.map((unit) => (
+              <option key={unit.unit_id} value={unit.unit_id}>
+                {unit.floor_label ?? "—"} / {unit.unit_name || unit.unit_code}
+              </option>
+            ))}
+          </select>
+        </label>
+        <button className="primary compact" disabled={saving || !subItemId || !unitId || !meterCode.trim()} onClick={() => void add()}>
+          {saving ? "追加中…" : "追加"}
+        </button>
+      </div>
+      <div className="table-wrap">
+        <table className="workspace-data-table meter-settings-table">
+          <thead><tr><th>分類</th><th>小分類</th><th>メーター番号</th><th>設置区画</th><th /></tr></thead>
+          <tbody>
+            {meters.map((meter) => {
+              const assignment = activeAssignment(meter);
+              return (
+                <tr key={meter.asset_meter_id}>
+                  <td>{labels[meter.subItem.category]}</td>
+                  <td>{meter.subItem.sub_item_name}</td>
+                  <td><strong>{meter.meter_code}</strong></td>
+                  <td>
+                    <select value={assignment?.unit_id ?? ""} onChange={(event) => void changeUnit(meter.asset_meter_id, event.target.value)}>
+                      <option value="" disabled>区画を選択</option>
+                      {units.map((unit) => (
+                        <option key={unit.unit_id} value={unit.unit_id}>
+                          {unit.floor_label ?? "—"} / {unit.unit_name || unit.unit_code}
+                        </option>
+                      ))}
+                    </select>
+                  </td>
+                  <td><button className="danger-text" onClick={() => void remove(meter)}>削除</button></td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
     </section>
   );
 }
@@ -538,18 +722,17 @@ function CustomItemTable({
       <table className="workspace-data-table">
         <thead>
           <tr>
-            {[
-              "階数",
-              "区画",
-              "テナント名",
-              "メーター番号",
-              "単価",
-              "使用量（メーターごと）",
-              "使用量（区画ごと）",
-              "金額",
-            ].map((header) => (
-              <th key={header}>{header}</th>
-            ))}
+            <th rowSpan={2}>階数</th>
+            <th rowSpan={2}>区画</th>
+            <th rowSpan={2}>テナント名</th>
+            <th rowSpan={2}>メーター番号</th>
+            <th rowSpan={2}>単価</th>
+            <th colSpan={2} className="usage-heading">使用量</th>
+            <th rowSpan={2}>金額</th>
+          </tr>
+          <tr>
+            <th>メーターごと</th>
+            <th>区画ごと</th>
           </tr>
         </thead>
         <tbody>
@@ -568,15 +751,26 @@ function CustomItemTable({
             const state =
               saveStates[meter.asset_meter_id] ??
               (meter.entry ? "saved" : "idle");
+            const unitUsage = meters
+              .filter(
+                (row) =>
+                  row.assignments[0]?.unit_id &&
+                  row.assignments[0]?.unit_id === meter.assignments[0]?.unit_id,
+              )
+              .reduce((sum, row) => {
+                const raw = values[row.asset_meter_id];
+                const usage =
+                  row.subItem.input_mode === "usage" && raw !== undefined && raw !== ""
+                    ? Number(raw)
+                    : Number(row.entry?.usage_amount ?? 0);
+                return sum + (Number.isFinite(usage) ? usage : 0);
+              }, 0);
             return (
               <tr key={meter.asset_meter_id}>
                 <td>{unit?.floor_label ?? "—"}</td>
                 <td>{unit?.unit_name || unit?.unit_code || "未割当"}</td>
                 <td>{contract?.contract?.tenant?.tenant_name ?? "—"}</td>
-                <td>
-                  <strong>{meter.meter_code}</strong>
-                  <small>{meter.meter_label}</small>
-                </td>
+                <td><strong>{meter.meter_code}</strong></td>
                 <td className="numeric">{formatYen(price)}</td>
                 <td>
                   <div className="input-with-state">
@@ -587,21 +781,11 @@ function CustomItemTable({
                       value={values[meter.asset_meter_id] ?? ""}
                       onChange={(event) => onChange(meter, event.target.value)}
                     />
-                    <small className={`save-state ${state}`}>
-                      {state === "saving"
-                        ? "保存中…"
-                        : state === "saved"
-                          ? "保存済み"
-                          : state === "error"
-                            ? "エラー"
-                            : ""}
-                    </small>
+                    {state === "error" && <span className="save-error" title="保存エラー" />}
                   </div>
                 </td>
                 <td className="numeric">
-                  {meter.entry
-                    ? Number(meter.entry.usage_amount).toLocaleString("ja-JP")
-                    : "—"}
+                  {unit ? unitUsage.toLocaleString("ja-JP") : "—"}
                 </td>
                 <td className="numeric">—</td>
               </tr>

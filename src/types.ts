@@ -27,12 +27,14 @@ export type ContractUnit = {
   lease_contract_unit_id: string;
   utility_amount_rounding_mode: "floor" | "round" | "ceil";
   unit: {
+    unit_id: string;
     unit_code: string;
     unit_name: string | null;
     floor_label: string | null;
   } | null;
   contract: {
     lease_contract_id: string;
+    tenant_id: string;
     tenant: { tenant_name: string } | null;
   } | null;
   prices: Array<{
@@ -66,7 +68,12 @@ export type MeterReadingRow = {
     input_mode: "usage" | "reading";
   };
   assignments: Array<{
+    asset_meter_unit_assignment_id: string;
+    unit_id: string;
+    effective_from: string;
+    effective_to: string | null;
     unit: {
+      unit_id: string;
       unit_code: string;
       unit_name: string | null;
       floor_label: string | null;
@@ -77,6 +84,13 @@ export type MeterReadingRow = {
     previous_reading: number | null;
     current_reading: number | null;
   } | null;
+};
+
+export type MeterUnitOption = {
+  unit_id: string;
+  unit_code: string;
+  unit_name: string | null;
+  floor_label: string | null;
 };
 
 export type MeterCategorySetting = {

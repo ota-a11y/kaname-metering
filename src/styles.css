@@ -647,6 +647,36 @@ td ul {
   color: #dce9e5;
   background: #0b352c;
 }
+.kanameter-sidebar-pin {
+  position: absolute;
+  z-index: 2;
+  top: 12px;
+  right: 12px;
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border: 1px solid #457b6e;
+  border-radius: 6px;
+  padding: 0;
+  color: #bde1d7;
+  background: #12463b;
+}
+.kanameter-sidebar-pin span { transition: transform .18s ease, opacity .18s ease; }
+.kanameter-sidebar-pin.is-unpinned span { opacity: .55; transform: rotate(-45deg); }
+.workspace-shell.sidebar-unpinned { grid-template-columns: 13px minmax(0, 1fr); }
+.sidebar-unpinned .building-sidebar {
+  position: fixed;
+  z-index: 20;
+  inset: 0 auto 0 0;
+  width: 252px;
+  overflow-y: auto;
+  box-shadow: 4px 0 16px rgb(8 43 35 / 22%);
+  transform: translateX(calc(-100% + 13px));
+  transition: transform .18s ease;
+}
+.sidebar-unpinned .building-sidebar:hover,
+.sidebar-unpinned .building-sidebar:focus-within { transform: translateX(0); }
 .sidebar-brand {
   display: flex;
   align-items: center;
@@ -857,6 +887,7 @@ td ul {
   padding: 12px 14px;
   font-size: 11px;
 }
+.workspace-data-table th.usage-heading { text-align: center; }
 .workspace-data-table td {
   padding: 13px 14px;
 }
@@ -871,6 +902,14 @@ td ul {
 .input-with-state small {
   min-height: 15px;
   text-align: right;
+}
+.save-error {
+  display: block;
+  width: 6px;
+  height: 6px;
+  margin: 4px 0 0 auto;
+  border-radius: 50%;
+  background: #c64852;
 }
 .evidence-panel {
   padding: 24px;
@@ -975,6 +1014,34 @@ td ul {
 .settings-placeholder p {
   color: #7a8883;
 }
+.meter-settings {
+  margin-top: 28px;
+  border: 1px solid #dce5e1;
+  background: #fff;
+}
+.meter-settings > header { padding: 24px 26px 18px; border-bottom: 1px solid #e4ebe8; }
+.meter-settings h1 { margin: 2px 0 5px; font-size: 23px; }
+.meter-settings header p:last-child { margin: 0; color: #74827d; font-size: 12px; }
+.meter-add-form {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(160px, .8fr) minmax(180px, 1fr) auto;
+  align-items: end;
+  gap: 12px;
+  padding: 18px 26px;
+  background: #f7faf8;
+  border-bottom: 1px solid #e4ebe8;
+}
+.meter-add-form label { margin: 0; color: #65756f; font-size: 11px; font-weight: 700; }
+.meter-add-form input, .meter-add-form select, .meter-settings-table select {
+  width: 100%;
+  margin-top: 5px;
+  padding: 8px 10px;
+  border: 1px solid #ccd9d4;
+  border-radius: 4px;
+  background: #fff;
+}
+.meter-settings-table { min-width: 720px; }
+.danger-text { border: 0; color: #b33f49; background: transparent; font-size: 12px; }
 @media (max-width: 1050px) {
   .workspace-body.with-evidence {
     grid-template-columns: 1fr;
@@ -988,6 +1055,9 @@ td ul {
     position: static;
     height: auto;
   }
+  .workspace-shell.sidebar-unpinned { grid-template-columns: 1fr; }
+  .sidebar-unpinned .building-sidebar { position: static; width: auto; transform: none; }
+  .kanameter-sidebar-pin { display: none; }
   .building-list {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     max-height: 180px;
@@ -1009,6 +1079,7 @@ td ul {
   .main-tabs {
     overflow-x: auto;
   }
+  .meter-add-form { grid-template-columns: 1fr; }
   .main-tabs button {
     min-width: 76px;
     padding-inline: 14px;
