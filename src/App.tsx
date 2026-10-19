@@ -3,7 +3,7 @@ import type { Session } from "@supabase/supabase-js";
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { canAccessMetering } from "./lib/access";
 import { isSupabaseConfigured, supabase } from "./lib/supabase";
-import { KanameterInputPage } from "./pages/KanameterInputPage";
+import { KanameterWorkspacePage } from "./pages/KanameterWorkspacePage";
 import type { UserProfile } from "./types";
 
 export function App() {
@@ -70,7 +70,7 @@ export function App() {
           path="/"
           element={
             session && canAccessMetering(profile) ? (
-            <KanameterInputPage
+              <KanameterWorkspacePage
                 profile={profile!}
                 onSignOut={() => supabase!.auth.signOut()}
               />
