@@ -13,3 +13,20 @@ export type ContractUnit = {
   categoryPrices: Array<{ category: UtilityCategory; unit_price: number; tax_mode: TaxMode }>;
   basics: Array<{ category: UtilityCategory; amount: number; tax_mode: TaxMode }>;
 };
+
+export type MeterReadingRow = {
+  asset_meter_id: string;
+  meter_code: string;
+  meter_label: string | null;
+  subItem: {
+    category: UtilityCategory;
+    sub_item_name: string;
+    input_mode: 'usage' | 'reading';
+  };
+  assignments: Array<{ unit: { unit_code: string; unit_name: string | null } | null }>;
+  entry: {
+    usage_amount: number;
+    previous_reading: number | null;
+    current_reading: number | null;
+  } | null;
+};

@@ -427,7 +427,18 @@ td ul {
 .meter-content { width: min(1440px, 100%); margin: 0 auto; padding: 40px clamp(24px, 5vw, 72px) 80px; }
 .meter-title { display: flex; align-items: end; justify-content: space-between; gap: 24px; margin-bottom: 26px; }
 .meter-title h1 { margin: 0; font-size: 30px; letter-spacing: -.03em; }
-.meter-actions { display: flex; gap: 10px; }
+.autosave-explanation { margin: 8px 0 0; color: #73817c; font-size: 13px; }
+.meter-actions { display: flex; align-items: center; gap: 10px; }
+.month-status { padding: 7px 11px; border-radius: 999px; font-size: 11px; font-weight: 700; }
+.month-status.empty { color: #71807b; background: #e9eeec; }
+.month-status.draft { color: #7c6118; background: #fff3ce; }
+.month-status.confirmed { color: #0b6a52; background: #dff3eb; }
+.success-notice { margin: 16px 0; padding: 12px 14px; border: 1px solid #b8dfd2; border-radius: 5px; color: #0c674f; background: #eaf8f3; }
+.save-state { font-size: 11px; font-weight: 600; white-space: nowrap; }
+.save-state.idle { color: #8d9995; }
+.save-state.saving { color: #8a6a16; }
+.save-state.saved { color: #13755d; }
+.save-state.error { color: #a33b34; }
 .primary.compact { width: auto; margin: 0; }
 .meter-filters { display: grid; grid-template-columns: minmax(280px, 1fr) 220px; gap: 18px; padding: 20px 24px; border: 1px solid #dce5e1; background: #fff; }
 .meter-filters label { margin: 0; }
