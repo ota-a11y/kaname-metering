@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent, type ReactNode, type ThHTMLAttributes } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactNode, type ThHTMLAttributes } from "react";
 import {
   assignMeterUnit,
   confirmMeterReadingMonth,
@@ -10,24 +10,29 @@ import {
   loadMeteringConfiguration,
   loadMeterManagement,
   loadMeterReadings,
+  loadSurchargeEvidence,
   loadMeterUsageHistory,
   loadMeterReadingPeriod,
   loadAvailableMeterReadingMonths,
   reorderMeters,
+  saveMeterParent,
   saveMeterReading,
   saveMeterReadingDate,
+  saveSurchargeEvidence,
   updateMeterSubItemDisplaySettings,
 } from "../lib/meteringRepository";
 import { supabase } from "../lib/supabase";
 import type {
   Asset,
   AssetUtilitySetting,
+  BillingPeriodPattern,
   ContractUnit,
   MeterCategorySetting,
   MeterReadingRow,
   MeterSubItem,
   MeterSurcharge,
   MeterUnitOption,
+  TaxMode,
   UserProfile,
   UtilityCategory,
 } from "../types";
@@ -42,6 +47,63 @@ const currentMonth = new Date().toISOString().slice(0, 7);
 type MainTab = "summary" | UtilityCategory | "settings";
 type SaveState = "idle" | "saving" | "saved" | "error";
 
+function adjustedMeterUsage(
+  meter: MeterReadingRow,
+  meters: MeterReadingRow[],
+  usageFor: (row: MeterReadingRow) => number,
+) {
+  const ownUsage = usageFor(meter);
+  if (meter.subItem.input_mode !== "reading") return ownUsage;
+  const childUsage = meters
+    .filter((row) => row.parent_meter_id === meter.asset_meter_id)
+    .reduce((sum, row) => sum + usageFor(row), 0);
+  return ownUsage - childUsage;
+}
+
+function storedMeterUsage(meter: MeterReadingRow) {
+  const savedUsage = Number(meter.entry?.usage_amount ?? 0);
+  if (meter.subItem.input_mode !== "reading") return savedUsage;
+  const previous = Number(meter.entry?.previous_reading);
+  const current = Number(meter.entry?.current_reading);
+  if (!Number.isFinite(previous) || !Number.isFinite(current)) return savedUsage;
+  // 一周処理時は補正済み使用量を使い、通常時は検針画面と同じ差分を算出する。
+  return current < previous ? savedUsage : current - previous;
+}
+
+function billingPeriodText(
+  billingMonth: string,
+  pattern: BillingPeriodPattern | undefined,
+  currentMeterDate: string | null | undefined,
+  previousMeterDate: string | null | undefined,
+) {
+  if (!pattern) return "期間未設定";
+  const [year, month] = billingMonth.split("-").map(Number);
+  const edge = (monthOffset: number, dayType: string, meterOffset: number) => {
+    if (dayType === "meter") {
+      const raw = monthOffset < 0 ? previousMeterDate : currentMeterDate;
+      if (!raw) return null;
+      const date = new Date(`${raw}T00:00:00`);
+      date.setDate(date.getDate() + meterOffset);
+      return date;
+    }
+    const date = new Date(year, month - 1 + monthOffset, 1);
+    const lastDay = new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate();
+    const day = dayType === "first"
+      ? 1
+      : dayType === "last"
+        ? lastDay
+        : Math.min(Number(dayType.replace("day_", "")) || 1, lastDay);
+    date.setDate(day);
+    return date;
+  };
+  const format = (date: Date | null) => date
+    ? `${date.getFullYear()}/${date.getMonth() + 1}/${date.getDate()}`
+    : "";
+  const start = format(edge(pattern.start_month_offset, pattern.start_day_type, pattern.start_meter_day_offset ?? 0));
+  const end = format(edge(pattern.end_month_offset, pattern.end_day_type, pattern.end_meter_day_offset ?? 0));
+  return start && end ? `${start}～${end}` : "期間未確定";
+}
+
 export function KanameterWorkspacePage({
   profile,
   onSignOut,
@@ -55,7 +117,6 @@ export function KanameterWorkspacePage({
   const [meterDate, setMeterDate] = useState("");
   const [previousMeterDate, setPreviousMeterDate] = useState("");
   const [availableBillingMonths, setAvailableBillingMonths] = useState<Array<{ billingMonth: string; meterDate: string | null }>>([]);
-  const [subItemBillingMonths, setSubItemBillingMonths] = useState<Record<string, string>>({});
   const [mainTab, setMainTab] = useState<MainTab>("summary");
   const [selectedItemId, setSelectedItemId] = useState("");
   const [utilitySettings, setUtilitySettings] = useState<AssetUtilitySetting[]>(
@@ -66,12 +127,16 @@ export function KanameterWorkspacePage({
   >([]);
   const [subItems, setSubItems] = useState<MeterSubItem[]>([]);
   const [surcharges, setSurcharges] = useState<MeterSurcharge[]>([]);
+  const [periodPatterns, setPeriodPatterns] = useState<BillingPeriodPattern[]>([]);
   const [contracts, setContracts] = useState<ContractUnit[]>([]);
   const [meters, setMeters] = useState<MeterReadingRow[]>([]);
   const [summaryMeters, setSummaryMeters] = useState<MeterReadingRow[]>([]);
+  const [summarySurchargePrices, setSummarySurchargePrices] = useState<Record<string, number>>({});
   const [managedMeters, setManagedMeters] = useState<MeterReadingRow[]>([]);
   const [units, setUnits] = useState<MeterUnitOption[]>([]);
   const [meterSettingsItemId, setMeterSettingsItemId] = useState<string | null>(null);
+  const [unitPriceCalculatorOpen, setUnitPriceCalculatorOpen] = useState(false);
+  const [calculatedUnitPrices, setCalculatedUnitPrices] = useState<Record<string, number>>({});
   const [values, setValues] = useState<Record<string, string>>({});
   const [rolloverValues, setRolloverValues] = useState<Record<string, number>>({});
   const [usageHistory, setUsageHistory] = useState<{
@@ -115,6 +180,7 @@ export function KanameterWorkspacePage({
         setCategorySettings(config.categories);
         setSubItems(config.subItems);
         setSurcharges(config.surcharges);
+        setPeriodPatterns(config.periodPatterns);
         setContracts(contractRows);
         setManagedMeters(management.meters);
         setUnits(management.units);
@@ -230,11 +296,24 @@ export function KanameterWorkspacePage({
   useEffect(() => {
     if (!assetId || mainTab !== "summary") return;
     setLoading(true);
-    void Promise.all(categories.map((category) => loadMeterReadings(supabase!, assetId, billingMonth, category)))
-      .then((results) => setSummaryMeters(results.flatMap((result) => result.rows)))
+    void Promise.all([
+      Promise.all(categories.map((category) => loadMeterReadings(supabase!, assetId, billingMonth, category))),
+      Promise.all(surcharges.map(async (surcharge) => ({
+        surchargeId: surcharge.asset_meter_surcharge_id,
+        evidence: await loadSurchargeEvidence(supabase!, assetId, billingMonth, surcharge.asset_meter_surcharge_id),
+      }))),
+    ])
+      .then(([results, surchargeRows]) => {
+        setSummaryMeters(results.flatMap((result) => result.rows));
+        setSummarySurchargePrices(Object.fromEntries(surchargeRows.flatMap(({ surchargeId, evidence }) => {
+          const storedPrice = loadStoredSurchargeUnitPrice(assetId, billingMonth, surchargeId);
+          const price = storedPrice ?? (evidence?.unit_price == null ? null : Number(evidence.unit_price));
+          return price == null ? [] : [[surchargeId, price]];
+        })));
+      })
       .catch((reason: Error) => setError(reason.message))
       .finally(() => setLoading(false));
-  }, [assetId, billingMonth, mainTab]);
+  }, [assetId, billingMonth, mainTab, surcharges]);
 
   useEffect(() => {
     if (!assetId || activeCategory) return;
@@ -259,8 +338,12 @@ export function KanameterWorkspacePage({
       try {
         const entered = Number(raw);
         const previous = Number(meter.entry?.previous_reading);
-        const usageOverride = meter.subItem.input_mode === "reading" && Number.isFinite(previous) && entered < previous && activeRolloverValue
-          ? activeRolloverValue - previous + entered
+        const usageOverride = meter.subItem.input_mode === "reading" && Number.isFinite(previous)
+          ? entered < previous
+            ? activeRolloverValue
+              ? activeRolloverValue - previous + entered
+              : undefined
+            : entered - previous
           : undefined;
         const saved = await saveMeterReading(
           supabase!,
@@ -277,10 +360,10 @@ export function KanameterWorkspacePage({
                   ...row,
                   entry: {
                     usage_amount: Number(saved.usage_amount),
-                    previous_reading:
-                      saved.previous_reading === null
+                    previous_reading: meter.entry?.previous_reading ??
+                      (saved.previous_reading === null
                         ? null
-                        : Number(saved.previous_reading),
+                        : Number(saved.previous_reading)),
                     current_reading:
                       saved.current_reading === null
                         ? null
@@ -358,9 +441,46 @@ export function KanameterWorkspacePage({
   const selectedSurcharge = categorySurcharges.find(
     (item) => item.asset_meter_surcharge_id === selectedItemId,
   );
+  const selectedPeriodPatternId = selectedSubItem?.billing_period_pattern_id ?? selectedSurcharge?.billing_period_pattern_id;
+  const selectedPeriodPattern = periodPatterns.find((pattern) => pattern.billing_period_pattern_id === selectedPeriodPatternId);
+  const billingPeriods = Array.from(
+    new Map([{ billingMonth, meterDate }, ...availableBillingMonths].map((period) => [period.billingMonth, period])).values(),
+  );
+  const periodLabelFor = (month: string, currentDate: string | null) => {
+    const [year, monthNumber] = month.split("-").map(Number);
+    const previousMonth = new Date(Date.UTC(year, monthNumber - 2, 1)).toISOString().slice(0, 7);
+    const previousDate = billingPeriods.find((period) => period.billingMonth === previousMonth)?.meterDate;
+    return billingPeriodText(month, selectedPeriodPattern, currentDate, previousDate);
+  };
   const billableCategoryContracts = activeCategory
     ? contracts.filter((contract) => isContractCategoryBillable(contract, activeCategory))
     : contracts;
+  const selectedUnitPriceTaxMode: TaxMode = selectedSubItem
+    ? billableCategoryContracts.flatMap((contract) => [
+        ...contract.prices.filter((price) => price.asset_billing_line_item_id === selectedSubItem.asset_billing_line_item_id),
+        ...contract.categoryPrices.filter((price) => price.category === selectedSubItem.category),
+      ])[0]?.tax_mode
+      ?? utilitySettings.find((setting) => setting.category === selectedSubItem.category)?.default_tax_mode
+      ?? "exclusive"
+    : "exclusive";
+  const unitPriceStorageKey = selectedSubItem
+    ? `kanameter-unit-price-calculation:${assetId}:${billingMonth}:${selectedSubItem.asset_meter_sub_item_id}`
+    : "";
+
+  useEffect(() => {
+    if (!selectedSubItem || !unitPriceStorageKey) return;
+    const calculatedPrice = calculateStoredUnitPrice(unitPriceStorageKey, selectedUnitPriceTaxMode);
+    setCalculatedUnitPrices((current) => {
+      if (calculatedPrice == null) {
+        if (!(selectedSubItem.asset_meter_sub_item_id in current)) return current;
+        const next = { ...current };
+        delete next[selectedSubItem.asset_meter_sub_item_id];
+        return next;
+      }
+      if (current[selectedSubItem.asset_meter_sub_item_id] === calculatedPrice) return current;
+      return { ...current, [selectedSubItem.asset_meter_sub_item_id]: calculatedPrice };
+    });
+  }, [selectedSubItem, selectedUnitPriceTaxMode, unitPriceStorageKey]);
   const billableCategoryUnitCodes = new Set(billableCategoryContracts.map((contract) => contract.unit?.unit_code).filter(Boolean));
   const selectCategory = (category: UtilityCategory) => {
     setMainTab(category);
@@ -377,8 +497,6 @@ export function KanameterWorkspacePage({
   const selectBillingItem = (itemId: string) => {
     setSelectedItemId(itemId);
     setMeterSettingsItemId(null);
-    const selectedMonth = subItemBillingMonths[itemId];
-    if (selectedMonth) setBillingMonth(selectedMonth);
   };
   const moveBillingMonth = (offset: number) => {
     const [year, month] = billingMonth.split("-").map(Number);
@@ -580,10 +698,6 @@ export function KanameterWorkspacePage({
                 }}
               />
             </label>
-            <div className="meter-period">
-              <span>検針期間</span>
-              <strong>{formatMeterPeriod(previousMeterDate, meterDate)}</strong>
-            </div>
           </div>
           <div className="confirm-area">
             <span className={`month-status ${status ?? "empty"}`}>
@@ -631,11 +745,15 @@ export function KanameterWorkspacePage({
           <div className="loading">共通DBから読み込んでいます…</div>
         ) : mainTab === "summary" ? (
           <SummaryView
+            assetId={assetId}
+            billingMonth={billingMonth}
             categorySettings={categorySettings}
+            utilitySettings={utilitySettings}
             meters={summaryMeters}
             contracts={contracts}
             subItems={subItems}
             surcharges={surcharges}
+            surchargePrices={summarySurchargePrices}
             columnStorageUserId={profile.user_id}
           />
         ) : mainTab === "settings" ? (
@@ -667,33 +785,27 @@ export function KanameterWorkspacePage({
                   ))}
                 </div>
                 {(selectedSubItem || selectedSurcharge) && (
-                  <label className="subitem-period-picker">
-                    対象期間
-                    <select
-                      value={subItemBillingMonths[selectedItemId] ?? billingMonth}
-                      onChange={(event) => {
-                        const next = event.target.value;
-                        setSubItemBillingMonths((current) => ({ ...current, [selectedItemId]: next }));
-                        setBillingMonth(next);
-                      }}
-                    >
-                      {Array.from(new Map([{ billingMonth, meterDate }, ...availableBillingMonths].map((period) => [period.billingMonth, period])).values()).map((period) => (
-                        <option key={period.billingMonth} value={period.billingMonth}>
-                          {period.billingMonth.replace("-", "年")}月{period.meterDate ? `（検針日 ${formatShortDate(period.meterDate)}）` : ""}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
+                  <div className="subitem-period-display">
+                    <span>対象期間</span>
+                    <strong>{periodLabelFor(billingMonth, meterDate)}</strong>
+                  </div>
                 )}
               </div>
               {selectedSubItem?.sub_item_kind === "custom" && (
-                <button
-                  type="button"
-                  className="meter-settings-link"
-                  onClick={() => setMeterSettingsItemId((current) => current ? null : selectedSubItem.asset_meter_sub_item_id)}
-                >
-                  {meterSettingsItemId ? "検針画面へ戻る" : "メーター設定"}
-                </button>
+                <div className="sub-navigation-actions">
+                  {!meterSettingsItemId && (
+                    <button type="button" className="unit-price-calculator-link" onClick={() => setUnitPriceCalculatorOpen(true)}>
+                      単価計算
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="meter-settings-link"
+                    onClick={() => setMeterSettingsItemId((current) => current ? null : selectedSubItem.asset_meter_sub_item_id)}
+                  >
+                    {meterSettingsItemId ? "検針画面へ戻る" : "メーター設定"}
+                  </button>
+                </div>
               )}
             </div>
             {meterSettingsItemId && selectedSubItem ? (
@@ -714,7 +826,18 @@ export function KanameterWorkspacePage({
             <section
               className={`workspace-body ${selectedSurcharge ? "with-evidence" : ""}`}
             >
-              <div className="workspace-table-card">
+              {selectedSurcharge ? (
+                <SurchargeWorkspace
+                  key={`${assetId}-${billingMonth}-${selectedSurcharge.asset_meter_surcharge_id}`}
+                  surcharge={selectedSurcharge}
+                  assetId={assetId}
+                  billingMonth={billingMonth}
+                  unit={categorySettings.find((row) => row.category === activeCategory)?.usage_unit ?? ""}
+                  contracts={billableCategoryContracts}
+                  meters={meters}
+                  subItems={categorySubItems}
+                />
+              ) : <div className="workspace-table-card">
                 {selectedSubItem?.sub_item_kind === "basic" ? (
                   <BasicChargeTable
                     contracts={billableCategoryContracts}
@@ -731,6 +854,7 @@ export function KanameterWorkspacePage({
                     contracts={billableCategoryContracts}
                     category={mainTab as UtilityCategory}
                     lineItemId={selectedSubItem.asset_billing_line_item_id}
+                    unitPriceOverride={calculatedUnitPrices[selectedSubItem.asset_meter_sub_item_id]}
                     values={values}
                     saveStates={saveStates}
                     confirmed={status === "confirmed"}
@@ -740,44 +864,225 @@ export function KanameterWorkspacePage({
                     onChange={queueSave}
                     onRollover={setMeterRollover}
                   />
-                ) : selectedSurcharge ? (
-                  <SurchargeTable contracts={billableCategoryContracts} meters={meters} />
                 ) : (
                   <div className="empty-cell">小分類が設定されていません。</div>
                 )}
-              </div>
-              {selectedSurcharge && (
-                <EvidencePanel
-                  surcharge={selectedSurcharge}
-                  unit={
-                    categorySettings.find(
-                      (row) => row.category === activeCategory,
-                    )?.usage_unit ?? ""
-                  }
-                />
-              )}
+              </div>}
             </section>
             )}
           </>
         )}
       </main>
+      {unitPriceCalculatorOpen && selectedSubItem && (
+        <VariableUnitPriceCalculator
+          storageKey={unitPriceStorageKey}
+          itemName={selectedSubItem.sub_item_name}
+          taxMode={selectedUnitPriceTaxMode}
+          onPriceChange={(price) => setCalculatedUnitPrices((current) => {
+            const next = { ...current };
+            if (price == null) delete next[selectedSubItem.asset_meter_sub_item_id];
+            else next[selectedSubItem.asset_meter_sub_item_id] = price;
+            return next;
+          })}
+          onClose={() => setUnitPriceCalculatorOpen(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+function evaluateAdditionExpression(expression: string) {
+  const normalized = expression.replace(/[,，]/g, "").trim();
+  if (!normalized) return null;
+  const terms = normalized.split(/[+＋]/).map((term) => term.trim());
+  if (terms.some((term) => term === "" || !/^\d+(?:\.\d+)?$/.test(term))) return null;
+  const total = terms.reduce((sum, term) => sum + Number(term), 0);
+  return Number.isFinite(total) ? total : null;
+}
+
+function formatAdditionExpression(expression: string) {
+  return expression.split(/([+＋])/).map((part) => {
+    if (part === "+" || part === "＋") return part;
+    const compact = part.replace(/[,，\s]/g, "");
+    if (!/^\d+(?:\.\d*)?$/.test(compact)) return part;
+    const [integer, decimal] = compact.split(".");
+    const formattedInteger = Number(integer || 0).toLocaleString("ja-JP");
+    return decimal === undefined ? formattedInteger : `${formattedInteger}.${decimal}`;
+  }).join("");
+}
+
+function calculateStoredUnitPrice(storageKey: string, taxMode: TaxMode) {
+  try {
+    const stored = JSON.parse(localStorage.getItem(storageKey) ?? "{}") as Record<string, string>;
+    const grossAmount = evaluateAdditionExpression(stored.grossExpression ?? "");
+    const enteredTaxAmount = evaluateAdditionExpression(stored.taxExpression ?? "");
+    const taxAmount = enteredTaxAmount ?? (grossAmount == null ? null : Math.floor(grossAmount * 10 / 110));
+    const netAmount = grossAmount == null || taxAmount == null ? null : grossAmount - taxAmount;
+    const usage = evaluateAdditionExpression(stored.usageExpression ?? "");
+    if (usage == null || usage === 0) return null;
+    const calculationAmount = taxMode === "inclusive" ? grossAmount : netAmount;
+    if (calculationAmount == null) return null;
+    const digits = Math.min(4, Math.max(0, Number(stored.unitPriceDigits ?? 2)));
+    const roundingMode = (["floor", "round", "ceil"] as const).includes(stored.unitPriceRoundingMode as "floor" | "round" | "ceil")
+      ? stored.unitPriceRoundingMode as "floor" | "round" | "ceil"
+      : "round";
+    return roundToDigits(calculationAmount / usage, digits, roundingMode);
+  } catch {
+    return null;
+  }
+}
+
+function loadStoredSurchargeUnitPrice(assetId: string, billingMonth: string, surchargeId: string) {
+  try {
+    const stored = JSON.parse(
+      localStorage.getItem(`kanameter-surcharge-evidence:${assetId}:${billingMonth}:${surchargeId}`) ?? "{}",
+    ) as { unitPrice?: number };
+    return stored.unitPrice == null || !Number.isFinite(Number(stored.unitPrice)) ? null : Number(stored.unitPrice);
+  } catch {
+    return null;
+  }
+}
+
+function VariableUnitPriceCalculator({
+  storageKey,
+  itemName,
+  taxMode,
+  onPriceChange,
+  onClose,
+}: {
+  storageKey: string;
+  itemName: string;
+  taxMode: TaxMode;
+  onPriceChange: (price: number | null) => void;
+  onClose: () => void;
+}) {
+  const stored = (() => {
+    try {
+      return JSON.parse(localStorage.getItem(storageKey) ?? "{}") as Record<string, string>;
+    } catch {
+      return {};
+    }
+  })();
+  const [grossExpression, setGrossExpression] = useState(formatAdditionExpression(stored.grossExpression ?? ""));
+  const [taxExpression, setTaxExpression] = useState(formatAdditionExpression(stored.taxExpression ?? ""));
+  const [usageExpression, setUsageExpression] = useState(stored.usageExpression ?? "");
+  const [unitPriceDigits, setUnitPriceDigits] = useState(Math.min(4, Math.max(0, Number(stored.unitPriceDigits ?? 2))));
+  const [unitPriceRoundingMode, setUnitPriceRoundingMode] = useState<"floor" | "round" | "ceil">(
+    (["floor", "round", "ceil"] as const).includes(stored.unitPriceRoundingMode as "floor" | "round" | "ceil")
+      ? stored.unitPriceRoundingMode as "floor" | "round" | "ceil"
+      : "round",
+  );
+  const grossAmount = evaluateAdditionExpression(grossExpression);
+  const automaticTaxAmount = grossAmount == null ? null : Math.floor(grossAmount * 10 / 110);
+  const enteredTaxAmount = evaluateAdditionExpression(taxExpression);
+  const taxAmount = enteredTaxAmount ?? automaticTaxAmount;
+  const netAmount = grossAmount == null || taxAmount == null ? null : grossAmount - taxAmount;
+  const usage = evaluateAdditionExpression(usageExpression);
+  const calculationAmount = taxMode === "inclusive" ? grossAmount : netAmount;
+  const calculatedUnitPrice = calculationAmount != null && usage != null && usage !== 0
+    ? roundToDigits(calculationAmount / usage, unitPriceDigits, unitPriceRoundingMode)
+    : null;
+
+  useEffect(() => {
+    localStorage.setItem(storageKey, JSON.stringify({
+      grossExpression,
+      taxExpression,
+      usageExpression,
+      unitPriceDigits: String(unitPriceDigits),
+      unitPriceRoundingMode,
+    }));
+    onPriceChange(calculatedUnitPrice);
+  }, [calculatedUnitPrice, grossExpression, storageKey, taxExpression, unitPriceDigits, unitPriceRoundingMode, usageExpression]);
+
+  const moveToNextInput = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== "Enter" || event.nativeEvent.isComposing) return;
+    const inputs = Array.from(event.currentTarget.querySelectorAll("input"));
+    const currentIndex = inputs.indexOf(event.target as HTMLInputElement);
+    if (currentIndex < 0 || currentIndex >= inputs.length - 1) return;
+    event.preventDefault();
+    inputs[currentIndex + 1].focus();
+  };
+
+  return (
+    <div className="calculator-modal-backdrop" role="presentation" onMouseDown={onClose}>
+      <section className="calculator-modal" role="dialog" aria-modal="true" aria-labelledby="unit-price-calculator-title" onMouseDown={(event) => event.stopPropagation()}>
+        <header>
+          <div>
+            <p className="eyebrow">UNIT PRICE</p>
+            <h2 id="unit-price-calculator-title">{itemName}の単価計算</h2>
+          </div>
+          <button type="button" className="calculator-modal-close" aria-label="閉じる" onClick={onClose}>×</button>
+        </header>
+        <div className="calculator-tax-mode">
+          適用する税区分：<strong>{taxMode === "inclusive" ? "税込" : "税抜"}</strong>
+        </div>
+        <div className="calculator-fields" onKeyDown={moveToNextInput}>
+          <label>
+            <span>水道局からの請求金額（税込）</span>
+            <input value={grossExpression} onChange={(event) => setGrossExpression(formatAdditionExpression(event.target.value))} inputMode="decimal" placeholder="例：100,000＋25,000" autoFocus />
+          </label>
+          <label>
+            <span>消費税額</span>
+            <input value={taxExpression || (automaticTaxAmount?.toLocaleString("ja-JP") ?? "")} onChange={(event) => setTaxExpression(formatAdditionExpression(event.target.value))} inputMode="decimal" placeholder="未入力時は自動計算" />
+          </label>
+          <div className="calculator-result-field">
+            <span>請求金額（税抜）</span>
+            <strong>{netAmount == null ? "—" : formatYen(netAmount)}</strong>
+          </div>
+          <label>
+            <span>使用量</span>
+            <input value={usageExpression} onChange={(event) => setUsageExpression(event.target.value)} inputMode="decimal" placeholder="例：100＋200" />
+          </label>
+        </div>
+        <div className="calculator-unit-price-result">
+          <span>計算単価（{taxMode === "inclusive" ? "税込" : "税抜"}）</span>
+          <strong>{calculatedUnitPrice == null ? "—" : `${calculatedUnitPrice.toLocaleString("ja-JP", { minimumFractionDigits: unitPriceDigits, maximumFractionDigits: unitPriceDigits })} 円`}</strong>
+          <div className="calculator-unit-price-settings">
+            <label>
+              <span>表示桁数</span>
+              <select value={unitPriceDigits} onChange={(event) => setUnitPriceDigits(Number(event.target.value))}>
+                {[0, 1, 2, 3, 4].map((digits) => <option key={digits} value={digits}>小数第{digits}位</option>)}
+              </select>
+            </label>
+            <label>
+              <span>表示以下処理</span>
+              <select value={unitPriceRoundingMode} onChange={(event) => setUnitPriceRoundingMode(event.target.value as "floor" | "round" | "ceil")}>
+                <option value="floor">切り捨て</option>
+                <option value="round">四捨五入</option>
+                <option value="ceil">切り上げ</option>
+              </select>
+            </label>
+          </div>
+        </div>
+        <footer>
+          <button type="button" onClick={onClose}>閉じる</button>
+        </footer>
+      </section>
     </div>
   );
 }
 
 function SummaryView({
+  assetId,
+  billingMonth,
   categorySettings,
+  utilitySettings,
   contracts,
   meters,
   subItems,
   surcharges,
+  surchargePrices,
   columnStorageUserId,
 }: {
+  assetId: string;
+  billingMonth: string;
   categorySettings: MeterCategorySetting[];
+  utilitySettings: AssetUtilitySetting[];
   meters: MeterReadingRow[];
   contracts: ContractUnit[];
   subItems: MeterSubItem[];
   surcharges: MeterSurcharge[];
+  surchargePrices: Record<string, number>;
   columnStorageUserId: string;
 }) {
   const eligibleContracts = contracts.filter((row) => (row.unit?.unit_type ?? "").toLowerCase() !== "parking");
@@ -792,12 +1097,26 @@ function SummaryView({
   const usageForContractItem = (contract: ContractUnit, item: MeterSubItem) => roundToDigits(
     meters.filter(
       (meter) => meter.subItem.asset_meter_sub_item_id === item.asset_meter_sub_item_id && meter.assignments[0]?.unit?.unit_code === contract.unit?.unit_code,
-    ).reduce((sum, meter) => sum + Number(meter.entry?.usage_amount ?? 0), 0),
+    ).reduce((sum, meter) => sum + adjustedMeterUsage(
+      meter,
+      meters,
+      storedMeterUsage,
+    ), 0),
     item.aggregation_decimal_digits,
     item.usage_rounding_mode,
   );
   const amountForContractItem = (contract: ContractUnit, item: MeterSubItem, usage: number) => {
-    const price = contract.prices.find((row) => row.asset_billing_line_item_id === item.asset_billing_line_item_id)?.unit_price ?? contract.categoryPrices.find((row) => row.category === item.category)?.unit_price;
+    const itemPrice = contract.prices.find((row) => row.asset_billing_line_item_id === item.asset_billing_line_item_id);
+    const categoryPrice = contract.categoryPrices.find((row) => row.category === item.category);
+    const taxMode = itemPrice?.tax_mode
+      ?? categoryPrice?.tax_mode
+      ?? utilitySettings.find((setting) => setting.category === item.category)?.default_tax_mode
+      ?? "exclusive";
+    const calculatedPrice = calculateStoredUnitPrice(
+      `kanameter-unit-price-calculation:${assetId}:${billingMonth}:${item.asset_meter_sub_item_id}`,
+      taxMode,
+    );
+    const price = calculatedPrice ?? itemPrice?.unit_price ?? categoryPrice?.unit_price;
     return price == null ? 0 : roundUtilityAmount(usage * Number(price), contract.utility_amount_rounding_mode);
   };
   const summaryRows = tenantIds.map((tenantId) => {
@@ -814,14 +1133,20 @@ function SummaryView({
         }, 0);
         return { usage, amount };
       });
-      const surchargeAmount = group.surcharge ? 0 : null;
       const totalUsage = custom.reduce((sum, item) => sum + item.usage, 0);
+      const surchargePrice = group.surcharge ? surchargePrices[group.surcharge.asset_meter_surcharge_id] : null;
+      const surchargeAmount = group.surcharge
+        ? surchargePrice == null
+          ? 0
+          : roundUtilityAmount(totalUsage * surchargePrice, billableContracts[0]?.utility_amount_rounding_mode ?? "round")
+        : null;
       const total = (basicAmount ?? 0) + custom.reduce((sum, item) => sum + item.amount, 0);
       return { enabled, basicAmount, custom, surchargeAmount, totalUsage, total };
     });
     return {
       tenantId,
       tenantName: tenantContracts[0]?.contract?.tenant?.tenant_name ?? "—",
+      tenantContracts,
       units: tenantContracts.map((row) => row.unit?.unit_name || row.unit?.unit_code).filter(Boolean).join("・") || "—",
       groups,
       total: groups.reduce((sum, group) => sum + group.total + (group.surchargeAmount ?? 0), 0),
@@ -868,16 +1193,16 @@ function SummaryView({
           <tbody>
             {summaryRows.map((row) => (
               <tr key={row.tenantId}>
-                <td>{row.tenantName}</td>
+                <td><TenantNameWithRounding name={row.tenantName} contracts={row.tenantContracts} /></td>
                 <td className="summary-unit-cell">{row.units}</td>
                 {row.groups.flatMap((group, groupIndex) => [
-                  ...(group.basicAmount != null ? [<td className={`numeric ${group.enabled ? "" : "summary-disabled-cell"}`} key={`${groupIndex}-basic`}>{formatYen(group.basicAmount)}</td>] : []),
-                  ...group.custom.flatMap((item, itemIndex) => [<td className={`numeric ${group.enabled ? "" : "summary-disabled-cell"}`} key={`${groupIndex}-${itemIndex}-usage`}>{item.usage.toLocaleString("ja-JP")}</td>, <td className={`numeric ${group.enabled ? "" : "summary-disabled-cell"}`} key={`${groupIndex}-${itemIndex}-amount`}>{formatYen(item.amount)}</td>]),
+                  ...(group.basicAmount != null ? [<td className={`numeric ${group.enabled ? "" : "summary-disabled-cell"}`} key={`${groupIndex}-basic`}>{group.enabled ? formatYen(group.basicAmount) : null}</td>] : []),
+                  ...group.custom.flatMap((item, itemIndex) => [<td className={`numeric ${group.enabled ? "" : "summary-disabled-cell"}`} key={`${groupIndex}-${itemIndex}-usage`}>{group.enabled ? formatUsage(item.usage, categoryColumns[groupIndex].custom[itemIndex].aggregation_decimal_digits) : null}</td>, <td className={`numeric ${group.enabled ? "" : "summary-disabled-cell"}`} key={`${groupIndex}-${itemIndex}-amount`}>{group.enabled ? formatYen(item.amount) : null}</td>]),
                   ...(categoryColumns[groupIndex].showTotal ? [
-                    <td className={`numeric ${group.enabled ? "" : "summary-disabled-cell"}`} key={`${groupIndex}-total-usage`}><strong>{group.totalUsage.toLocaleString("ja-JP")}</strong></td>,
-                    <td className={`numeric ${group.enabled ? "" : "summary-disabled-cell"}`} key={`${groupIndex}-total-amount`}><strong>{formatYen(group.total)}</strong></td>,
+                    <td className={`numeric ${group.enabled ? "" : "summary-disabled-cell"}`} key={`${groupIndex}-total-usage`}>{group.enabled ? <strong>{formatUsage(group.totalUsage, Math.max(0, ...categoryColumns[groupIndex].custom.map((item) => item.aggregation_decimal_digits)))}</strong> : null}</td>,
+                    <td className={`numeric ${group.enabled ? "" : "summary-disabled-cell"}`} key={`${groupIndex}-total-amount`}>{group.enabled ? <strong>{formatYen(group.total)}</strong> : null}</td>,
                   ] : []),
-                  ...(group.surchargeAmount != null ? [<td className={`numeric ${group.enabled ? "" : "summary-disabled-cell"}`} key={`${groupIndex}-surcharge`}>{formatYen(group.surchargeAmount)}</td>] : []),
+                  ...(group.surchargeAmount != null ? [<td className={`numeric ${group.enabled ? "" : "summary-disabled-cell"}`} key={`${groupIndex}-surcharge`}>{group.enabled ? formatYen(group.surchargeAmount) : null}</td>] : []),
                 ])}
                 <td className="numeric"><strong>{formatYen(row.total)}</strong></td>
               </tr>
@@ -888,9 +1213,9 @@ function SummaryView({
               <th colSpan={2}>合計</th>
               {categoryColumns.flatMap((group, groupIndex) => [
                 ...(group.basic ? [<th className="numeric" key={`${group.category}-basic`}>{formatYen(summaryRows.reduce((sum, row) => sum + (row.groups[groupIndex].basicAmount ?? 0), 0))}</th>] : []),
-                ...group.custom.flatMap((item, itemIndex) => [<th className="numeric" key={`${item.asset_meter_sub_item_id}-usage`}>{summaryRows.reduce((sum, row) => sum + row.groups[groupIndex].custom[itemIndex].usage, 0).toLocaleString("ja-JP")}</th>, <th className="numeric" key={`${item.asset_meter_sub_item_id}-amount`}>{formatYen(summaryRows.reduce((sum, row) => sum + row.groups[groupIndex].custom[itemIndex].amount, 0))}</th>]),
+                ...group.custom.flatMap((item, itemIndex) => [<th className="numeric" key={`${item.asset_meter_sub_item_id}-usage`}>{formatUsage(summaryRows.reduce((sum, row) => sum + row.groups[groupIndex].custom[itemIndex].usage, 0), item.aggregation_decimal_digits)}</th>, <th className="numeric" key={`${item.asset_meter_sub_item_id}-amount`}>{formatYen(summaryRows.reduce((sum, row) => sum + row.groups[groupIndex].custom[itemIndex].amount, 0))}</th>]),
                 ...(group.showTotal ? [
-                  <th className="numeric" key={`${group.category}-total-usage`}>{summaryRows.reduce((sum, row) => sum + row.groups[groupIndex].totalUsage, 0).toLocaleString("ja-JP")}</th>,
+                  <th className="numeric" key={`${group.category}-total-usage`}>{formatUsage(summaryRows.reduce((sum, row) => sum + row.groups[groupIndex].totalUsage, 0), Math.max(0, ...group.custom.map((item) => item.aggregation_decimal_digits)))}</th>,
                   <th className="numeric" key={`${group.category}-total-amount`}>{formatYen(summaryRows.reduce((sum, row) => sum + row.groups[groupIndex].total, 0))}</th>,
                 ] : []),
                 ...(group.surcharge ? [<th className="numeric" key={`${group.category}-surcharge`}>{formatYen(summaryRows.reduce((sum, row) => sum + (row.groups[groupIndex].surchargeAmount ?? 0), 0))}</th>] : []),
@@ -1007,11 +1332,25 @@ function SettingsView({
       onError((reason as Error).message);
     }
   };
+  const changeParent = async (meterId: string, parentMeterId: string) => {
+    saveMeterParent(meterId, parentMeterId || null);
+    setOrderedMeters((current) => current.map((meter) =>
+      meter.asset_meter_id === meterId
+        ? { ...meter, parent_meter_id: parentMeterId || null }
+        : meter,
+    ));
+    await onChanged();
+    onNotice(parentMeterId ? "親メーターを設定しました。" : "親メーター設定を解除しました。");
+  };
   const remove = async (meter: MeterReadingRow) => {
     if (!window.confirm(`メーター「${meter.meter_code}」を削除しますか？`)) return;
     onError("");
     try {
       await deleteMeter(supabase!, meter.asset_meter_id);
+      saveMeterParent(meter.asset_meter_id, null);
+      orderedMeters
+        .filter((row) => row.parent_meter_id === meter.asset_meter_id)
+        .forEach((row) => saveMeterParent(row.asset_meter_id, null));
       await onChanged();
       onNotice("メーターを削除しました。");
     } catch (reason) {
@@ -1048,20 +1387,30 @@ function SettingsView({
       )
       .sort((a, b) => b.effective_from.localeCompare(a.effective_from))[0];
   };
+  const wouldCreateParentCycle = (meterId: string, candidateId: string) => {
+    let currentId: string | null = candidateId;
+    const visited = new Set<string>();
+    while (currentId && !visited.has(currentId)) {
+      if (currentId === meterId) return true;
+      visited.add(currentId);
+      currentId = orderedMeters.find((row) => row.asset_meter_id === currentId)?.parent_meter_id ?? null;
+    }
+    return false;
+  };
 
   return (
     <section className="meter-settings">
       <div className="meter-display-settings">
         <label>データ入力方法<select value={inputMode} onChange={(event) => setInputMode(event.target.value as "usage" | "reading")}><option value="reading">読取値を入力</option><option value="usage">使用量を入力</option></select></label>
-        <label>検針値入力表示桁数<input type="number" min={0} max={3} step={1} value={readingDecimalDigits} onChange={(event) => setReadingDecimalDigits(Math.min(3, Math.max(0, Number(event.target.value))))} /></label>
+        <label className={inputMode === "usage" ? "disabled-setting" : ""}>検針値入力表示桁数<input type="number" min={0} max={3} step={1} value={readingDecimalDigits} disabled={inputMode === "usage"} onChange={(event) => setReadingDecimalDigits(Math.min(3, Math.max(0, Number(event.target.value))))} /></label>
         <label>使用量入力桁数<input type="number" min={0} max={3} step={1} value={inputDecimalDigits} onChange={(event) => setInputDecimalDigits(Math.min(3, Math.max(0, Number(event.target.value))))} /></label>
         <label>使用量集計桁数<input type="number" min={0} max={3} step={1} value={aggregationDecimalDigits} onChange={(event) => setAggregationDecimalDigits(Math.min(3, Math.max(0, Number(event.target.value))))} /></label>
         <label>使用量の小数点処理<select value={usageRoundingMode} onChange={(event) => setUsageRoundingMode(event.target.value as "floor" | "round" | "ceil")}><option value="ceil">切り上げ</option><option value="round">四捨五入</option><option value="floor">切り捨て</option></select></label>
         <button type="button" className="primary compact" disabled={saving} onClick={() => void saveDisplaySettings()}>{saving ? "保存中…" : "設定を保存"}</button>
       </div>
       <div className="table-wrap">
-        <ResizableTable className="workspace-data-table meter-settings-table" storageKey="meter-settings-common" columnGroups={["drag", "category", "sub-item", "meter", "unit", "action"]}>
-          <thead><tr><ColumnHeader columnGroup="drag" /><ColumnHeader columnGroup="category">分類</ColumnHeader><ColumnHeader columnGroup="sub-item">小分類</ColumnHeader><ColumnHeader columnGroup="meter">メーター番号</ColumnHeader><ColumnHeader columnGroup="unit">設置区画</ColumnHeader><ColumnHeader columnGroup="action" /></tr></thead>
+        <ResizableTable className="workspace-data-table meter-settings-table" storageKey="meter-settings-common" columnGroups={["drag", "category", "sub-item", "meter", "unit", "parent-meter", "action"]}>
+          <thead><tr><ColumnHeader columnGroup="drag" /><ColumnHeader columnGroup="category">分類</ColumnHeader><ColumnHeader columnGroup="sub-item">小分類</ColumnHeader><ColumnHeader columnGroup="meter">メーター番号</ColumnHeader><ColumnHeader columnGroup="unit">設置区画</ColumnHeader><ColumnHeader columnGroup="parent-meter">親メーター</ColumnHeader><ColumnHeader columnGroup="action" /></tr></thead>
           <tbody>
             {orderedMeters.map((meter) => {
               const assignment = activeAssignment(meter);
@@ -1083,7 +1432,7 @@ function SettingsView({
                   </td>
                   <td><span className={`utility-label utility-${meter.subItem.category}`}>{labels[meter.subItem.category]}</span></td>
                   <td>{meter.subItem.sub_item_name}</td>
-                  <td><strong>{meter.meter_code}</strong></td>
+                  <td><strong>{meter.parent_meter_id && <span className="child-meter-mark">↳ 子</span>}{meter.meter_code}</strong></td>
                   <td>
                     <select value={assignment?.unit_id ?? ""} onChange={(event) => void changeUnit(meter.asset_meter_id, event.target.value)}>
                       <option value="" disabled>区画を選択</option>
@@ -1093,6 +1442,25 @@ function SettingsView({
                         </option>
                       ))}
                     </select>
+                  </td>
+                  <td>
+                    {inputMode === "reading" ? (
+                      <select value={meter.parent_meter_id ?? ""} onChange={(event) => void changeParent(meter.asset_meter_id, event.target.value)}>
+                        <option value="">なし（親として集計）</option>
+                        {orderedMeters
+                          .filter((candidate) =>
+                            candidate.asset_meter_id !== meter.asset_meter_id &&
+                            !wouldCreateParentCycle(meter.asset_meter_id, candidate.asset_meter_id)
+                          )
+                          .map((candidate) => (
+                            <option key={candidate.asset_meter_id} value={candidate.asset_meter_id}>
+                              {candidate.meter_code} / {candidate.assignments[0]?.unit?.unit_name || candidate.assignments[0]?.unit?.unit_code || "区画未設定"}
+                            </option>
+                          ))}
+                      </select>
+                    ) : (
+                      <span className="muted-setting">検針値入力時のみ</span>
+                    )}
                   </td>
                   <td><button className="danger-text" onClick={() => void remove(meter)}>削除</button></td>
                 </tr>
@@ -1126,17 +1494,30 @@ function BasicChargeTable({
   contracts: ContractUnit[];
   category: UtilityCategory;
 }) {
+  const eligibleContracts = contracts.filter((row) =>
+    ["office", "warehouse", "storage"].includes(row.unit?.unit_type ?? ""),
+  );
+  const totalAmount = eligibleContracts.reduce(
+    (total, row) =>
+      total + Number(row.basics.find((item) => item.category === category)?.amount ?? 0),
+    0,
+  );
+
   return (
     <DataTable
-      headers={["階数", "区画", "テナント名", "基本料（区画ごと）"]}
-      rows={contracts.filter((row) => ["office", "warehouse", "storage"].includes(row.unit?.unit_type ?? "")).map((row) => [
+      headers={["階数", "区画", "テナント名", "基本料"]}
+      rows={eligibleContracts.map((row) => [
         formatFloor(row.unit?.floor_label),
         row.unit?.unit_name || row.unit?.unit_code || "—",
-        row.contract?.tenant?.tenant_name ?? "—",
+        <TenantNameWithRounding
+          name={row.contract?.tenant?.tenant_name ?? "—"}
+          contracts={[row]}
+        />,
         formatYen(
           row.basics.find((item) => item.category === category)?.amount,
         ),
       ])}
+      totalRow={["合計", "", "", formatYen(totalAmount)]}
     />
   );
 }
@@ -1145,6 +1526,7 @@ function CustomItemTable({
   contracts,
   category,
   lineItemId,
+  unitPriceOverride,
   values,
   saveStates,
   confirmed,
@@ -1158,6 +1540,7 @@ function CustomItemTable({
   contracts: ContractUnit[];
   category: UtilityCategory;
   lineItemId: string | null;
+  unitPriceOverride?: number;
   values: Record<string, string>;
   saveStates: Record<string, SaveState>;
   confirmed: boolean;
@@ -1179,25 +1562,27 @@ function CustomItemTable({
     );
   const tenantKey = (meter: MeterReadingRow) =>
     contractFor(meter)?.contract?.tenant_id ?? `unassigned-${meter.asset_meter_id}`;
-  const meterUsage = (meter: MeterReadingRow) => {
+  const rawMeterUsage = (meter: MeterReadingRow) => {
     const raw = values[meter.asset_meter_id];
     const entered = raw !== undefined && raw !== "" ? Number(raw) : null;
     const previous = Number(meter.entry?.previous_reading ?? 0);
     const rolloverValue = rolloverValues[meter.asset_meter_id];
     const usage = meter.subItem.input_mode === "reading"
       ? entered === null
-        ? Number(meter.entry?.usage_amount ?? 0)
+        ? storedMeterUsage(meter)
         : entered < previous && rolloverValue
           ? rolloverValue - previous + entered
           : entered - previous
-      : entered ?? Number(meter.entry?.usage_amount ?? 0);
+      : entered ?? storedMeterUsage(meter);
     return Number.isFinite(usage) ? usage : 0;
   };
+  const meterUsage = (meter: MeterReadingRow) => adjustedMeterUsage(meter, meters, rawMeterUsage);
   const inputMode = meters[0]?.subItem.input_mode ?? "usage";
   const showReadings = inputMode === "reading";
   const comparisonRatio = (current: number, comparison: number | undefined) =>
     comparison == null || comparison === 0 ? null : (current / comparison) * 100;
   const unitPrice = (meter: MeterReadingRow) => {
+    if (unitPriceOverride != null) return unitPriceOverride;
     const contract = contractFor(meter);
     return (
       contract?.prices.find(
@@ -1223,6 +1608,14 @@ function CustomItemTable({
       left.meter_code.localeCompare(right.meter_code, "ja-JP", { numeric: true })
     );
   });
+  const rankedUnitPrices = Array.from(new Set(
+    orderedMeters.map((meter) => unitPrice(meter)).filter((price): price is number => price != null),
+  )).sort((left, right) => right - left);
+  const unitPriceClass = (price: number | null) => {
+    if (price == null) return "unit-price-unset";
+    const rank = rankedUnitPrices.indexOf(price);
+    return rank >= 0 && rank < 3 ? `unit-price-rank-${rank + 1}` : "";
+  };
   const unitGroups = Array.from(new Map(
     orderedMeters.map((meter) => [unitKey(meter), orderedMeters.filter((row) => unitKey(row) === unitKey(meter))]),
   ).values());
@@ -1243,11 +1636,14 @@ function CustomItemTable({
     return sum + roundUtilityAmount(usage * Number(price), contract.utility_amount_rounding_mode);
   }, 0);
   const totalTenantUsage = tenantGroups.reduce((sum, group) => sum + group.reduce((value, meter) => value + meterUsage(meter), 0), 0);
-  const totalPreviousUsage = orderedMeters.reduce((sum, meter) => sum + (usageHistory.previous[meter.asset_meter_id] ?? 0), 0);
-  const totalPreviousYearUsage = orderedMeters.reduce((sum, meter) => sum + (usageHistory.previousYear[meter.asset_meter_id] ?? 0), 0);
+  const previousUsageFor = (meter: MeterReadingRow) => usageHistory.previous[meter.asset_meter_id] ?? 0;
+  const previousYearUsageFor = (meter: MeterReadingRow) => usageHistory.previousYear[meter.asset_meter_id] ?? 0;
+  const totalPreviousUsage = orderedMeters.reduce((sum, meter) => sum + adjustedMeterUsage(meter, meters, previousUsageFor), 0);
+  const totalPreviousYearUsage = orderedMeters.reduce((sum, meter) => sum + adjustedMeterUsage(meter, meters, previousYearUsageFor), 0);
   const totalPreviousReading = orderedMeters.reduce((sum, meter) => sum + Number(meter.entry?.previous_reading ?? 0), 0);
   const totalCurrentReading = orderedMeters.reduce((sum, meter) => sum + Number(values[meter.asset_meter_id] || meter.entry?.current_reading || 0), 0);
-  const totalDigits = orderedMeters[0]?.subItem.aggregation_decimal_digits ?? 1;
+  const inputTotalDigits = orderedMeters[0]?.subItem.input_decimal_digits ?? 1;
+  const aggregationTotalDigits = orderedMeters[0]?.subItem.aggregation_decimal_digits ?? 1;
   return (
     <div className="table-wrap">
       <ResizableTable className="workspace-data-table" storageKey={`readings-${showReadings ? "reading" : "usage"}`} storageUserId={columnStorageUserId} columnGroups={[
@@ -1344,8 +1740,12 @@ function CustomItemTable({
               );
               return sum + roundUtilityAmount(usage * Number(priceForUnit), unitContract.utility_amount_rounding_mode);
             }, 0);
-            const previousUsage = usageHistory.previous[meter.asset_meter_id];
-            const previousYearUsage = usageHistory.previousYear[meter.asset_meter_id];
+            const previousUsage = usageHistory.previous[meter.asset_meter_id] == null
+              ? undefined
+              : adjustedMeterUsage(meter, meters, previousUsageFor);
+            const previousYearUsage = usageHistory.previousYear[meter.asset_meter_id] == null
+              ? undefined
+              : adjustedMeterUsage(meter, meters, previousYearUsageFor);
             const currentUsage = meterUsage(meter);
             const enteredRaw = values[meter.asset_meter_id];
             const enteredReading = Number(enteredRaw);
@@ -1361,10 +1761,17 @@ function CustomItemTable({
                   </>
                 )}
                 {firstInTenant && (
-                  <td className="tenant-cell tenant-identity" rowSpan={tenantMeters.length}><span className="merged-value">{contract?.contract?.tenant?.tenant_name ?? "—"}</span></td>
+                  <td className="tenant-cell tenant-identity" rowSpan={tenantMeters.length}>
+                    <span className="merged-value">
+                      <TenantNameWithRounding
+                        name={contract?.contract?.tenant?.tenant_name ?? "—"}
+                        contracts={tenantMeters.map((tenantMeter) => contractFor(tenantMeter)).filter((item): item is ContractUnit => Boolean(item))}
+                      />
+                    </span>
+                  </td>
                 )}
-                <td><strong>{meter.meter_code}</strong></td>
-                <td>{formatYen(price)}</td>
+                <td><strong>{meter.parent_meter_id && <span className="child-meter-mark">↳ 子</span>}{meter.meter_code}</strong></td>
+                <td className={`numeric unit-price-cell ${unitPriceClass(price)}`}>{formatYen(price)}</td>
                 {showReadings && (
                   <td className="numeric reading-value">
                     {meter.entry?.previous_reading == null ? "—" : formatUsage(Number(meter.entry.previous_reading), getReadingDecimalDigits(meter.subItem.asset_meter_sub_item_id, meter.subItem.input_decimal_digits))}
@@ -1463,14 +1870,14 @@ function CustomItemTable({
               <th colSpan={4}>合計</th>
               <th>—</th>
               {showReadings && <><th className="numeric">{formatUsage(totalPreviousReading, getReadingDecimalDigits(orderedMeters[0].subItem.asset_meter_sub_item_id, orderedMeters[0].subItem.input_decimal_digits))}</th><th className="numeric">{formatUsage(totalCurrentReading, getReadingDecimalDigits(orderedMeters[0].subItem.asset_meter_sub_item_id, orderedMeters[0].subItem.input_decimal_digits))}</th></>}
-              <th className="numeric">{formatUsage(totalMeterUsage, totalDigits)}</th>
-              <th className="numeric">{formatUsage(totalUnitUsage, totalDigits)}</th>
+              <th className="numeric">{formatUsage(totalMeterUsage, showReadings ? aggregationTotalDigits : inputTotalDigits)}</th>
+              <th className="numeric">{formatUsage(totalUnitUsage, aggregationTotalDigits)}</th>
               <th className="numeric">{formatYen(totalAmount)}</th>
-              <th className="numeric">{formatUsage(totalTenantUsage, totalDigits)}</th>
+              <th className="numeric">{formatUsage(totalTenantUsage, aggregationTotalDigits)}</th>
               <th className="numeric">{formatYen(totalAmount)}</th>
-              <th className="numeric">{formatUsage(totalPreviousUsage, totalDigits)}</th>
+              <th className="numeric">{formatUsage(totalPreviousUsage, aggregationTotalDigits)}</th>
               <th className="numeric">{formatComparison(comparisonRatio(totalMeterUsage, totalPreviousUsage))}</th>
-              <th className="numeric">{formatUsage(totalPreviousYearUsage, totalDigits)}</th>
+              <th className="numeric">{formatUsage(totalPreviousYearUsage, aggregationTotalDigits)}</th>
               <th className="numeric">{formatComparison(comparisonRatio(totalMeterUsage, totalPreviousYearUsage))}</th>
             </tr>
           </tfoot>
@@ -1483,83 +1890,208 @@ function CustomItemTable({
 function formatComparison(value: number | null) {
   return value == null || !Number.isFinite(value) ? "—" : `${value.toFixed(1)}%`;
 }
-function SurchargeTable({
+function SurchargeWorkspace({
+  surcharge,
+  assetId,
+  billingMonth,
+  unit,
   contracts,
   meters,
+  subItems,
 }: {
+  surcharge: MeterSurcharge;
+  assetId: string;
+  billingMonth: string;
+  unit: string;
   contracts: ContractUnit[];
   meters: MeterReadingRow[];
+  subItems: MeterSubItem[];
 }) {
+  const storageKey = `kanameter-surcharge-evidence:${assetId}:${billingMonth}:${surcharge.asset_meter_surcharge_id}`;
+  const storedEvidence = (() => {
+    try {
+      return JSON.parse(localStorage.getItem(storageKey) ?? "{}") as { periodFrom?: string; periodTo?: string; purchaseUsage?: string; purchaseInvoice?: string };
+    } catch {
+      return {};
+    }
+  })();
+  const [periodFrom, setPeriodFrom] = useState(storedEvidence.periodFrom ?? "");
+  const [periodTo, setPeriodTo] = useState(storedEvidence.periodTo ?? "");
+  const [purchaseUsage, setPurchaseUsage] = useState(storedEvidence.purchaseUsage ?? "");
+  const [purchaseInvoice, setPurchaseInvoice] = useState(storedEvidence.purchaseInvoice ?? "");
+  const [evidenceLoaded, setEvidenceLoaded] = useState(false);
+  useEffect(() => {
+    let active = true;
+    void loadSurchargeEvidence(supabase!, assetId, billingMonth, surcharge.asset_meter_surcharge_id)
+      .then((saved) => {
+        if (!active || !saved) return;
+        setPeriodFrom(saved.purchase_period_start ?? "");
+        setPeriodTo(saved.purchase_period_end ?? "");
+        setPurchaseUsage(saved.purchase_usage == null ? "" : String(saved.purchase_usage));
+        setPurchaseInvoice(saved.purchase_amount_inclusive == null ? "" : String(saved.purchase_amount_inclusive));
+      })
+      .catch((reason) => console.error(reason))
+      .finally(() => { if (active) setEvidenceLoaded(true); });
+    return () => { active = false; };
+  }, [assetId, billingMonth, surcharge.asset_meter_surcharge_id]);
+  useEffect(() => {
+    localStorage.setItem(storageKey, JSON.stringify({ periodFrom, periodTo, purchaseUsage, purchaseInvoice }));
+  }, [storageKey, periodFrom, periodTo, purchaseUsage, purchaseInvoice]);
+  const moveToNextEvidenceInput = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    const inputs = Array.from(event.currentTarget.closest("aside")?.querySelectorAll<HTMLInputElement>("input:not(:disabled)") ?? []);
+    const currentIndex = inputs.indexOf(event.currentTarget);
+    inputs[currentIndex + 1]?.focus();
+    inputs[currentIndex + 1]?.select();
+  };
   const eligibleContracts = contracts.filter((row) => ["office", "warehouse", "storage"].includes(row.unit?.unit_type ?? ""));
   const tenantIds = Array.from(new Set(eligibleContracts.map((row) => row.contract?.tenant_id).filter(Boolean))) as string[];
   const subItemIds = Array.from(new Set(meters.map((meter) => meter.subItem.asset_meter_sub_item_id)));
+  const aggregationDigits = Math.max(0, ...meters.map((meter) => meter.subItem.aggregation_decimal_digits));
+  const usageForMeters = (itemMeters: MeterReadingRow[]) => {
+    const first = itemMeters[0];
+    if (!first) return 0;
+    return roundToDigits(
+      itemMeters.reduce((sum, meter) => sum + adjustedMeterUsage(
+        meter,
+        meters,
+        storedMeterUsage,
+      ), 0),
+      first.subItem.aggregation_decimal_digits,
+      first.subItem.usage_rounding_mode,
+    );
+  };
+  const tenantRows = tenantIds.map((tenantId) => {
+    const tenantContracts = eligibleContracts.filter((row) => row.contract?.tenant_id === tenantId);
+    const unitCodes = new Set(tenantContracts.map((row) => row.unit?.unit_code).filter(Boolean));
+    const usage = subItemIds.reduce((total, subItemId) => {
+      const itemMeters = meters.filter((meter) => meter.subItem.asset_meter_sub_item_id === subItemId && unitCodes.has(meter.assignments[0]?.unit?.unit_code));
+      return total + usageForMeters(itemMeters);
+    }, 0);
+    return {
+      tenantContracts,
+      usage,
+    };
+  });
+  const recoveryUsage = tenantRows.reduce((total, row) => total + row.usage, 0);
+  const recoveryAmountExcludingTax = eligibleContracts.reduce((contractTotal, contract) => {
+    const basicAmount = Number(contract.basics.find((row) => row.category === "electric")?.amount ?? 0);
+    const unitCode = contract.unit?.unit_code;
+    const customAmount = subItemIds.reduce((itemTotal, subItemId) => {
+      const item = subItems.find((row) => row.asset_meter_sub_item_id === subItemId);
+      if (!item || !unitCode) return itemTotal;
+      const itemMeters = meters.filter((meter) =>
+        meter.subItem.asset_meter_sub_item_id === subItemId &&
+        meter.assignments[0]?.unit?.unit_code === unitCode
+      );
+      const usage = usageForMeters(itemMeters);
+      const unitPrice = contract.prices.find((row) => row.asset_billing_line_item_id === item.asset_billing_line_item_id)?.unit_price
+        ?? contract.categoryPrices.find((row) => row.category === "electric")?.unit_price;
+      return unitPrice == null
+        ? itemTotal
+        : itemTotal + roundUtilityAmount(usage * Number(unitPrice), contract.utility_amount_rounding_mode);
+    }, 0);
+    return contractTotal + basicAmount + customAmount;
+  }, 0);
+  const recoveryAmountIncludingTax = Math.round(recoveryAmountExcludingTax * 1.1);
+  const purchaseInvoiceValue = purchaseInvoice.trim() === "" ? null : Number(purchaseInvoice);
+  const recoveryShortfall = purchaseInvoiceValue == null || !Number.isFinite(purchaseInvoiceValue)
+    ? null
+    : purchaseInvoiceValue - recoveryAmountIncludingTax;
+  const tenantUnitPriceIncludingTax = recoveryShortfall == null || recoveryUsage === 0
+    ? null
+    : recoveryShortfall / recoveryUsage;
+  const tenantUnitPriceExcludingTax = tenantUnitPriceIncludingTax == null
+    ? null
+    : Math.ceil((tenantUnitPriceIncludingTax / 1.1) * 100) / 100;
+  useEffect(() => {
+    localStorage.setItem(storageKey, JSON.stringify({
+      periodFrom,
+      periodTo,
+      purchaseUsage,
+      purchaseInvoice,
+      unitPrice: tenantUnitPriceExcludingTax,
+    }));
+  }, [periodFrom, periodTo, purchaseInvoice, purchaseUsage, storageKey, tenantUnitPriceExcludingTax]);
+  useEffect(() => {
+    if (!evidenceLoaded || (purchaseUsage.trim() === "" && purchaseInvoice.trim() === "")) return;
+    const timer = window.setTimeout(() => {
+      void saveSurchargeEvidence(supabase!, {
+        assetId,
+        billingMonth,
+        surchargeId: surcharge.asset_meter_surcharge_id,
+        unitPrice: tenantUnitPriceExcludingTax ?? 0,
+        periodStart: periodFrom || null,
+        periodEnd: periodTo || null,
+        purchaseUsage: Number(purchaseUsage || 0),
+        purchaseAmountInclusive: Number(purchaseInvoice || 0),
+      }).catch((reason) => console.error(reason));
+    }, 500);
+    return () => window.clearTimeout(timer);
+  }, [assetId, billingMonth, evidenceLoaded, periodFrom, periodTo, purchaseInvoice, purchaseUsage, surcharge.asset_meter_surcharge_id, tenantUnitPriceExcludingTax]);
+  const rows = tenantRows.map(({ tenantContracts, usage }) => {
+    const amount = tenantUnitPriceExcludingTax == null
+      ? null
+      : roundUtilityAmount(
+          usage * tenantUnitPriceExcludingTax,
+          tenantContracts[0]?.utility_amount_rounding_mode ?? "round",
+        );
+    return [
+      Array.from(new Set(tenantContracts.map((row) => formatFloor(row.unit?.floor_label)))).join("・"),
+      tenantContracts.map((row) => row.unit?.unit_name || row.unit?.unit_code).filter(Boolean).join("・") || "—",
+      <TenantNameWithRounding
+        name={tenantContracts[0]?.contract?.tenant?.tenant_name ?? "—"}
+        contracts={tenantContracts}
+      />,
+      formatUsage(usage, aggregationDigits),
+      amount == null ? "—" : formatYen(amount),
+    ] as ReactNode[];
+  });
+  const totalSurchargeAmount = tenantRows.reduce((total, row) => {
+    if (tenantUnitPriceExcludingTax == null) return total;
+    return total + roundUtilityAmount(
+      row.usage * tenantUnitPriceExcludingTax,
+      row.tenantContracts[0]?.utility_amount_rounding_mode ?? "round",
+    );
+  }, 0);
+
   return (
-    <DataTable
-      headers={["階数", "区画", "テナント名", "使用量（小分類の合計）", "金額"]}
-      rows={tenantIds.map((tenantId) => {
-        const tenantContracts = eligibleContracts.filter((row) => row.contract?.tenant_id === tenantId);
-        const unitCodes = new Set(tenantContracts.map((row) => row.unit?.unit_code).filter(Boolean));
-        const usage = subItemIds.reduce((total, subItemId) => {
-          const itemMeters = meters.filter((meter) => meter.subItem.asset_meter_sub_item_id === subItemId && unitCodes.has(meter.assignments[0]?.unit?.unit_code));
-          const first = itemMeters[0];
-          if (!first) return total;
-          const tenantItemUsage = roundToDigits(
-            itemMeters.reduce((sum, meter) => sum + Number(meter.entry?.usage_amount ?? 0), 0),
-            first.subItem.aggregation_decimal_digits,
-            first.subItem.usage_rounding_mode,
-          );
-          return total + tenantItemUsage;
-        }, 0);
-        return [
-          Array.from(new Set(tenantContracts.map((row) => formatFloor(row.unit?.floor_label)))).join("・"),
-          tenantContracts.map((row) => row.unit?.unit_name || row.unit?.unit_code).filter(Boolean).join("・") || "—",
-          tenantContracts[0]?.contract?.tenant?.tenant_name ?? "—",
-          usage.toLocaleString("ja-JP"),
-          "—",
-        ];
-      })}
-    />
-  );
-}
-function EvidencePanel({
-  surcharge,
-  unit,
-}: {
-  surcharge: MeterSurcharge;
-  unit: string;
-}) {
-  return (
-    <aside className="evidence-panel">
-      <p className="eyebrow">PRICE EVIDENCE</p>
-      <h2>単価計算の根拠</h2>
-      <label>
-        対象期間
-        <div className="period-fields">
-          <input type="date" />
-          <span>〜</span>
-          <input type="date" />
-        </div>
-      </label>
-      <label>
-        仕入請求額（税込）
-        <input type="number" placeholder="0" />
-      </label>
-      <label>
-        仕入使用量（{unit || "単位未設定"}）
-        <input type="number" placeholder="0" />
-      </label>
-      <dl>
-        <div>
-          <dt>小分類合計</dt>
-          <dd>—</dd>
-        </div>
-        <div>
-          <dt>{displaySurchargeName(surcharge.surcharge_name)}単価</dt>
-          <dd>—</dd>
-        </div>
-      </dl>
-      <p>根拠データの保存とDB計算は計算ロジック実装時に接続します。</p>
-    </aside>
+    <>
+      <div className="workspace-table-card">
+        <DataTable
+          headers={["階数", "区画", "テナント名", "使用量", "金額"]}
+          rows={rows}
+          totalRow={["合計", "", "", formatUsage(recoveryUsage, aggregationDigits), tenantUnitPriceExcludingTax == null ? "—" : formatYen(totalSurchargeAmount)]}
+        />
+      </div>
+      <aside className="evidence-panel">
+        <p className="eyebrow">SURCHARGE</p>
+        <h2>{displaySurchargeName(surcharge.surcharge_name)}単価計算</h2>
+        <h3>＜仕入＞</h3>
+        <label>
+          対象期間
+          <div className="period-fields">
+            <input type="date" value={periodFrom} onChange={(event) => setPeriodFrom(event.target.value)} onKeyDown={moveToNextEvidenceInput} />
+            <span>～</span>
+            <input type="date" value={periodTo} onChange={(event) => setPeriodTo(event.target.value)} onKeyDown={moveToNextEvidenceInput} />
+          </div>
+        </label>
+        <label>使用量（{unit || "単位未設定"}）<input type="number" min="0" value={purchaseUsage} onChange={(event) => setPurchaseUsage(event.target.value)} onKeyDown={moveToNextEvidenceInput} placeholder="0" /></label>
+        <label>請求額（税込）<input type="number" min="0" value={purchaseInvoice} onChange={(event) => setPurchaseInvoice(event.target.value)} onKeyDown={moveToNextEvidenceInput} placeholder="0" /></label>
+        <h3>＜回収＞</h3>
+        <dl>
+          <div><dt>使用量</dt><dd>{formatUsage(recoveryUsage, aggregationDigits)} {unit}</dd></div>
+          <div><dt>金額（税抜）</dt><dd>{formatYen(recoveryAmountExcludingTax)}</dd></div>
+          <div><dt>金額（税込）</dt><dd>{formatYen(recoveryAmountIncludingTax)}</dd></div>
+        </dl>
+        <dl className="surcharge-result-list">
+          <div><dt>回収不足分（税込）</dt><dd>{recoveryShortfall == null ? "—" : formatYen(recoveryShortfall)}</dd></div>
+          <div><dt>テナント使用量単価（税込）</dt><dd>{tenantUnitPriceIncludingTax == null ? "—" : `${tenantUnitPriceIncludingTax.toLocaleString("ja-JP", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} 円`}</dd></div>
+          <div><dt>テナント使用量単価（税抜）</dt><dd>{tenantUnitPriceExcludingTax == null ? "—" : `${tenantUnitPriceExcludingTax.toLocaleString("ja-JP", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} 円`}</dd></div>
+        </dl>
+      </aside>
+    </>
   );
 }
 
@@ -1612,12 +2144,48 @@ function formatContractPrices(contract: ContractUnit) {
   return [...itemPrices, ...categoryPrices].join(" / ") || "未設定";
 }
 
+function TenantNameWithRounding({
+  name,
+  contracts,
+}: {
+  name: string;
+  contracts: ContractUnit[];
+}) {
+  const uniqueContracts = Array.from(
+    new Map(contracts.map((contract) => [contract.lease_contract_unit_id, contract])).values(),
+  );
+  const floorContracts = uniqueContracts.filter((contract) => contract.utility_amount_rounding_mode === "floor");
+  const hasMixedRounding = floorContracts.length > 0 && floorContracts.length < uniqueContracts.length;
+  const floorUnitNames = Array.from(new Set(
+    floorContracts.map((contract) => contract.unit?.unit_name || contract.unit?.unit_code).filter(Boolean),
+  ));
+  const badgeText = hasMixedRounding && floorUnitNames.length > 0
+    ? `新（${floorUnitNames.join("・")}）`
+    : "新";
+
+  return (
+    <span className="tenant-name-with-rounding">
+      <span>{name}</span>
+      {floorContracts.length > 0 && (
+        <span
+          className="rounding-badge rounding-floor"
+          title={hasMixedRounding ? `金額の小数点以下を切捨：${floorUnitNames.join("・")}` : "金額の小数点以下：切捨"}
+        >
+          {badgeText}
+        </span>
+      )}
+    </span>
+  );
+}
+
 function DataTable({
   headers,
   rows,
+  totalRow,
 }: {
   headers: string[];
-  rows: Array<Array<string | number>>;
+  rows: ReactNode[][];
+  totalRow?: ReactNode[];
 }) {
   return (
     <div className="table-wrap">
@@ -1650,6 +2218,20 @@ function DataTable({
             </tr>
           )}
         </tbody>
+        {totalRow && rows.length > 0 && (
+          <tfoot>
+            <tr className="table-total-row">
+              {totalRow.map((value, cell) => (
+                <th
+                  key={cell}
+                  className={columnAlignment(headers[cell]) === "amount" ? "numeric" : columnAlignment(headers[cell]) === "tenant" ? "tenant-cell" : ""}
+                >
+                  {value}
+                </th>
+              ))}
+            </tr>
+          </tfoot>
+        )}
       </ResizableTable>
     </div>
   );
@@ -1754,13 +2336,15 @@ function ColumnHeader({ children, textAlign = "center", columnGroup, className =
 function ResizableTable({ children, className, storageKey, columnGroups, storageUserId = "shared" }: { children: ReactNode; className: string; storageKey: string; columnGroups: string[]; storageUserId?: string }) {
   const tableRef = useRef<HTMLTableElement>(null);
   const persistenceKey = `kanameter-column-widths:${storageUserId}:${storageKey}`;
+  const columnSignature = columnGroups.join("|");
   useLayoutEffect(() => {
     const table = tableRef.current;
     if (!table) return;
     try {
       const saved = JSON.parse(localStorage.getItem(persistenceKey) ?? "null") as { groupWidths?: Record<string, number> } | null;
       const columns = Array.from(table.querySelectorAll<HTMLTableColElement>("colgroup col"));
-      const defaultColumnWidth = Math.max(72, table.getBoundingClientRect().width / Math.max(1, columns.length));
+      const availableWidth = Math.max(880, table.parentElement?.getBoundingClientRect().width ?? 0, table.scrollWidth);
+      const defaultColumnWidth = Math.max(72, availableWidth / Math.max(1, columns.length));
       columns.forEach((column) => {
         const group = column.dataset.columnGroup ?? "";
         const width = saved?.groupWidths?.[group] ?? defaultColumnWidth;
@@ -1768,7 +2352,7 @@ function ResizableTable({ children, className, storageKey, columnGroups, storage
       });
       const linkedTableWidth = columns.reduce((sum, column) => sum + (Number.parseFloat(column.style.width) || defaultColumnWidth), 0);
       if (linkedTableWidth) {
-        const width = Math.max(880, linkedTableWidth);
+        const width = Math.max(availableWidth, linkedTableWidth);
         table.style.width = `${width}px`;
         table.style.minWidth = `${width}px`;
         table.style.maxWidth = `${width}px`;
@@ -1776,7 +2360,7 @@ function ResizableTable({ children, className, storageKey, columnGroups, storage
     } catch {
       localStorage.removeItem(persistenceKey);
     }
-  }, [persistenceKey]);
+  }, [persistenceKey, columnSignature]);
   const beginResize = (event: PointerEvent<HTMLTableElement>) => {
     const handle = (event.target as HTMLElement).closest(".column-resizer");
     const header = handle?.parentElement as HTMLTableCellElement | null;

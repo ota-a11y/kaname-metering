@@ -66,6 +66,7 @@ export type ContractUnit = {
 
 export type MeterReadingRow = {
   asset_meter_id: string;
+  parent_meter_id: string | null;
   sort_order: number;
   meter_code: string;
   meter_label: string | null;
@@ -122,6 +123,7 @@ export type MeterSubItem = {
   input_decimal_digits: number;
   aggregation_decimal_digits: number;
   usage_rounding_mode: "floor" | "round" | "ceil";
+  billing_period_pattern_id: string | null;
 };
 
 export type MeterSurcharge = {
@@ -129,4 +131,15 @@ export type MeterSurcharge = {
   category: UtilityCategory;
   surcharge_name: string;
   is_billable: boolean;
+  billing_period_pattern_id: string | null;
+};
+
+export type BillingPeriodPattern = {
+  billing_period_pattern_id: string;
+  start_month_offset: number;
+  start_day_type: string;
+  start_meter_day_offset: number;
+  end_month_offset: number;
+  end_day_type: string;
+  end_meter_day_offset: number;
 };

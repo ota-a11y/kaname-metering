@@ -924,7 +924,7 @@ td ul {
   gap: 18px;
 }
 .workspace-body.with-evidence {
-  grid-template-columns: minmax(0, 1fr) 330px;
+  grid-template-columns: minmax(0, 1fr) 495px;
 }
 .workspace-table-card {
   width: fit-content;
@@ -955,6 +955,48 @@ td ul {
 }
 .workspace-data-table td.tenant-cell { text-align: left; }
 .workspace-data-table td.numeric { text-align: right; }
+.workspace-data-table td.unit-price-cell {
+  font-weight: 700;
+}
+.workspace-data-table td.unit-price-rank-1 {
+  color: #9b1c1c;
+  background: #fde8e8;
+}
+.workspace-data-table td.unit-price-rank-2 {
+  color: #9a4d08;
+  background: #fff0dc;
+}
+.workspace-data-table td.unit-price-rank-3 {
+  color: #765d00;
+  background: #fff8c7;
+}
+.workspace-data-table td.unit-price-unset {
+  color: #7b8581;
+  background: #eef1f0;
+}
+.tenant-name-with-rounding {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.rounding-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 18px;
+  padding: 1px 5px;
+  border: 1px solid;
+  border-radius: 999px;
+  font-size: 9px;
+  font-weight: 800;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+.rounding-floor {
+  color: #a31e59;
+  border-color: #f0a9c8;
+  background: #ffe3ef;
+}
 .column-resizer {
   position: absolute;
   z-index: 2;
@@ -1103,9 +1145,21 @@ td ul {
   margin: 0 0 22px;
   font-size: 18px;
 }
+.evidence-panel h3 {
+  margin: 22px 0 8px;
+  color: #35564e;
+  font-size: 13px;
+}
 .evidence-panel label {
   margin: 16px 0;
 }
+.evidence-period {
+  display: grid;
+  gap: 6px;
+  margin: 16px 0;
+}
+.evidence-period span { color: #65756f; font-size: 11px; font-weight: 700; }
+.evidence-period strong { font-size: 14px; }
 .period-fields {
   display: flex;
   align-items: center;
@@ -1115,9 +1169,13 @@ td ul {
   min-width: 0;
 }
 .evidence-panel dl {
-  margin: 24px 0 16px;
+  margin: 10px 0 16px;
   padding: 14px 0;
   border-block: 1px solid #e3eae7;
+}
+.evidence-panel dl.surcharge-result-list {
+  margin-top: 18px;
+  border-top: 2px solid #bfd2ca;
 }
 .evidence-panel dl div {
   display: flex;
@@ -1280,14 +1338,17 @@ td ul {
 }
 .meter-display-settings {
   display: grid;
-  grid-template-columns: 180px 110px 110px 210px auto;
+  grid-template-columns: 160px 140px 120px 120px 170px auto;
   align-items: end;
-  gap: 16px;
+  gap: 12px;
+  max-width: 990px;
   padding: 14px 26px 18px;
   border-bottom: 1px solid #e4ebe8;
   background: #f7faf8;
 }
 .meter-display-settings label { margin: 0; color: #65756f; font-size: 11px; font-weight: 700; }
+.meter-display-settings label.disabled-setting { color: #9aa49f; }
+.meter-display-settings button { white-space: nowrap; }
 .meter-display-settings input,
 .meter-display-settings select {
   width: 100%;
@@ -1297,6 +1358,12 @@ td ul {
   border: 1px solid #ccd9d4;
   border-radius: 4px;
   background: #fff;
+}
+.meter-display-settings input:disabled {
+  color: #98a39e;
+  border-color: #dbe2df;
+  background: #edf1ef;
+  cursor: not-allowed;
 }
 .meter-settings-table { min-width: 720px; }
 .meter-settings-table th:first-child,
@@ -1314,6 +1381,14 @@ td ul {
 .drag-handle:hover { color: #0d7058; background: #e9f5f0; }
 .drag-handle:active { cursor: grabbing; }
 .meter-settings-table tr.is-dragging { opacity: .42; }
+.muted-setting { color: #89958f; font-size: 11px; white-space: nowrap; }
+.child-meter-mark {
+  display: inline-block;
+  margin-right: 6px;
+  color: #0d7058;
+  font-size: 10px;
+  font-weight: 800;
+}
 .danger-text { border: 0; color: #b33f49; background: transparent; font-size: 12px; }
 .sub-navigation {
   display: flex;
@@ -1346,8 +1421,9 @@ td ul {
 .workspace-view-tabs button.utility-water.active { border-color: #2584c4; color: #176a9f; }
 .workspace-view-tabs button.utility-gas.active { border-color: #c94a43; color: #a63530; }
 .inspection-navigation { display: flex; align-items: center; gap: 18px; min-width: 0; flex: 1; }
-.subitem-period-picker { display: flex; align-items: center; gap: 7px; flex: 0 0 auto; margin: 0; color: #65756f; font-size: 11px; font-weight: 700; }
-.subitem-period-picker select { height: 34px; max-width: 220px; padding: 5px 28px 5px 9px; border: 1px solid #cbd8d3; border-radius: 4px; background: #fff; }
+.subitem-period-display { display: flex; align-items: center; gap: 9px; flex: 0 0 auto; margin: 0 auto 0 clamp(36px, 8vw, 130px); white-space: nowrap; }
+.subitem-period-display span { color: #65756f; font-size: 11px; font-weight: 700; }
+.subitem-period-display strong { color: #26342f; font-size: 13px; }
 .category-tabs { display: flex; align-self: stretch; gap: 2px; flex: 0 0 auto; }
 .category-tabs button {
   padding: 0 14px;
@@ -1361,11 +1437,12 @@ td ul {
 .category-tabs button.utility-electric.active { border-color: #d4a600; color: #795f00; }
 .category-tabs button.utility-water.active { border-color: #2584c4; color: #176a9f; }
 .category-tabs button.utility-gas.active { border-color: #c94a43; color: #a63530; }
-.inspection-navigation .sub-tabs { padding: 0; }
+.inspection-navigation .sub-tabs { flex: 0 1 auto; padding: 0; }
 .current-location { display: flex; align-items: baseline; gap: 9px; min-width: 0; }
 .current-location span { color: #6f807a; font-size: 11px; font-weight: 700; }
 .current-location strong { overflow: hidden; font-size: 15px; text-overflow: ellipsis; white-space: nowrap; }
 .meter-settings-link,
+.unit-price-calculator-link,
 .back-link {
   border: 0;
   color: #0d7058;
@@ -1373,8 +1450,125 @@ td ul {
   font-weight: 700;
   white-space: nowrap;
 }
-.meter-settings-link { padding: 9px 14px; border: 1px solid currentColor; border-radius: 5px; }
+.sub-navigation-actions { display: flex; align-items: center; gap: 8px; }
+.meter-settings-link,
+.unit-price-calculator-link { padding: 9px 14px; border: 1px solid currentColor; border-radius: 5px; }
+.unit-price-calculator-link { color: #176a9f; background: #f2faff; }
 .back-link { padding: 0; margin-bottom: 12px; }
+
+.calculator-modal-backdrop {
+  position: fixed;
+  z-index: 50;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgb(18 32 27 / 42%);
+}
+.calculator-modal {
+  width: min(720px, 100%);
+  max-height: calc(100vh - 48px);
+  overflow: auto;
+  padding: 26px 30px 24px;
+  border: 1px solid #cfdbd6;
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 20px 60px rgb(18 32 27 / 22%);
+}
+.calculator-modal > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  margin-bottom: 18px;
+}
+.calculator-modal h2 { margin: 3px 0 0; font-size: 21px; }
+.calculator-modal-close {
+  width: 34px;
+  height: 34px;
+  border: 0;
+  border-radius: 50%;
+  color: #53645e;
+  background: #edf2f0;
+  font-size: 22px;
+  line-height: 1;
+}
+.calculator-tax-mode {
+  padding: 10px 13px;
+  border-left: 4px solid #2584c4;
+  color: #42534d;
+  background: #edf7fd;
+  font-size: 13px;
+}
+.calculator-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+  margin-top: 22px;
+}
+.calculator-fields label,
+.calculator-result-field {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.calculator-fields label > span,
+.calculator-result-field > span { color: #52635d; font-size: 12px; font-weight: 700; }
+.calculator-fields input,
+.calculator-fields select {
+  height: 42px;
+  padding: 0 12px;
+  border: 1px solid #bccbc5;
+  border-radius: 5px;
+  background: #fff;
+  font-size: 15px;
+}
+.calculator-fields input:focus,
+.calculator-fields select:focus { border-color: #2584c4; outline: 2px solid #d8eefb; }
+.calculator-result-field strong {
+  display: flex;
+  align-items: center;
+  height: 42px;
+  padding: 0 12px;
+  border-radius: 5px;
+  color: #26342f;
+  background: #f0f4f2;
+  font-size: 16px;
+}
+.calculator-unit-price-result {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: end;
+  gap: 5px 20px;
+  margin-top: 24px;
+  padding: 18px 20px;
+  border: 1px solid #9bc6df;
+  border-radius: 7px;
+  background: #f2faff;
+}
+.calculator-unit-price-result span { color: #42534d; font-size: 13px; font-weight: 700; }
+.calculator-unit-price-result strong { color: #176a9f; font-size: 24px; }
+.calculator-unit-price-result small { grid-column: 1 / -1; color: #6c7c76; font-size: 10px; }
+.calculator-unit-price-settings {
+  display: flex;
+  grid-column: 1;
+  align-items: flex-end;
+  gap: 12px;
+  margin-top: 5px;
+}
+.calculator-unit-price-settings label { display: flex; align-items: center; gap: 5px; }
+.calculator-unit-price-settings label > span { color: #697973; font-size: 9px; white-space: nowrap; }
+.calculator-unit-price-settings select {
+  height: 27px;
+  padding: 0 22px 0 7px;
+  border: 1px solid #bdd1dc;
+  border-radius: 4px;
+  color: #41544d;
+  background: #fff;
+  font-size: 10px;
+}
+.calculator-modal footer { display: flex; justify-content: flex-end; margin-top: 22px; }
+.calculator-modal footer button { padding: 9px 20px; border: 1px solid #aebdb7; border-radius: 5px; color: #34463f; background: #fff; font-weight: 700; }
 .main-tabs .utility-electric.active { border-bottom-color: #d4a600; color: #8b6c00; }
 .main-tabs .utility-water.active { border-bottom-color: #2584c4; color: #176a9f; }
 .main-tabs .utility-gas.active { border-bottom-color: #c94a43; color: #a63530; }

@@ -2,6 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type {
   Asset,
   AssetUtilitySetting,
+  BillingPeriodPattern,
   ContractUnit,
   MeterCategorySetting,
   MeterReadingRow,
@@ -10,6 +11,30 @@ import type {
   MeterUnitOption,
   UtilityCategory,
 } from "../types";
+
+const meterParentStorageKey = "kanameter-meter-parent-relations";
+
+function loadStoredMeterParents(): Record<string, string> {
+  try {
+    return JSON.parse(localStorage.getItem(meterParentStorageKey) ?? "{}") as Record<string, string>;
+  } catch {
+    return {};
+  }
+}
+
+export function saveMeterParent(meterId: string, parentMeterId: string | null) {
+  const relations = loadStoredMeterParents();
+  if (parentMeterId) relations[meterId] = parentMeterId;
+  else delete relations[meterId];
+  localStorage.setItem(meterParentStorageKey, JSON.stringify(relations));
+}
+
+function withStoredMeterParent<T extends { asset_meter_id: string }>(meter: T) {
+  return {
+    ...meter,
+    parent_meter_id: loadStoredMeterParents()[meter.asset_meter_id] ?? null,
+  };
+}
 
 function fail(context: string, error: { message: string } | null) {
   if (error) throw new Error(`${context}: ${error.message}`);
@@ -95,6 +120,13 @@ export async function loadMeterReadings(
   category: UtilityCategory,
 ): Promise<{ rows: MeterReadingRow[]; status: "draft" | "confirmed" | null }> {
   const month = `${billingMonth}-01`;
+  const previousMonth = new Date(Date.UTC(
+    Number(billingMonth.slice(0, 4)),
+    Number(billingMonth.slice(5, 7)) - 2,
+    1,
+  ))
+    .toISOString()
+    .slice(0, 10);
   const monthEnd = new Date(Date.UTC(
     Number(billingMonth.slice(0, 4)),
     Number(billingMonth.slice(5, 7)),
@@ -102,7 +134,7 @@ export async function loadMeterReadings(
   ))
     .toISOString()
     .slice(0, 10);
-  const [metersResult, entriesResult, monthResult] = await Promise.all([
+  const [metersResult, entriesResult, previousEntriesResult, monthResult] = await Promise.all([
     client
       .from("asset_meter")
       .select(
@@ -118,6 +150,11 @@ export async function loadMeterReadings(
       .eq("asset_id", assetId)
       .eq("billing_month", month),
     client
+      .from("meter_reading_entry")
+      .select("asset_meter_id, current_reading")
+      .eq("asset_id", assetId)
+      .eq("billing_month", previousMonth),
+    client
       .from("meter_reading_month")
       .select("status")
       .eq("asset_id", assetId)
@@ -126,20 +163,43 @@ export async function loadMeterReadings(
   ]);
   fail("メーターを読み込めませんでした", metersResult.error);
   fail("保存済みの検針値を読み込めませんでした", entriesResult.error);
+  fail("前月の検針値を読み込めませんでした", previousEntriesResult.error);
   fail("対象月の状態を読み込めませんでした", monthResult.error);
   const entries = new Map(
     (entriesResult.data ?? []).map((entry) => [entry.asset_meter_id, entry]),
   );
+  const previousReadings = new Map(
+    (previousEntriesResult.data ?? []).map((entry) => [
+      entry.asset_meter_id,
+      entry.current_reading,
+    ]),
+  );
   return {
-    rows: (metersResult.data ?? []).map((meter) => ({
-      ...meter,
-      assignments: (meter.assignments ?? []).filter(
-        (assignment: { effective_from: string; effective_to: string | null }) =>
-          assignment.effective_from <= monthEnd &&
-          (!assignment.effective_to || assignment.effective_to >= month),
-      ),
-      entry: entries.get(meter.asset_meter_id) ?? null,
-    })) as unknown as MeterReadingRow[],
+    rows: (metersResult.data ?? []).map((meter) => {
+      const currentEntry = entries.get(meter.asset_meter_id);
+      const previousReading = previousReadings.get(meter.asset_meter_id);
+      return withStoredMeterParent({
+        ...meter,
+        assignments: (meter.assignments ?? []).filter(
+          (assignment: { effective_from: string; effective_to: string | null }) =>
+            assignment.effective_from <= monthEnd &&
+            (!assignment.effective_to || assignment.effective_to >= month),
+        ),
+        entry: currentEntry
+          ? {
+              ...currentEntry,
+              previous_reading: previousReading ?? null,
+            }
+          : previousReading == null
+            ? null
+            : {
+                asset_meter_id: meter.asset_meter_id,
+                usage_amount: null,
+                previous_reading: previousReading,
+                current_reading: null,
+              },
+      });
+    }) as unknown as MeterReadingRow[],
     status:
       (monthResult.data?.status as "draft" | "confirmed" | undefined) ?? null,
   };
@@ -201,7 +261,7 @@ export async function loadMeterManagement(
   fail("メーター設定を読み込めませんでした", meters.error);
   fail("区画を読み込めませんでした", units.error);
   return {
-    meters: (meters.data ?? []) as unknown as MeterReadingRow[],
+    meters: (meters.data ?? []).map((meter) => withStoredMeterParent(meter)) as unknown as MeterReadingRow[],
     units: (units.data ?? []) as MeterUnitOption[],
   };
 }
@@ -328,6 +388,49 @@ export async function saveMeterReadingDate(
   fail("検針日を保存できませんでした", error);
 }
 
+export async function loadSurchargeEvidence(
+  client: SupabaseClient,
+  assetId: string,
+  billingMonth: string,
+  surchargeId: string,
+) {
+  const { data, error } = await client
+    .from("meter_reading_month_surcharge")
+    .select("unit_price, purchase_period_start, purchase_period_end, purchase_usage, purchase_amount_inclusive")
+    .eq("asset_id", assetId)
+    .eq("billing_month", `${billingMonth}-01`)
+    .eq("asset_meter_surcharge_id", surchargeId)
+    .maybeSingle();
+  fail("増額分の仕入データを読み込めませんでした", error);
+  return data as { unit_price: number | null; purchase_period_start: string | null; purchase_period_end: string | null; purchase_usage: number | null; purchase_amount_inclusive: number | null } | null;
+}
+
+export async function saveSurchargeEvidence(
+  client: SupabaseClient,
+  values: {
+    assetId: string;
+    billingMonth: string;
+    surchargeId: string;
+    unitPrice: number;
+    periodStart: string | null;
+    periodEnd: string | null;
+    purchaseUsage: number;
+    purchaseAmountInclusive: number;
+  },
+) {
+  const { error } = await client.from("meter_reading_month_surcharge").upsert({
+    asset_id: values.assetId,
+    billing_month: `${values.billingMonth}-01`,
+    asset_meter_surcharge_id: values.surchargeId,
+    unit_price: values.unitPrice,
+    purchase_period_start: values.periodStart,
+    purchase_period_end: values.periodEnd,
+    purchase_usage: values.purchaseUsage,
+    purchase_amount_inclusive: values.purchaseAmountInclusive,
+  }, { onConflict: "asset_id,billing_month,asset_meter_surcharge_id" });
+  fail("増額分の仕入データを保存できませんでした", error);
+}
+
 export async function loadMeteringConfiguration(
   client: SupabaseClient,
   assetId: string,
@@ -335,8 +438,9 @@ export async function loadMeteringConfiguration(
   categories: MeterCategorySetting[];
   subItems: MeterSubItem[];
   surcharges: MeterSurcharge[];
+  periodPatterns: BillingPeriodPattern[];
 }> {
-  const [categories, subItems, surcharges] = await Promise.all([
+  const [categories, subItems, surcharges, periodPatterns] = await Promise.all([
     client
       .from("asset_meter_category_setting")
       .select("category, usage_unit, is_billable, is_basic_billable")
@@ -345,23 +449,29 @@ export async function loadMeteringConfiguration(
     client
       .from("asset_meter_sub_item")
       .select(
-        "asset_meter_sub_item_id, category, sub_item_name, sub_item_kind, asset_billing_line_item_id, sort_order, input_mode, input_decimal_digits, aggregation_decimal_digits, usage_rounding_mode",
+        "asset_meter_sub_item_id, category, sub_item_name, sub_item_kind, asset_billing_line_item_id, sort_order, input_mode, input_decimal_digits, aggregation_decimal_digits, usage_rounding_mode, billing_period_pattern_id",
       )
       .eq("asset_id", assetId)
       .order("sort_order"),
     client
       .from("asset_meter_surcharge")
-      .select("asset_meter_surcharge_id, category, surcharge_name, is_billable")
+      .select("asset_meter_surcharge_id, category, surcharge_name, is_billable, billing_period_pattern_id")
       .eq("asset_id", assetId)
       .order("created_at"),
+    client
+      .from("asset_billing_period_pattern")
+      .select("billing_period_pattern_id, start_month_offset, start_day_type, start_meter_day_offset, end_month_offset, end_day_type, end_meter_day_offset")
+      .eq("asset_id", assetId),
   ]);
   fail("請求対象の分類設定を読み込めませんでした", categories.error);
   fail("小分類を読み込めませんでした", subItems.error);
   fail("増額分設定を読み込めませんでした", surcharges.error);
+  fail("請求期間パターンを読み込めませんでした", periodPatterns.error);
   return {
     categories: (categories.data ?? []) as MeterCategorySetting[],
     subItems: (subItems.data ?? []) as MeterSubItem[],
     surcharges: (surcharges.data ?? []) as MeterSurcharge[],
+    periodPatterns: (periodPatterns.data ?? []) as BillingPeriodPattern[],
   };
 }
 
