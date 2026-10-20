@@ -44,7 +44,7 @@ export async function loadContractUnits(
   client: SupabaseClient,
   assetId: string,
 ): Promise<ContractUnit[]> {
-  const [contracts, order] = await Promise.all([
+  const [contracts, order, meterBilling] = await Promise.all([
     client
       .from("lease_contract_unit")
       .select(
@@ -56,13 +56,21 @@ export async function loadContractUnits(
       .from("asset_billing_tenant_order")
       .select("tenant_id, sort_order")
       .eq("asset_id", assetId),
+    client
+      .from("meter_reading_contract")
+      .select("meter_reading_contract_id, tenant_id, electric_billable, water_billable, gas_billable")
+      .eq("asset_id", assetId),
   ]);
   fail("契約ごとの公共料金設定を読み込めませんでした", contracts.error);
   fail("テナントの並び順を読み込めませんでした", order.error);
+  fail("テナントの請求設定を読み込めませんでした", meterBilling.error);
   const rank = new Map(
     (order.data ?? []).map((row) => [row.tenant_id, row.sort_order]),
   );
   const rows = (contracts.data ?? []) as unknown as ContractUnit[];
+  for (const row of rows) {
+    row.meterBilling = (meterBilling.data ?? []).filter((setting) => setting.tenant_id === row.contract?.tenant_id);
+  }
   return rows.sort(
     (left, right) =>
       (rank.get(left.contract?.tenant_id ?? "") ?? Number.MAX_SAFE_INTEGER) -
@@ -135,6 +143,38 @@ export async function loadMeterReadings(
     status:
       (monthResult.data?.status as "draft" | "confirmed" | undefined) ?? null,
   };
+}
+
+export async function loadMeterUsageHistory(
+  client: SupabaseClient,
+  assetId: string,
+  billingMonth: string,
+): Promise<{
+  previous: Record<string, number>;
+  previousYear: Record<string, number>;
+}> {
+  const year = Number(billingMonth.slice(0, 4));
+  const monthIndex = Number(billingMonth.slice(5, 7)) - 1;
+  const previousMonth = new Date(Date.UTC(year, monthIndex - 1, 1))
+    .toISOString()
+    .slice(0, 10);
+  const previousYearMonth = new Date(Date.UTC(year - 1, monthIndex, 1))
+    .toISOString()
+    .slice(0, 10);
+  const { data, error } = await client
+    .from("meter_reading_entry")
+    .select("asset_meter_id, billing_month, usage_amount")
+    .eq("asset_id", assetId)
+    .in("billing_month", [previousMonth, previousYearMonth]);
+  fail("比較用の検針値を読み込めませんでした", error);
+
+  const previous: Record<string, number> = {};
+  const previousYear: Record<string, number> = {};
+  for (const row of data ?? []) {
+    const target = row.billing_month === previousMonth ? previous : previousYear;
+    target[row.asset_meter_id] = Number(row.usage_amount ?? 0);
+  }
+  return { previous, previousYear };
 }
 
 export async function loadMeterManagement(
@@ -259,6 +299,22 @@ export async function loadMeterReadingPeriod(
   };
 }
 
+export async function loadAvailableMeterReadingMonths(
+  client: SupabaseClient,
+  assetId: string,
+): Promise<Array<{ billingMonth: string; meterDate: string | null }>> {
+  const { data, error } = await client
+    .from("meter_reading_month")
+    .select("billing_month, meter_date")
+    .eq("asset_id", assetId)
+    .order("billing_month", { ascending: false });
+  fail("KANAMEの対象期間を読み込めませんでした", error);
+  return (data ?? []).map((row) => ({
+    billingMonth: String(row.billing_month).slice(0, 7),
+    meterDate: row.meter_date ?? null,
+  }));
+}
+
 export async function saveMeterReadingDate(
   client: SupabaseClient,
   assetId: string,
@@ -315,6 +371,7 @@ export async function saveMeterReading(
   billingMonth: string,
   meterId: string,
   value: number,
+  usageOverride?: number,
 ) {
   const { data, error } = await client.rpc("save_kanameter_reading", {
     p_asset_id: assetId,
@@ -323,13 +380,24 @@ export async function saveMeterReading(
     p_value: value,
   });
   fail("検針値を保存できませんでした", error);
-  return data?.[0] as {
+  const saved = data?.[0] as {
     usage_amount: number;
     previous_reading: number | null;
     current_reading: number | null;
     month_status: "draft";
     saved_at: string;
   };
+  if (usageOverride !== undefined) {
+    const { error: overrideError } = await client
+      .from("meter_reading_entry")
+      .update({ usage_amount: usageOverride })
+      .eq("asset_id", assetId)
+      .eq("billing_month", `${billingMonth}-01`)
+      .eq("asset_meter_id", meterId);
+    fail("一周補正後の使用量を保存できませんでした", overrideError);
+    saved.usage_amount = usageOverride;
+  }
+  return saved;
 }
 
 export async function confirmMeterReadingMonth(

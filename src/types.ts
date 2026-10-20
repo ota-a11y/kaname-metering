@@ -56,6 +56,12 @@ export type ContractUnit = {
     amount: number;
     tax_mode: TaxMode;
   }>;
+  meterBilling: Array<{
+    meter_reading_contract_id: string;
+    electric_billable: boolean;
+    water_billable: boolean;
+    gas_billable: boolean;
+  }>;
 };
 
 export type MeterReadingRow = {

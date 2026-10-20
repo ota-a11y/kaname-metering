@@ -638,6 +638,7 @@ td ul {
   grid-template-columns: 200px minmax(0, 1fr);
   background: #f5f7f6;
 }
+.workspace-shell.sidebar-unpinned { grid-template-columns: 0 minmax(0, 1fr); }
 .building-sidebar {
   position: sticky;
   top: 0;
@@ -646,14 +647,40 @@ td ul {
   height: 100vh;
   color: #dce9e5;
   background: #0b352c;
+  width: 200px;
+  z-index: 10;
+  transition: width .18s ease, box-shadow .18s ease;
 }
+.sidebar-unpinned .building-sidebar { position: fixed; left: -194px; width: 200px; overflow: hidden; }
+.sidebar-unpinned .building-sidebar:hover,
+.sidebar-unpinned .building-sidebar:focus-within { left: 0; box-shadow: 8px 0 22px rgb(10 38 31 / 20%); }
 .sidebar-brand {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 11px;
   padding: 26px 23px 22px;
   border-bottom: 1px solid #244e44;
 }
+.sidebar-pin {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: grid;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  place-items: center;
+  border: 0;
+  border-radius: 4px;
+  color: #6e9d91;
+  background: transparent;
+  font-size: 8px;
+}
+.sidebar-pin svg { width: 14px; height: 14px; fill: currentColor; transform: rotate(-38deg); }
+.sidebar-pin.active svg { transform: none; }
+.sidebar-pin:hover { color: #b9eee0; background: #16483d; }
+.sidebar-pin.active { color: #8de0c5; }
 .sidebar-brand > span {
   display: grid;
   width: 35px;
@@ -816,11 +843,24 @@ td ul {
   background: #fff;
   font-size: 14px;
 }
-.building-picker select { width: min(330px, 34vw); padding: 7px 32px 7px 11px; }
+.building-picker select { width: min(165px, 17vw); padding: 7px 32px 7px 11px; }
 .month-picker input {
   width: 172px;
   padding: 7px 11px;
 }
+.month-control { display: flex; align-items: center; gap: 5px; }
+.month-arrow {
+  display: grid;
+  width: 26px;
+  height: 38px;
+  padding: 0;
+  place-items: center;
+  border: 0;
+  color: #537169;
+  background: transparent;
+  font-size: 11px;
+}
+.month-arrow:hover { color: #0d7058; background: #e9f5f0; }
 .meter-date-picker input { width: 150px; padding: 7px 9px; }
 .meter-period { display: grid; gap: 3px; min-width: 205px; }
 .meter-period span { color: #62736d; font-size: 11px; font-weight: 700; }
@@ -947,6 +987,32 @@ td ul {
   padding: 5px 10px;
   text-align: right;
 }
+.rollover-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 5px;
+  color: #a33b27;
+  font-size: 10px;
+  line-height: 1.35;
+  text-align: left;
+}
+.rollover-notice.resolved { color: #17755e; }
+.rollover-notice button {
+  flex: 0 0 auto;
+  padding: 3px 7px;
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  color: inherit;
+  background: #fff;
+  font: inherit;
+  cursor: pointer;
+}
+.rollover-notice button:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
 .input-with-state small {
   min-height: 15px;
   text-align: right;
@@ -1015,6 +1081,16 @@ td ul {
   display: inline-block;
 }
 .workspace-data-table tbody tr { height: 48px; }
+.workspace-data-table tfoot th,
+.summary-billing-table tfoot th {
+  padding: 13px 14px;
+  border-top: 2px solid #94a9a2;
+  color: #24362f;
+  background: #edf3f0;
+  font-weight: 700;
+}
+.workspace-data-table tfoot th.numeric,
+.summary-billing-table .numeric { text-align: right; }
 .utility-electric .workspace-data-table .reading-input { color: #17221f; border-color: #dec65e; background: #fffdf1; }
 .utility-water .workspace-data-table .reading-input { color: #17221f; border-color: #8dc3e4; background: #f2faff; }
 .utility-gas .workspace-data-table .reading-input { color: #17221f; border-color: #e0a09c; background: #fff6f5; }
@@ -1061,9 +1137,7 @@ td ul {
   font-size: 11px;
   line-height: 1.7;
 }
-.summary-view {
-  padding-top: 28px;
-}
+.summary-view { padding-top: 18px; }
 .summary-title h1 {
   margin: 0 0 20px;
   font-size: 25px;
@@ -1097,6 +1171,31 @@ td ul {
   margin: 8px 0;
   font-size: 20px;
 }
+.summary-billing-table {
+  max-width: 100%;
+  margin-top: 18px;
+  border: 1px solid #dce5e1;
+  background: #fff;
+}
+.summary-billing-table table { min-width: 900px; table-layout: fixed; }
+.summary-billing-table th {
+  position: relative;
+  text-align: center;
+}
+.summary-billing-table td { vertical-align: middle; }
+.summary-billing-table td.summary-unit-cell { text-align: center; }
+.summary-billing-table td.summary-disabled-cell {
+  color: #9aa39f;
+  background: #f1f3f2;
+}
+.summary-billing-table th.summary-category { color: #fff; font-size: 13px; }
+.summary-billing-table th.summary-category.utility-electric { background: #b28c00; }
+.summary-billing-table th.summary-category.utility-water { background: #257dac; }
+.summary-billing-table th.summary-category.utility-gas { background: #b84943; }
+.summary-billing-table th.summary-subhead.utility-electric { color: #715800; background: #fff3b5; }
+.summary-billing-table th.summary-subhead.utility-water { color: #17658e; background: #ddf1fc; }
+.summary-billing-table th.summary-subhead.utility-gas { color: #96332e; background: #fae3e1; }
+.summary-billing-table th.summary-surcharge { color: #715800; background: #fff8d8; }
 .summary-placeholder {
   margin-top: 18px;
   padding: 27px;
@@ -1226,6 +1325,43 @@ td ul {
   box-sizing: border-box;
 }
 .sub-navigation .sub-tabs { min-width: 0; flex: 1; }
+.workspace-view-tabs {
+  display: flex;
+  height: 50px;
+  gap: 2px;
+  border-bottom: 1px solid #d9e2de;
+}
+.workspace-view-tabs button {
+  min-width: 72px;
+  padding: 0 14px;
+  border: 0;
+  border-bottom: 3px solid transparent;
+  color: #65756f;
+  background: transparent;
+  font-weight: 700;
+}
+.workspace-view-tabs button:disabled { color: #b5bfbb; cursor: default; }
+.workspace-view-tabs button.active { border-color: #168168; color: #0d7058; }
+.workspace-view-tabs button.utility-electric.active { border-color: #d4a600; color: #795f00; }
+.workspace-view-tabs button.utility-water.active { border-color: #2584c4; color: #176a9f; }
+.workspace-view-tabs button.utility-gas.active { border-color: #c94a43; color: #a63530; }
+.inspection-navigation { display: flex; align-items: center; gap: 18px; min-width: 0; flex: 1; }
+.subitem-period-picker { display: flex; align-items: center; gap: 7px; flex: 0 0 auto; margin: 0; color: #65756f; font-size: 11px; font-weight: 700; }
+.subitem-period-picker select { height: 34px; max-width: 220px; padding: 5px 28px 5px 9px; border: 1px solid #cbd8d3; border-radius: 4px; background: #fff; }
+.category-tabs { display: flex; align-self: stretch; gap: 2px; flex: 0 0 auto; }
+.category-tabs button {
+  padding: 0 14px;
+  border: 0;
+  border-bottom: 3px solid transparent;
+  color: #65756f;
+  background: transparent;
+  font-weight: 700;
+}
+.category-tabs button:disabled { color: #b5bfbb; cursor: default; }
+.category-tabs button.utility-electric.active { border-color: #d4a600; color: #795f00; }
+.category-tabs button.utility-water.active { border-color: #2584c4; color: #176a9f; }
+.category-tabs button.utility-gas.active { border-color: #c94a43; color: #a63530; }
+.inspection-navigation .sub-tabs { padding: 0; }
 .current-location { display: flex; align-items: baseline; gap: 9px; min-width: 0; }
 .current-location span { color: #6f807a; font-size: 11px; font-weight: 700; }
 .current-location strong { overflow: hidden; font-size: 15px; text-overflow: ellipsis; white-space: nowrap; }
@@ -1288,6 +1424,9 @@ td ul {
   .workspace-selectors { align-items: stretch; flex-direction: column; gap: 10px; }
   .building-picker, .month-picker, .meter-date-picker { justify-content: space-between; }
   .building-picker select { width: min(100%, 420px); }
+  .inspection-navigation { align-items: stretch; flex-direction: column; gap: 8px; }
+  .category-tabs { min-height: 42px; overflow-x: auto; }
+  .sub-navigation { height: auto; align-items: flex-end; }
   .confirm-area {
     justify-content: space-between;
   }
