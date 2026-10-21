@@ -813,6 +813,45 @@ td ul {
   min-width: 0;
   padding: 0 clamp(36px, 5vw, 80px) 70px;
 }
+.workspace-legend {
+  margin-top: 28px;
+  padding-top: 14px;
+  border-top: 1px solid #d9e2de;
+  color: #62736d;
+  font-size: 12px;
+}
+.meter-configuration-panel { display: grid; gap: 14px; }
+.configuration-category { padding: 14px; border: 1px solid #d6e1dd; border-radius: 8px; background: #fff; }
+.configuration-category.utility-electric { border-color: #d9b84a; background: #fff9df; }
+.configuration-category.utility-water { border-color: #72b4dc; background: #eaf6fd; }
+.configuration-category.utility-gas { border-color: #df817a; background: #fff0ee; }
+.configuration-category > header { display: flex; align-items: center; gap: 14px; margin-bottom: 12px; }
+.configuration-category-header { flex-wrap: wrap; }
+.configuration-category > header > strong { min-width: 42px; }
+.configuration-category > header label { display: flex; align-items: center; gap: 7px; margin: 0; }
+.configuration-category > header input:not([type="checkbox"]) { width: 86px; padding: 7px 9px; }
+.configuration-category > header input:not([type="checkbox"]),
+.configuration-category > header select { box-sizing: border-box; height: 34px; padding: 7px 9px; }
+.configuration-category-header .price-setting-label { flex-wrap: nowrap; white-space: nowrap; }
+.configuration-category-header .checkbox-label + .price-setting-label { margin-left: 12px; }
+.configuration-category .text-button { margin-left: auto; border: 0; color: #a43c32; background: transparent; text-decoration: underline; }
+.checkbox-label input { width: auto; }
+.configuration-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.configuration-table th, .configuration-table td { padding: 8px; border-bottom: 1px solid #e2e9e6; text-align: center; }
+.configuration-table td.align-left { text-align: left; }
+.configuration-table th { color: #5d716a; background: #eef4f1; }
+.configuration-table input:not([type="checkbox"]), .configuration-table select { min-width: 110px; padding: 7px 8px; font-size: 12px; }
+.configuration-table input:disabled { color: #89938f; background: #e1e5e3; cursor: not-allowed; }
+.resizable-configuration-table { table-layout: fixed; }
+.resizable-configuration-table th { position: relative; }
+.resizable-configuration-table td select,
+.resizable-configuration-table td input:not([type="checkbox"]) { width: 100%; min-width: 0; }
+.resizable-configuration-table td:not(.align-left) select,
+.resizable-configuration-table td:not(.align-left) input:not([type="checkbox"]) { text-align: center; text-align-last: center; }
+.resizable-configuration-table td.align-left select { text-align: left; text-align-last: left; }
+.configuration-table input[type="checkbox"] { width: auto; }
+.surcharge-setting-row { background: #fff9e8; }
+.danger-link { border: 0; color: #b34a40; background: transparent; font-size: 11px; }
 .workspace-top {
   display: flex;
   align-items: center;
@@ -1281,7 +1320,7 @@ td ul {
 .settings-placeholder p {
   color: #7a8883;
 }
-.system-settings { padding-top: 0; }
+.building-settings { padding-top: 0; }
 .settings-tabs {
   display: flex;
   gap: 7px;

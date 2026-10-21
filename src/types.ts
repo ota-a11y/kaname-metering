@@ -22,6 +22,7 @@ export type AssetUtilitySetting = {
   price_scope: "line_item" | "category";
   default_unit_price: number | null;
   default_tax_mode: TaxMode;
+  show_in_rent_roll: boolean;
 };
 export type ContractUnit = {
   lease_contract_unit_id: string;
@@ -58,9 +59,16 @@ export type ContractUnit = {
   }>;
   meterBilling: Array<{
     meter_reading_contract_id: string;
+    row_no: number;
+    split_label: string | null;
     electric_billable: boolean;
     water_billable: boolean;
     gas_billable: boolean;
+    electric_sum_mode: "aggregate" | "perMeter";
+    water_sum_mode: "aggregate" | "perMeter";
+    gas_sum_mode: "aggregate" | "perMeter";
+    amount_rounding_mode: "floor" | "round" | "ceil";
+    units: Array<{ unit_id: string }>;
   }>;
 };
 
@@ -124,6 +132,11 @@ export type MeterSubItem = {
   aggregation_decimal_digits: number;
   usage_rounding_mode: "floor" | "round" | "ceil";
   billing_period_pattern_id: string | null;
+  price_mode: "fixed" | "variable";
+  default_unit_price: number | null;
+  tax_mode: TaxMode;
+  tax_rounding_mode: "floor" | "round" | "ceil";
+  show_unit_price_on_invoice: boolean;
 };
 
 export type MeterSurcharge = {
@@ -132,6 +145,7 @@ export type MeterSurcharge = {
   surcharge_name: string;
   is_billable: boolean;
   billing_period_pattern_id: string | null;
+  asset_billing_line_item_id: string | null;
 };
 
 export type BillingPeriodPattern = {
@@ -142,4 +156,11 @@ export type BillingPeriodPattern = {
   end_month_offset: number;
   end_day_type: string;
   end_meter_day_offset: number;
+  pattern_name?: string;
+};
+
+export type BillingLineItem = {
+  asset_billing_line_item_id: string;
+  line_item_name: string;
+  display_name: string | null;
 };
