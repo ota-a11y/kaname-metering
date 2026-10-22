@@ -814,6 +814,9 @@ td ul {
   padding: 0 clamp(36px, 5vw, 80px) 70px;
 }
 .workspace-legend {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   margin-top: 28px;
   padding-top: 14px;
   border-top: 1px solid #d9e2de;
@@ -974,6 +977,8 @@ td ul {
   background: transparent;
 }
 .workspace-table-card > .table-wrap { width: fit-content; max-width: 100%; background: #fff; }
+.workspace-table-card > .table-wrap { scrollbar-width: none; }
+.workspace-table-card > .table-wrap::-webkit-scrollbar { width: 0; height: 0; }
 .workspace-data-table {
   width: 100%;
   min-width: 880px;

@@ -378,13 +378,14 @@ export async function createMeter(
   meterCode: string,
   unitId: string | null,
 ) {
-  const { error } = await client.rpc("create_kanameter_meter", {
+  const { data, error } = await client.rpc("create_kanameter_meter", {
     p_asset_id: assetId,
     p_asset_meter_sub_item_id: subItemId,
     p_meter_code: meterCode,
     p_unit_id: unitId,
   });
   fail("メーターを追加できませんでした", error);
+  return data as string;
 }
 
 export async function assignMeterUnit(

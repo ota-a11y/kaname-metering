@@ -164,13 +164,13 @@ function currentMeterUsage(
   return Number.isFinite(usage) ? usage : 0;
 }
 
-function billingPeriodText(
+function billingPeriodRange(
   billingMonth: string,
   pattern: BillingPeriodPattern | undefined,
   currentMeterDate: string | null | undefined,
   previousMeterDate: string | null | undefined,
 ) {
-  if (!pattern) return "期間未設定";
+  if (!pattern) return null;
   const [year, month] = billingMonth.split("-").map(Number);
   const edge = (monthOffset: number, dayType: string, meterOffset: number) => {
     if (dayType === "meter") {
@@ -190,12 +190,21 @@ function billingPeriodText(
     date.setDate(day);
     return date;
   };
-  const format = (date: Date | null) => date
-    ? `${date.getFullYear()}/${date.getMonth() + 1}/${date.getDate()}`
-    : "";
-  const start = format(edge(pattern.start_month_offset, pattern.start_day_type, pattern.start_meter_day_offset ?? 0));
-  const end = format(edge(pattern.end_month_offset, pattern.end_day_type, pattern.end_meter_day_offset ?? 0));
-  return start && end ? `${start}～${end}` : "期間未確定";
+  const start = edge(pattern.start_month_offset, pattern.start_day_type, pattern.start_meter_day_offset ?? 0);
+  const end = edge(pattern.end_month_offset, pattern.end_day_type, pattern.end_meter_day_offset ?? 0);
+  return start && end ? { start, end } : null;
+}
+
+function billingPeriodText(
+  billingMonth: string,
+  pattern: BillingPeriodPattern | undefined,
+  currentMeterDate: string | null | undefined,
+  previousMeterDate: string | null | undefined,
+) {
+  if (!pattern) return "期間未設定";
+  const range = billingPeriodRange(billingMonth, pattern, currentMeterDate, previousMeterDate);
+  const format = (date: Date) => `${date.getFullYear()}/${date.getMonth() + 1}/${date.getDate()}`;
+  return range ? `${format(range.start)}～${format(range.end)}` : "期間未確定";
 }
 
 export function KanameterWorkspacePage({
@@ -586,9 +595,17 @@ export function KanameterWorkspacePage({
     const previousDate = billingPeriods.find((period) => period.billingMonth === previousMonth)?.meterDate;
     return billingPeriodText(month, selectedPeriodPattern, currentDate, previousDate);
   };
+  const selectedBillingPeriod = billingPeriodRange(billingMonth, selectedPeriodPattern, meterDate, previousMeterDate);
+  const fallbackPeriodEnd = new Date(Number(billingMonth.slice(0, 4)), Number(billingMonth.slice(5, 7)), 0);
+  const contractDate = selectedBillingPeriod?.end ?? fallbackPeriodEnd;
+  const contractReferenceDate = `${contractDate.getFullYear()}-${String(contractDate.getMonth() + 1).padStart(2, "0")}-${String(contractDate.getDate()).padStart(2, "0")}`;
+  const periodContracts = contracts.filter((contract) =>
+    (!contract.contract?.contract_start_date || contract.contract.contract_start_date <= contractReferenceDate) &&
+    (!contract.contract?.contract_end_date || contract.contract.contract_end_date >= contractReferenceDate),
+  );
   const billableCategoryContracts = activeCategory
-    ? contracts.filter((contract) => isContractCategoryBillable(contract, activeCategory))
-    : contracts;
+    ? periodContracts.filter((contract) => isContractCategoryBillable(contract, activeCategory))
+    : periodContracts;
   const selectedUnitPriceTaxMode: TaxMode = selectedSubItem
     ? billableCategoryContracts.flatMap((contract) => [
         ...contract.prices.filter((price) => price.asset_billing_line_item_id === selectedSubItem.asset_billing_line_item_id),
@@ -1028,7 +1045,7 @@ export function KanameterWorkspacePage({
           </>
         )}
         <footer className="workspace-legend">
-          新・・・新契約書（小数点以下を切り捨て）
+          <span className="rounding-badge rounding-floor">新</span><span>・・・新契約書（小数点以下を切り捨て）</span>
         </footer>
       </main>
       {rolloverConfirmationOpen && rolloverCandidates.length > 0 && (
@@ -1658,7 +1675,16 @@ function SettingsView({
     setSaving(true);
     onError("");
     try {
-      await createMeter(supabase!, assetId, subItemId, meterCode, unitId === rateSourceUnitValue ? null : unitId);
+      const newMeterId = await createMeter(supabase!, assetId, subItemId, meterCode, unitId === rateSourceUnitValue ? null : unitId);
+      const existingMeterIds = orderedMeters
+        .filter((meter) => meter.subItem.asset_meter_sub_item_id === subItemId)
+        .map((meter) => meter.asset_meter_id);
+      await reorderMeters(
+        supabase!,
+        assetId,
+        subItemId,
+        unitId === rateSourceUnitValue ? [newMeterId, ...existingMeterIds] : [...existingMeterIds, newMeterId],
+      );
       await onChanged();
       setMeterCode("");
       onNotice("メーターを追加しました。");
