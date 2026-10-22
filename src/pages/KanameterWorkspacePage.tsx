@@ -195,7 +195,7 @@ function buildConfirmedMeterAmounts({
           (sum, contract) => sum + Number(contract.basics.find((item) => item.category === category)?.amount ?? 0),
           0,
         );
-        if (amount) rows.push({
+        rows.push({
           ...shared,
           category,
           source_kind: "subItem",
@@ -233,7 +233,6 @@ function buildConfirmedMeterAmounts({
           amountRoundingFor(representative),
         );
         categoryUsage += calculation.usage;
-        if (!calculation.amount) continue;
         const prices = Array.from(new Set(chargeRows.map((row) => row.price).filter((price): price is number => price != null)));
         const taxModes = Array.from(new Set(chargeRows.map((row) => row.taxMode)));
         rows.push({
@@ -260,7 +259,7 @@ function buildConfirmedMeterAmounts({
       const surchargeAmount = surcharge && surchargePrice != null
         ? roundUtilityAmount(categoryUsage * surchargePrice, amountRoundingFor(representative))
         : 0;
-      if (surcharge && surchargeAmount) rows.push({
+      if (surcharge) rows.push({
         ...shared,
         category,
         source_kind: "surcharge",
