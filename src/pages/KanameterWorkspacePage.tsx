@@ -2103,61 +2103,60 @@ function CustomItemTable({
                 )}
                 <td>
                   <div className="input-with-state">
-                    <input
-                      className="reading-input"
-                      inputMode="decimal"
-                      disabled={confirmed}
-                      value={values[meter.asset_meter_id] ?? ""}
-                      onChange={(event) => {
-                        setValidatedMeterIds((current) => {
-                          if (!current.has(meter.asset_meter_id)) return current;
-                          const next = new Set(current);
-                          next.delete(meter.asset_meter_id);
-                          return next;
-                        });
-                        onChange(meter, event.target.value);
-                      }}
-                      onBlur={() => setValidatedMeterIds((current) => new Set(current).add(meter.asset_meter_id))}
-                      onKeyDown={(event) => {
-                        if (event.key !== "Enter") return;
-                        event.preventDefault();
-                        const inputs = Array.from(
-                          event.currentTarget
-                            .closest("table")
-                            ?.querySelectorAll<HTMLInputElement>("input.reading-input:not(:disabled)") ?? [],
-                        );
-                        const currentIndex = inputs.indexOf(event.currentTarget);
-                        inputs[currentIndex + 1]?.focus();
-                        inputs[currentIndex + 1]?.select();
-                      }}
-                    />
+                    <div className="reading-input-actions">
+                      <input
+                        className="reading-input"
+                        inputMode="decimal"
+                        disabled={confirmed}
+                        value={values[meter.asset_meter_id] ?? ""}
+                        onChange={(event) => {
+                          setValidatedMeterIds((current) => {
+                            if (!current.has(meter.asset_meter_id)) return current;
+                            const next = new Set(current);
+                            next.delete(meter.asset_meter_id);
+                            return next;
+                          });
+                          onChange(meter, event.target.value);
+                        }}
+                        onBlur={() => setValidatedMeterIds((current) => new Set(current).add(meter.asset_meter_id))}
+                        onKeyDown={(event) => {
+                          if (event.key !== "Enter") return;
+                          event.preventDefault();
+                          const inputs = Array.from(
+                            event.currentTarget
+                              .closest("table")
+                              ?.querySelectorAll<HTMLInputElement>("input.reading-input:not(:disabled)") ?? [],
+                          );
+                          const currentIndex = inputs.indexOf(event.currentTarget);
+                          inputs[currentIndex + 1]?.focus();
+                          inputs[currentIndex + 1]?.select();
+                        }}
+                      />
+                      {rolloverCandidate && validatedMeterIds.has(meter.asset_meter_id) && <button
+                        type="button"
+                        className="rollover-action"
+                        disabled={confirmed}
+                        onClick={() => {
+                          if (rolloverValue) {
+                            onRollover(meter, null);
+                            return;
+                          }
+                          const suggestedDigits = Math.max(1, String(Math.trunc(previousReading)).replace("-", "").length);
+                          const suggestedValue = 10 ** suggestedDigits;
+                          const answer = window.prompt("一周する値を入力してください（例：4桁メーターは10000）", String(suggestedValue));
+                          if (answer == null) return;
+                          const nextValue = Number(answer.replace(/,/g, ""));
+                          if (!Number.isFinite(nextValue) || nextValue <= previousReading || nextValue <= enteredReading) {
+                            window.alert("一周する値は、前月値と当月値より大きい数値を入力してください。");
+                            return;
+                          }
+                          onRollover(meter, nextValue);
+                        }}
+                      >{rolloverValue ? "一周処理を解除" : "一周として処理"}</button>}
+                    </div>
                     {state === "error" && <span className="save-error" title="保存エラー" />}
                     {rolloverCandidate && validatedMeterIds.has(meter.asset_meter_id) && (
-                      <div className={`rollover-notice ${rolloverValue ? "resolved" : ""}`}>
-                        <span>{rolloverValue ? `一周処理済み（${rolloverValue.toLocaleString("ja-JP")}）` : "当月値が前月値を下回っています"}</span>
-                        <button
-                          type="button"
-                          disabled={confirmed}
-                          onClick={() => {
-                            if (rolloverValue) {
-                              onRollover(meter, null);
-                              return;
-                            }
-                            const suggestedDigits = Math.max(1, String(Math.trunc(previousReading)).replace("-", "").length);
-                            const suggestedValue = 10 ** suggestedDigits;
-                            const answer = window.prompt("一周する値を入力してください（例：4桁メーターは10000）", String(suggestedValue));
-                            if (answer == null) return;
-                            const nextValue = Number(answer.replace(/,/g, ""));
-                            if (!Number.isFinite(nextValue) || nextValue <= previousReading || nextValue <= enteredReading) {
-                              window.alert("一周する値は、前月値と当月値より大きい数値を入力してください。");
-                              return;
-                            }
-                            onRollover(meter, nextValue);
-                          }}
-                        >
-                          {rolloverValue ? "一周処理を解除" : "一周として処理"}
-                        </button>
-                      </div>
+                      <div className={`rollover-notice ${rolloverValue ? "resolved" : ""}`}>{rolloverValue ? `一周処理済み（${rolloverValue.toLocaleString("ja-JP")}）` : "当月値が前月値を下回っています"}</div>
                     )}
                   </div>
                 </td>

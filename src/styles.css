@@ -1066,44 +1066,42 @@ td ul {
   min-width: 0;
 }
 .input-with-state .reading-input {
-  width: 100%;
+  flex: 1 1 auto;
+  width: auto;
   height: 36px;
   min-width: 0;
   padding: 5px 10px;
   text-align: right;
 }
-.rollover-notice {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 5px;
-  width: 100%;
+.reading-input-actions { display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0; }
+.rollover-action {
+  flex: 0 0 auto;
+  padding: 3px 7px;
+  border: 1px solid #a33b27;
+  border-radius: 4px;
   color: #a33b27;
+  background: #fff;
+  font-size: 10px;
+  line-height: 1.35;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.rollover-action:disabled { cursor: default; opacity: .5; }
+.input-with-state:has(.rollover-notice.resolved) .rollover-action { border-color: #17755e; color: #17755e; }
+.rollover-notice {
+  position: relative;
+  z-index: 2;
+  width: max-content;
+  max-width: none;
+  padding-right: 5px;
+  color: #a33b27;
+  background: #fff;
   font-size: 10px;
   line-height: 1.35;
   text-align: left;
-}
-.rollover-notice span {
-  display: block;
-  width: 100%;
-  word-break: normal;
-  overflow-wrap: anywhere;
+  white-space: nowrap;
 }
 .rollover-notice.resolved { color: #17755e; }
-.rollover-notice button {
-  flex: 0 0 auto;
-  padding: 3px 7px;
-  border: 1px solid currentColor;
-  border-radius: 4px;
-  color: inherit;
-  background: #fff;
-  font: inherit;
-  cursor: pointer;
-}
-.rollover-notice button:disabled {
-  cursor: default;
-  opacity: 0.5;
-}
 .input-with-state small {
   min-height: 15px;
   text-align: right;
