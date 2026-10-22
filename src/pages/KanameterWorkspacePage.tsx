@@ -1725,8 +1725,8 @@ function SettingsView({
                   <td><strong>{meter.parent_meter_id && <span className="child-meter-mark">↳ 子</span>}{meter.meter_code}</strong></td>
                   <td>
                     <select value={meter.is_rate_source ? rateSourceUnitValue : assignment?.unit_id ?? ""} onChange={(event) => void changeUnit(meter.asset_meter_id, event.target.value)}>
-                      <option value="" disabled>区画を選択</option>
                       <option value={rateSourceUnitValue}>大元メーター</option>
+                      <option value="" disabled>区画を選択</option>
                       {sortedUnits.map((unit) => (
                         <option key={unit.unit_id} value={unit.unit_id}>
                           {unitOptionLabel(unit)}
