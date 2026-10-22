@@ -616,6 +616,7 @@ export function KanameterWorkspacePage({
   const fallbackPeriodEnd = new Date(Number(billingMonth.slice(0, 4)), Number(billingMonth.slice(5, 7)), 0);
   const contractDate = mainTab === "summary" ? fallbackPeriodEnd : selectedBillingPeriod?.end ?? fallbackPeriodEnd;
   const contractReferenceDate = `${contractDate.getFullYear()}-${String(contractDate.getMonth() + 1).padStart(2, "0")}-${String(contractDate.getDate()).padStart(2, "0")}`;
+  const kanameContractOrder = new Map(contracts.map((contract, index) => [contract.lease_contract_unit_id, index]));
   const matchingPeriodContracts = contracts
     .filter((contract) =>
       (!contract.contract?.contract_start_date || contract.contract.contract_start_date <= contractReferenceDate) &&
@@ -629,7 +630,11 @@ export function KanameterWorkspacePage({
     const unitKey = `${contract.unit?.floor_label ?? ""}\u0000${contract.unit?.unit_code.trim().toLowerCase() ?? contract.lease_contract_unit_id}`;
     if (!latestContractByUnit.has(unitKey)) latestContractByUnit.set(unitKey, contract);
   }
-  const periodContracts = Array.from(latestContractByUnit.values());
+  const periodContracts = Array.from(latestContractByUnit.values()).sort(
+    (left, right) =>
+      (kanameContractOrder.get(left.lease_contract_unit_id) ?? Number.MAX_SAFE_INTEGER) -
+      (kanameContractOrder.get(right.lease_contract_unit_id) ?? Number.MAX_SAFE_INTEGER),
+  );
   const billableCategoryContracts = activeCategory
     ? periodContracts.filter((contract) => isContractCategoryBillable(contract, activeCategory))
     : periodContracts;
@@ -1464,7 +1469,9 @@ function SummaryView({
   unitPriceCalculations: Record<string, MeterUnitPriceCalculation>;
   columnStorageUserId: string;
 }) {
-  const eligibleContracts = contracts.filter((row) => (row.unit?.unit_type ?? "").toLowerCase() !== "parking");
+  const eligibleContracts = contracts.filter((row) =>
+    ["office", "warehouse", "storage"].includes((row.unit?.unit_type ?? "").toLowerCase()),
+  );
   const categoryColumns = categories.map((category) => {
     const setting = categorySettings.find((row) => row.category === category);
     const basic = setting?.is_basic_billable ? subItems.find((item) => item.category === category && item.sub_item_kind === "basic") : undefined;
