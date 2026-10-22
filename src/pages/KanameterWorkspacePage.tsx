@@ -63,11 +63,6 @@ const labels: Record<UtilityCategory, string> = {
   gas: "ガス",
 };
 const currentMonth = new Date().toISOString().slice(0, 7);
-function addMonths(month: string, offset: number) {
-  const [year, monthNumber] = month.split("-").map(Number);
-  const result = new Date(Date.UTC(year, monthNumber - 1 + offset, 1));
-  return `${result.getUTCFullYear()}-${String(result.getUTCMonth() + 1).padStart(2, "0")}`;
-}
 type MainTab = "summary" | UtilityCategory | "buildingSettings";
 type SaveState = "idle" | "saving" | "saved" | "error";
 type SumMode = "aggregate" | "perMeter";
@@ -1027,8 +1022,8 @@ export function KanameterWorkspacePage({
           }}
           onSaveTariff={async (name, taxRate, tiers) => {
             await saveNextUtilityTariffVersion(supabase!, assetId, billingMonth, name, taxRate, tiers);
-            const nextMonth = addMonths(billingMonth, 1);
-            setNotice(`${nextMonth}から適用する料金表を保存しました。`);
+            setNotice(`${billingMonth}請求分から適用する料金表を保存しました。`);
+            setUtilityTariff(await loadUtilityTariff(supabase!, assetId, billingMonth));
           }}
           onClose={() => setUnitPriceCalculatorOpen(false)}
         />
@@ -1234,9 +1229,9 @@ function VariableUnitPriceCalculator({
                 </>}
               </div>
               {editingTariff ? <div className="tariff-edit-actions">
-                <span>{addMonths(billingMonth, 1)}から適用されます。</span>
+                <span>{billingMonth}請求分から適用されます。</span>
                 <button type="button" onClick={() => setEditingTariff(false)}>キャンセル</button>
-                <button type="button" className="primary" disabled={tariffSaving} onClick={() => void saveTariff()}>{tariffSaving ? "保存中…" : "翌月から適用"}</button>
+                <button type="button" className="primary" disabled={tariffSaving} onClick={() => void saveTariff()}>{tariffSaving ? "保存中…" : `${billingMonth}請求分から適用`}</button>
               </div> : <small>適用期間：{tariffDefinition?.effective_from ?? "2019-11-01"} ～ {tariffDefinition?.effective_to ?? "現在"}</small>}
             </details>
           </div>
