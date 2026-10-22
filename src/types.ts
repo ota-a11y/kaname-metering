@@ -75,6 +75,7 @@ export type ContractUnit = {
 export type MeterReadingRow = {
   asset_meter_id: string;
   parent_meter_id: string | null;
+  is_rate_source: boolean;
   sort_order: number;
   meter_code: string;
   meter_label: string | null;
@@ -111,6 +112,7 @@ export type MeterUnitOption = {
   unit_code: string;
   unit_name: string | null;
   floor_label: string | null;
+  unit_type: "office" | "warehouse" | "storage";
 };
 
 export type MeterCategorySetting = {
@@ -132,11 +134,26 @@ export type MeterSubItem = {
   aggregation_decimal_digits: number;
   usage_rounding_mode: "floor" | "round" | "ceil";
   billing_period_pattern_id: string | null;
-  price_mode: "fixed" | "variable";
+  price_mode: "fixed" | "amount" | "master_meter";
   default_unit_price: number | null;
   tax_mode: TaxMode;
   tax_rounding_mode: "floor" | "round" | "ceil";
   show_unit_price_on_invoice: boolean;
+};
+
+export type MeterUnitPriceCalculation = {
+  asset_meter_sub_item_id: string;
+  unit_price: number | null;
+  billed_inclusive: number | null;
+  billed_tax: number | null;
+  billed_exclusive: number | null;
+  billed_usage: number | null;
+  rate_source_meter_id: string | null;
+  tariff_code: string | null;
+  water_inclusive: number | null;
+  sewer_inclusive: number | null;
+  unit_price_rounding_digits: number;
+  unit_price_rounding_mode: "floor" | "round" | "ceil";
 };
 
 export type MeterSurcharge = {
@@ -163,4 +180,7 @@ export type BillingLineItem = {
   asset_billing_line_item_id: string;
   line_item_name: string;
   display_name: string | null;
+  utility_category: UtilityCategory | null;
+  charge_type_name: string;
+  is_surcharge: boolean;
 };

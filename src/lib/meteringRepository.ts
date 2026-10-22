@@ -9,31 +9,62 @@ import type {
   MeterReadingRow,
   MeterSubItem,
   MeterSurcharge,
+  MeterUnitPriceCalculation,
   MeterUnitOption,
   UtilityCategory,
 } from "../types";
 
-const meterParentStorageKey = "kanameter-meter-parent-relations";
-
-function loadStoredMeterParents(): Record<string, string> {
-  try {
-    return JSON.parse(localStorage.getItem(meterParentStorageKey) ?? "{}") as Record<string, string>;
-  } catch {
-    return {};
-  }
+export async function loadMeterUnitPriceCalculations(
+  client: SupabaseClient,
+  assetId: string,
+  billingMonth: string,
+): Promise<MeterUnitPriceCalculation[]> {
+  const { data, error } = await client
+    .from("meter_reading_month_sub_item")
+    .select("asset_meter_sub_item_id, unit_price, billed_inclusive, billed_tax, billed_exclusive, billed_usage, rate_source_meter_id, tariff_code, water_inclusive, sewer_inclusive, unit_price_rounding_digits, unit_price_rounding_mode")
+    .eq("asset_id", assetId)
+    .eq("billing_month", `${billingMonth}-01`);
+  fail("月次単価計算を読み込めませんでした", error);
+  return (data ?? []) as MeterUnitPriceCalculation[];
 }
 
-export function saveMeterParent(meterId: string, parentMeterId: string | null) {
-  const relations = loadStoredMeterParents();
-  if (parentMeterId) relations[meterId] = parentMeterId;
-  else delete relations[meterId];
-  localStorage.setItem(meterParentStorageKey, JSON.stringify(relations));
+export async function saveMeterUnitPriceCalculation(
+  client: SupabaseClient,
+  assetId: string,
+  billingMonth: string,
+  calculation: MeterUnitPriceCalculation,
+) {
+  const month = `${billingMonth}-01`;
+  const monthResult = await client.from("meter_reading_month").upsert(
+    { asset_id: assetId, billing_month: month },
+    { onConflict: "asset_id,billing_month" },
+  );
+  fail("月次検針データを準備できませんでした", monthResult.error);
+  const { error } = await client.from("meter_reading_month_sub_item").upsert({
+    asset_id: assetId,
+    billing_month: month,
+    ...calculation,
+  }, { onConflict: "asset_id,billing_month,asset_meter_sub_item_id" });
+  fail("月次単価計算を保存できませんでした", error);
 }
 
-function withStoredMeterParent<T extends { asset_meter_id: string }>(meter: T) {
+export async function saveMeterParent(
+  client: SupabaseClient,
+  meterId: string,
+  parentMeterId: string | null,
+) {
+  const { error } = await client
+    .from("asset_meter")
+    .update({ parent_asset_meter_id: parentMeterId })
+    .eq("asset_meter_id", meterId);
+  fail("親メーター設定を保存できませんでした", error);
+}
+
+function withDatabaseMeterParent<T extends { asset_meter_id: string; parent_asset_meter_id?: string | null }>(meter: T) {
+  const { parent_asset_meter_id: parentMeterId, ...rest } = meter;
   return {
-    ...meter,
-    parent_meter_id: loadStoredMeterParents()[meter.asset_meter_id] ?? null,
+    ...rest,
+    parent_meter_id: parentMeterId ?? null,
   };
 }
 
@@ -158,7 +189,7 @@ export async function loadMeterReadings(
     client
       .from("asset_meter")
       .select(
-        `asset_meter_id, sort_order, meter_code, meter_label, subItem:asset_meter_sub_item!inner(asset_meter_sub_item_id, category, sub_item_name, input_mode, input_decimal_digits, aggregation_decimal_digits, usage_rounding_mode), assignments:asset_meter_unit_assignment(asset_meter_unit_assignment_id, unit_id, effective_from, effective_to, unit:unit_master(unit_id, unit_code, unit_name, floor_label))`,
+        `asset_meter_id, parent_asset_meter_id, is_rate_source, sort_order, meter_code, meter_label, subItem:asset_meter_sub_item!inner(asset_meter_sub_item_id, category, sub_item_name, input_mode, input_decimal_digits, aggregation_decimal_digits, usage_rounding_mode), assignments:asset_meter_unit_assignment(asset_meter_unit_assignment_id, unit_id, effective_from, effective_to, unit:unit_master(unit_id, unit_code, unit_name, floor_label))`,
       )
       .eq("asset_id", assetId)
       .eq("is_active", true)
@@ -198,7 +229,7 @@ export async function loadMeterReadings(
     rows: (metersResult.data ?? []).map((meter) => {
       const currentEntry = entries.get(meter.asset_meter_id);
       const previousReading = previousReadings.get(meter.asset_meter_id);
-      return withStoredMeterParent({
+      return withDatabaseMeterParent({
         ...meter,
         assignments: (meter.assignments ?? []).filter(
           (assignment: { effective_from: string; effective_to: string | null }) =>
@@ -265,23 +296,24 @@ export async function loadMeterManagement(
     client
       .from("asset_meter")
       .select(
-        `asset_meter_id, sort_order, meter_code, meter_label, subItem:asset_meter_sub_item!inner(asset_meter_sub_item_id, category, sub_item_name, input_mode, input_decimal_digits, aggregation_decimal_digits, usage_rounding_mode), assignments:asset_meter_unit_assignment(asset_meter_unit_assignment_id, unit_id, effective_from, effective_to, unit:unit_master(unit_id, unit_code, unit_name, floor_label))`,
+        `asset_meter_id, parent_asset_meter_id, is_rate_source, sort_order, meter_code, meter_label, subItem:asset_meter_sub_item!inner(asset_meter_sub_item_id, category, sub_item_name, input_mode, input_decimal_digits, aggregation_decimal_digits, usage_rounding_mode), assignments:asset_meter_unit_assignment(asset_meter_unit_assignment_id, unit_id, effective_from, effective_to, unit:unit_master(unit_id, unit_code, unit_name, floor_label))`,
       )
       .eq("asset_id", assetId)
       .eq("is_active", true)
       .order("sort_order"),
     client
       .from("unit_master")
-      .select("unit_id, unit_code, unit_name, floor_label")
+      .select("unit_id, unit_code, unit_name, floor_label, unit_type")
       .eq("property_id", assetId)
       .eq("is_active", true)
+      .in("unit_type", ["office", "warehouse", "storage"])
       .order("floor_label")
       .order("unit_code"),
   ]);
   fail("メーター設定を読み込めませんでした", meters.error);
   fail("区画を読み込めませんでした", units.error);
   return {
-    meters: (meters.data ?? []).map((meter) => withStoredMeterParent(meter)) as unknown as MeterReadingRow[],
+    meters: (meters.data ?? []).map((meter) => withDatabaseMeterParent(meter)) as unknown as MeterReadingRow[],
     units: (units.data ?? []) as MeterUnitOption[],
   };
 }
@@ -291,7 +323,7 @@ export async function createMeter(
   assetId: string,
   subItemId: string,
   meterCode: string,
-  unitId: string,
+  unitId: string | null,
 ) {
   const { error } = await client.rpc("create_kanameter_meter", {
     p_asset_id: assetId,
@@ -305,7 +337,7 @@ export async function createMeter(
 export async function assignMeterUnit(
   client: SupabaseClient,
   meterId: string,
-  unitId: string,
+  unitId: string | null,
 ) {
   const { error } = await client.rpc("assign_kanameter_meter_unit", {
     p_asset_meter_id: meterId,
@@ -460,6 +492,11 @@ export async function loadMeteringConfiguration(
   surcharges: MeterSurcharge[];
   periodPatterns: BillingPeriodPattern[];
 }> {
+  const defaultCategories: MeterCategorySetting[] = [
+    { category: "electric", usage_unit: "kWh", is_billable: true, is_basic_billable: false },
+    { category: "water", usage_unit: "m³", is_billable: true, is_basic_billable: false },
+    { category: "gas", usage_unit: "m³", is_billable: true, is_basic_billable: false },
+  ];
   const defaultPeriods = [
     { pattern_name: "前月分", start_month_offset: -1, start_day_type: "first", start_meter_day_offset: 0, end_month_offset: -1, end_day_type: "last", end_meter_day_offset: 0, sort_order: 0 },
     { pattern_name: "当月分", start_month_offset: 0, start_day_type: "first", start_meter_day_offset: 0, end_month_offset: 0, end_day_type: "last", end_meter_day_offset: 0, sort_order: 1 },
@@ -478,6 +515,40 @@ export async function loadMeteringConfiguration(
     fail("既存の請求期間パターンを削除できませんでした", removed.error);
     const created = await client.from("asset_billing_period_pattern").insert(defaultPeriods.map((row) => ({ ...row, asset_id: assetId })));
     fail("既定の請求期間パターンを作成できませんでした", created.error);
+  }
+  const currentCategories = await client
+    .from("asset_meter_category_setting")
+    .select("category")
+    .eq("asset_id", assetId);
+  fail("請求対象の分類設定を確認できませんでした", currentCategories.error);
+  const configuredCategories = new Set(
+    (currentCategories.data ?? []).map((row) => row.category),
+  );
+  const missingCategories = defaultCategories.filter(
+    (row) => !configuredCategories.has(row.category),
+  );
+  if (missingCategories.length) {
+    const created = await client.from("asset_meter_category_setting").insert(
+      missingCategories.map((row) => ({ ...row, asset_id: assetId })),
+    );
+    fail("既定の分類設定を作成できませんでした", created.error);
+  }
+  const currentSurcharges = await client
+    .from("asset_meter_surcharge")
+    .select("asset_meter_surcharge_id")
+    .eq("asset_id", assetId)
+    .eq("category", "electric")
+    .eq("surcharge_name", "増額分")
+    .limit(1);
+  fail("増額分設定を確認できませんでした", currentSurcharges.error);
+  if (!currentSurcharges.data?.length) {
+    const created = await client.from("asset_meter_surcharge").insert({
+      asset_id: assetId,
+      category: "electric",
+      surcharge_name: "増額分",
+      is_billable: false,
+    });
+    fail("既定の増額分設定を作成できませんでした", created.error);
   }
   const [categories, subItems, surcharges, periodPatterns] = await Promise.all([
     client
@@ -517,11 +588,31 @@ export async function loadMeteringConfiguration(
 export async function loadBillingLineItems(client: SupabaseClient, assetId: string): Promise<BillingLineItem[]> {
   const { data, error } = await client
     .from("asset_billing_line_item")
-    .select("asset_billing_line_item_id, line_item_name, display_name")
+    .select("asset_billing_line_item_id, line_item_name, display_name, charge:billing_charge_type!inner(charge_type_name, utility_kind)")
     .eq("asset_id", assetId)
+    .eq("is_active", true)
     .order("sort_order");
   fail("請求明細項目を読み込めませんでした", error);
-  return (data ?? []) as BillingLineItem[];
+  return (data ?? []).map((row) => {
+    const charge = Array.isArray(row.charge) ? row.charge[0] : row.charge;
+    const utilityKind = charge?.utility_kind;
+    const isSurcharge = charge?.charge_type_name === "電気代増額分";
+    const utilityCategory = isSurcharge || utilityKind === "electricity" || charge?.charge_type_name === "電気代"
+      ? "electric"
+      : utilityKind === "water" || charge?.charge_type_name === "水道代"
+        ? "water"
+        : utilityKind === "gas" || charge?.charge_type_name === "ガス代"
+          ? "gas"
+          : null;
+    return {
+      asset_billing_line_item_id: row.asset_billing_line_item_id,
+      line_item_name: row.line_item_name,
+      display_name: row.display_name,
+      utility_category: utilityCategory,
+      charge_type_name: charge?.charge_type_name ?? "",
+      is_surcharge: Boolean(isSurcharge),
+    } as BillingLineItem;
+  });
 }
 
 export async function saveMeteringSettings(
