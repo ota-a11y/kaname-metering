@@ -2823,13 +2823,17 @@ function BuildingSettingsView({
   const updateSurcharge = (id: string, patch: Partial<MeterSurcharge>) =>
     setDraftSurcharges((current) => current.map((row) => row.asset_meter_surcharge_id === id ? { ...row, ...patch } : row));
   const addSubItem = (category: UtilityCategory) => setDraftSubItems((current) => [...current, {
-    asset_meter_sub_item_id: crypto.randomUUID(), category, sub_item_name: "新しい小分類", sub_item_kind: "custom",
+    asset_meter_sub_item_id: crypto.randomUUID(), category, sub_item_name: "", sub_item_kind: "custom",
     asset_billing_line_item_id: null, sort_order: current.filter((row) => row.category === category).length,
     input_mode: "usage", input_decimal_digits: 1, aggregation_decimal_digits: 1, usage_rounding_mode: "round",
     billing_period_pattern_id: null, price_mode: "fixed", default_unit_price: null, tax_mode: "exclusive",
     tax_rounding_mode: "floor", show_unit_price_on_invoice: true,
   }]);
   const save = async () => {
+    if (draftSubItems.some((item) => !item.sub_item_name.trim())) {
+      onError("小分類名を入力してください。");
+      return;
+    }
     setSaving(true); onError("");
     try {
       const removed = subItems.filter((row) => !draftSubItems.some((next) => next.asset_meter_sub_item_id === row.asset_meter_sub_item_id)).map((row) => row.asset_meter_sub_item_id);
@@ -2869,7 +2873,9 @@ function BuildingSettingsView({
               <header className="configuration-category-header"><strong>{labels[category]}</strong><label>使用量の単位<input value={setting.usage_unit} onChange={(event) => updateCategory(category, { usage_unit: event.target.value })} /></label><label className="checkbox-label"><input type="checkbox" checked={setting.is_basic_billable} onChange={(event) => updateBasicBillable(category, event.target.checked)} />基本料を請求する</label><label className="price-setting-label">既定単価設定<select value={utilitySetting.price_scope} onChange={(event) => updateUtilitySetting(category, { price_scope: event.target.value as AssetUtilitySetting["price_scope"] })}><option value="category">共通して設定</option><option value="line_item">小分類ごとに設定</option></select></label>{usesSharedPrice && <label className="price-setting-label">共通単価<input type="number" min="0" step="0.0001" value={utilitySetting.default_unit_price ?? ""} onChange={(event) => updateUtilitySetting(category, { default_unit_price: event.target.value === "" ? null : Number(event.target.value) })} /></label>}<label className="checkbox-label"><input type="checkbox" checked={utilitySetting.show_in_rent_roll} onChange={(event) => updateUtilitySetting(category, { show_in_rent_roll: event.target.checked })} />単価をレントロールに表示</label><button type="button" className="text-button" onClick={() => addSubItem(category)}>小分類を追加</button></header>
               <div className="table-wrap"><ResizableTable className="configuration-table resizable-configuration-table" storageKey={`building-settings:${assetId}:meter-configuration`} storageUserId={columnStorageUserId} columnGroups={["subitem", "line-item", "price-mode", "default-price", "invoice-price", "tax-mode", "tax-rounding", "billing-period", "actions"]}><thead><tr><ColumnHeader columnGroup="subitem">小分類</ColumnHeader><ColumnHeader columnGroup="line-item">請求明細の項目</ColumnHeader><ColumnHeader columnGroup="price-mode">単価計算方法</ColumnHeader><ColumnHeader columnGroup="default-price">既定単価</ColumnHeader><ColumnHeader columnGroup="invoice-price">請求書に単価を表示</ColumnHeader><ColumnHeader columnGroup="tax-mode">税区分</ColumnHeader><ColumnHeader columnGroup="tax-rounding">税込単価の税抜換算</ColumnHeader><ColumnHeader columnGroup="billing-period">既定の請求期間</ColumnHeader><ColumnHeader columnGroup="actions" /></tr></thead><tbody>
                 {items.map((item) => <tr key={item.asset_meter_sub_item_id}>
-                  <td><input value={item.sub_item_name} disabled={item.sub_item_kind === "basic"} onChange={(event) => updateSubItem(item.asset_meter_sub_item_id, { sub_item_name: event.target.value })} /></td>
+                  <td>{item.sub_item_kind === "basic"
+                    ? <strong>{item.sub_item_name}</strong>
+                    : <input value={item.sub_item_name} placeholder="新しい小分類" onChange={(event) => updateSubItem(item.asset_meter_sub_item_id, { sub_item_name: event.target.value })} />}</td>
                   <td className="align-left"><select value={item.asset_billing_line_item_id ?? ""} onChange={(event) => updateSubItem(item.asset_meter_sub_item_id, { asset_billing_line_item_id: event.target.value || null })}><option value="">未設定</option>{categoryLineItems.map((line) => <option key={line.asset_billing_line_item_id} value={line.asset_billing_line_item_id}>{line.display_name || line.line_item_name}</option>)}</select></td>
                   <td>{item.sub_item_kind === "basic" ? "—" : <select value={item.price_mode} onChange={(event) => updateSubItem(item.asset_meter_sub_item_id, { price_mode: event.target.value as MeterSubItem["price_mode"] })}><option value="fixed">固定</option><option value="amount">金額から計算</option><option value="master_meter">大元メーターから計算</option></select>}</td>
                   <td><input type="number" min="0" step="0.0001" disabled={item.sub_item_kind === "basic" || usesSharedPrice} value={item.default_unit_price ?? ""} onChange={(event) => updateSubItem(item.asset_meter_sub_item_id, { default_unit_price: event.target.value === "" ? null : Number(event.target.value) })} /></td>
