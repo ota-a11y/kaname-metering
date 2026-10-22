@@ -1073,35 +1073,7 @@ td ul {
   padding: 5px 10px;
   text-align: right;
 }
-.reading-input-actions { display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0; }
-.rollover-action {
-  flex: 0 0 auto;
-  padding: 3px 7px;
-  border: 1px solid #a33b27;
-  border-radius: 4px;
-  color: #a33b27;
-  background: #fff;
-  font-size: 10px;
-  line-height: 1.35;
-  white-space: nowrap;
-  cursor: pointer;
-}
-.rollover-action:disabled { cursor: default; opacity: .5; }
-.input-with-state:has(.rollover-notice.resolved) .rollover-action { border-color: #17755e; color: #17755e; }
-.rollover-notice {
-  position: relative;
-  z-index: 2;
-  width: max-content;
-  max-width: none;
-  padding-right: 5px;
-  color: #a33b27;
-  background: #fff;
-  font-size: 10px;
-  line-height: 1.35;
-  text-align: left;
-  white-space: nowrap;
-}
-.rollover-notice.resolved { color: #17755e; }
+.reading-input-actions { display: flex; align-items: center; width: 100%; min-width: 0; }
 .input-with-state small {
   min-height: 15px;
   text-align: right;
@@ -1471,6 +1443,29 @@ td ul {
 .subitem-period-display { display: flex; align-items: center; gap: 9px; flex: 0 0 auto; margin: 0 auto 0 clamp(36px, 8vw, 130px); white-space: nowrap; }
 .subitem-period-display span { color: #65756f; font-size: 11px; font-weight: 700; }
 .subitem-period-display strong { color: #26342f; font-size: 13px; }
+.header-rollover-alert {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  color: #a33b27;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.header-rollover-alert button {
+  padding: 5px 9px;
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  color: inherit;
+  background: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.header-rollover-alert button:disabled { cursor: default; opacity: .5; }
+.header-rollover-alert.resolved { color: #17755e; }
 .category-tabs { display: flex; align-self: stretch; gap: 2px; flex: 0 0 auto; }
 .category-tabs button {
   padding: 0 14px;
