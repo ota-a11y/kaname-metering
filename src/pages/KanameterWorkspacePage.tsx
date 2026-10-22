@@ -1141,20 +1141,26 @@ function VariableUnitPriceCalculator({
           適用する税区分：<strong>{taxMode === "inclusive" ? "税込" : "税抜"}</strong>
         </div>
         {priceMode === "master_meter" ? (
-          <div className="calculator-fields">
-            <label>
-              <span>大元メーター</span>
-              <select value={rateSourceMeterId} onChange={(event) => setRateSourceMeterId(event.target.value)}>
-                {rateSourceMeters.length === 0 && <option value="">メーター設定で大元メーターを登録してください</option>}
-                {rateSourceMeters.map((meter) => <option key={meter.id} value={meter.id}>{meter.label}</option>)}
-              </select>
-            </label>
-            <div className="calculator-result-field"><span>料金表</span><strong>大阪市・一般用・1か月</strong></div>
-            <div className="calculator-result-field"><span>計算使用量</span><strong>{tariff ? `${tariff.billedUsage.toLocaleString("ja-JP")} m³` : "—"}</strong></div>
-            <div className="calculator-result-field"><span>上水道料金（税込）</span><strong>{tariff ? formatYen(tariff.waterGross) : "—"}</strong></div>
-            <div className="calculator-result-field"><span>下水道使用料（税込）</span><strong>{tariff ? formatYen(tariff.sewerGross) : "—"}</strong></div>
-            <div className="calculator-result-field"><span>合計金額（税込）</span><strong>{tariff ? formatYen(tariff.totalGross) : "—"}</strong></div>
-            <div className="calculator-result-field"><span>消費税額</span><strong>{tariff ? formatYen(tariff.tax) : "—"}</strong></div>
+          <div className="calculator-master-meter-fields">
+            <div className="calculator-master-overview">
+              <label>
+                <span>大元メーター</span>
+                <select value={rateSourceMeterId} onChange={(event) => setRateSourceMeterId(event.target.value)}>
+                  {rateSourceMeters.length === 0 && <option value="">メーター設定で大元メーターを登録してください</option>}
+                  {rateSourceMeters.map((meter) => <option key={meter.id} value={meter.id}>{meter.label}</option>)}
+                </select>
+              </label>
+              <div className="calculator-result-field"><span>料金表</span><strong>大阪市・一般用・1か月</strong></div>
+            </div>
+            <div className="calculator-result-field calculator-usage-field"><span>計算使用量</span><strong>{tariff ? `${tariff.billedUsage.toLocaleString("ja-JP")} m³` : "—"}</strong></div>
+            <table className="calculator-amount-breakdown">
+              <thead><tr><th>料金区分</th><th>税込</th><th>消費税</th><th>税抜</th></tr></thead>
+              <tbody>
+                <tr><th>上水道料金</th><td>{tariff ? formatYen(tariff.waterGross) : "—"}</td><td>{tariff ? formatYen(tariff.waterGross - tariff.waterNet) : "—"}</td><td>{tariff ? formatYen(tariff.waterNet) : "—"}</td></tr>
+                <tr><th>下水道料金</th><td>{tariff ? formatYen(tariff.sewerGross) : "—"}</td><td>{tariff ? formatYen(tariff.sewerGross - tariff.sewerNet) : "—"}</td><td>{tariff ? formatYen(tariff.sewerNet) : "—"}</td></tr>
+                <tr className="total"><th>合計料金</th><td>{tariff ? formatYen(tariff.totalGross) : "—"}</td><td>{tariff ? formatYen(tariff.tax) : "—"}</td><td>{tariff ? formatYen(tariff.totalNet) : "—"}</td></tr>
+              </tbody>
+            </table>
             <details className="tariff-details">
               <summary>段階料金表と計算方法を確認</summary>
               <p>使用量は小数点以下を切り捨てます。該当段階の「単価 × 使用量 − 控除額」で税抜額を求め、上水道・下水道をそれぞれ10%税込にして合算します。</p>

@@ -1564,6 +1564,15 @@ td ul {
 }
 .calculator-fields input:focus,
 .calculator-fields select:focus { border-color: #2584c4; outline: 2px solid #d8eefb; }
+.calculator-master-meter-fields { display: grid; gap: 18px; margin-top: 22px; }
+.calculator-master-overview { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: end; gap: 18px; }
+.calculator-master-overview label,
+.calculator-usage-field { display: flex; flex-direction: column; gap: 7px; }
+.calculator-master-overview label > span,
+.calculator-usage-field > span { color: #52635d; font-size: 12px; font-weight: 700; }
+.calculator-master-overview select { width: 100%; height: 42px; padding: 0 12px; border: 1px solid #bccbc5; border-radius: 5px; background: #fff; font-size: 15px; }
+.calculator-master-overview select:focus { border-color: #2584c4; outline: 2px solid #d8eefb; }
+.calculator-usage-field { width: calc(50% - 9px); }
 .calculator-result-field strong {
   display: flex;
   align-items: center;
@@ -1574,6 +1583,16 @@ td ul {
   background: #f0f4f2;
   font-size: 16px;
 }
+.calculator-amount-breakdown { width: 100%; border-collapse: collapse; table-layout: fixed; }
+.calculator-amount-breakdown th,
+.calculator-amount-breakdown td { padding: 10px 12px; border: 1px solid #d5dfdb; text-align: right; }
+.calculator-amount-breakdown thead th { color: #52635d; background: #f0f4f2; font-size: 11px; }
+.calculator-amount-breakdown thead th:first-child,
+.calculator-amount-breakdown tbody th { text-align: left; }
+.calculator-amount-breakdown tbody th { color: #42534d; background: #f8faf9; font-size: 12px; }
+.calculator-amount-breakdown tbody td { color: #26342f; font-weight: 700; }
+.calculator-amount-breakdown tr.total th,
+.calculator-amount-breakdown tr.total td { border-top: 2px solid #9bc6df; color: #176a9f; background: #f2faff; }
 .calculator-unit-price-result {
   display: grid;
   grid-template-columns: 1fr auto;
@@ -1622,7 +1641,13 @@ td ul {
 .tariff-tables td { padding: 5px 7px; border: 1px solid #d5dfdb; text-align: right; }
 .tariff-tables th:first-child,
 .tariff-tables td:first-child { text-align: left; }
-@media (max-width: 720px) { .tariff-tables { grid-template-columns: 1fr; } }
+@media (max-width: 720px) {
+  .calculator-master-overview { grid-template-columns: 1fr; }
+  .calculator-usage-field { width: 100%; }
+  .calculator-amount-breakdown th,
+  .calculator-amount-breakdown td { padding: 8px 6px; font-size: 11px; }
+  .tariff-tables { grid-template-columns: 1fr; }
+}
 .main-tabs .utility-electric.active { border-bottom-color: #d4a600; color: #8b6c00; }
 .main-tabs .utility-water.active { border-bottom-color: #2584c4; color: #176a9f; }
 .main-tabs .utility-gas.active { border-bottom-color: #c94a43; color: #a63530; }
