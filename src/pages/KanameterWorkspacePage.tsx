@@ -2268,9 +2268,16 @@ function CustomItemTable({
       null
     );
   };
+  const tenantOrder = new Map<string, number>();
+  for (const contract of contracts) {
+    const tenantId = contract.contract?.tenant_id;
+    if (tenantId && !tenantOrder.has(tenantId)) tenantOrder.set(tenantId, tenantOrder.size);
+  }
   const orderedMeters = [...meters].sort((left, right) => {
     return (
       Number(right.is_rate_source) - Number(left.is_rate_source) ||
+      (tenantOrder.get(contractFor(left)?.contract?.tenant_id ?? "") ?? Number.MAX_SAFE_INTEGER) -
+        (tenantOrder.get(contractFor(right)?.contract?.tenant_id ?? "") ?? Number.MAX_SAFE_INTEGER) ||
       left.sort_order - right.sort_order ||
       left.meter_code.localeCompare(right.meter_code, "ja-JP", { numeric: true })
     );
@@ -2381,7 +2388,8 @@ function CustomItemTable({
             const currentUnitKey = unitKey(meter);
             const firstInUnit = index === 0 || unitKey(orderedMeters[index - 1]) !== currentUnitKey;
             const lastInUnit = index === orderedMeters.length - 1 || unitKey(orderedMeters[index + 1]) !== currentUnitKey;
-            const unitMeterCount = orderedMeters.filter((row) => unitKey(row) === currentUnitKey).length;
+            let unitMeterCount = 1;
+            while (index + unitMeterCount < orderedMeters.length && unitKey(orderedMeters[index + unitMeterCount]) === currentUnitKey) unitMeterCount += 1;
             const currentTenantKey = tenantKey(meter);
             const firstInTenant = index === 0 || tenantKey(orderedMeters[index - 1]) !== currentTenantKey;
             const lastInTenant = index === orderedMeters.length - 1 || tenantKey(orderedMeters[index + 1]) !== currentTenantKey;
@@ -2389,6 +2397,8 @@ function CustomItemTable({
             const currentBillingKey = billingKey(meter);
             const firstInBillingGroup = index === 0 || billingKey(orderedMeters[index - 1]) !== currentBillingKey;
             const billingMeters = orderedMeters.filter((row) => billingKey(row) === currentBillingKey);
+            let billingMeterCount = 1;
+            while (index + billingMeterCount < orderedMeters.length && billingKey(orderedMeters[index + billingMeterCount]) === currentBillingKey) billingMeterCount += 1;
             const unitEndIndex = index + unitMeterCount - 1;
             const unitEndsTenant =
               firstInUnit &&
@@ -2491,7 +2501,7 @@ function CustomItemTable({
                 {meter.is_rate_source ? (
                   <td className="numeric">—</td>
                 ) : aggregateBilling && firstInBillingGroup ? (
-                  <td className="numeric unit-total tenant-boundary" rowSpan={billingMeters.length}>
+                  <td className="numeric unit-total tenant-boundary" rowSpan={billingMeterCount}>
                     <span className="merged-value">{formatUsage(billingUsage, aggregationDigits)}</span>
                   </td>
                 ) : !aggregateBilling && firstInUnit ? (
@@ -2502,7 +2512,7 @@ function CustomItemTable({
                 {meter.is_rate_source ? (
                   <td className="numeric">—</td>
                 ) : aggregateBilling && firstInBillingGroup ? (
-                  <td className="numeric unit-amount tenant-boundary" rowSpan={billingMeters.length}>
+                  <td className="numeric unit-amount tenant-boundary" rowSpan={billingMeterCount}>
                     <span className="merged-value">{formatYen(billingAmount)}</span>
                   </td>
                 ) : !aggregateBilling && firstInUnit ? (
