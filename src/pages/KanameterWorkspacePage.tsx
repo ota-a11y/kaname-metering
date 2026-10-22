@@ -280,6 +280,36 @@ function buildConfirmedMeterAmounts({
   return rows;
 }
 
+function ensureBasicSubItems(categoriesToCheck: MeterCategorySetting[], current: MeterSubItem[]) {
+  let next = current;
+  for (const setting of categoriesToCheck) {
+    if (!setting.is_basic_billable || next.some((item) => item.category === setting.category && item.sub_item_kind === "basic")) continue;
+    const basic: MeterSubItem = {
+      asset_meter_sub_item_id: crypto.randomUUID(),
+      category: setting.category,
+      sub_item_name: "基本料",
+      sub_item_kind: "basic",
+      asset_billing_line_item_id: null,
+      sort_order: 0,
+      input_mode: "usage",
+      input_decimal_digits: 0,
+      aggregation_decimal_digits: 0,
+      usage_rounding_mode: "round",
+      billing_period_pattern_id: null,
+      price_mode: "fixed",
+      default_unit_price: null,
+      tax_mode: "exclusive",
+      tax_rounding_mode: "floor",
+      show_unit_price_on_invoice: false,
+    };
+    const firstCategoryIndex = next.findIndex((item) => item.category === setting.category);
+    next = firstCategoryIndex < 0
+      ? [...next, basic]
+      : [...next.slice(0, firstCategoryIndex), basic, ...next.slice(firstCategoryIndex)];
+  }
+  return next;
+}
+
 function adjustedMeterUsage(
   meter: MeterReadingRow,
   meters: MeterReadingRow[],
@@ -461,11 +491,12 @@ export function KanameterWorkspacePage({
       .then(([prices, config, contractRows, management, lineItems]) => {
         const enabledCategories = new Set(lineItems.map((item) => item.utility_category).filter(Boolean));
         setUtilitySettings(prices);
-        setCategorySettings(config.categories.map((setting) => ({
+        const effectiveCategories = config.categories.map((setting) => ({
           ...setting,
           is_billable: enabledCategories.has(setting.category),
-        })));
-        setSubItems(config.subItems);
+        }));
+        setCategorySettings(effectiveCategories);
+        setSubItems(ensureBasicSubItems(effectiveCategories, config.subItems));
         const hasSurcharge = lineItems.some((item) => item.is_surcharge);
         setSurcharges(config.surcharges.map((item) => ({
           ...item,
@@ -2768,7 +2799,7 @@ function BuildingSettingsView({
   const [saving, setSaving] = useState(false);
   useEffect(() => setDraftCategories(categorySettings), [categorySettings]);
   useEffect(() => setDraftUtilitySettings(utilitySettings), [utilitySettings]);
-  useEffect(() => setDraftSubItems(subItems), [subItems]);
+  useEffect(() => setDraftSubItems(ensureBasicSubItems(categorySettings, subItems)), [categorySettings, subItems]);
   useEffect(() => setDraftSurcharges(surcharges), [surcharges]);
   const periodOrder = ["前月分", "当月分", "翌月分", "検針期間（前月検針日を含める）", "検針期間（前月検針日を含めない）"];
   const periodOptions = periodPatterns
@@ -2776,6 +2807,10 @@ function BuildingSettingsView({
     .sort((a, b) => periodOrder.indexOf(a.pattern_name ?? "") - periodOrder.indexOf(b.pattern_name ?? ""));
   const updateCategory = (category: UtilityCategory, patch: Partial<MeterCategorySetting>) =>
     setDraftCategories((current) => current.map((row) => row.category === category ? { ...row, ...patch } : row));
+  const updateBasicBillable = (category: UtilityCategory, checked: boolean) => {
+    setDraftCategories((current) => current.map((row) => row.category === category ? { ...row, is_basic_billable: checked } : row));
+    if (checked) setDraftSubItems((current) => ensureBasicSubItems([{ category, usage_unit: "", is_billable: true, is_basic_billable: true }], current));
+  };
   const updateUtilitySetting = (category: UtilityCategory, patch: Partial<AssetUtilitySetting>) =>
     setDraftUtilitySettings((current) => {
       const existing = current.find((row) => row.category === category) ?? {
@@ -2831,7 +2866,7 @@ function BuildingSettingsView({
             const utilitySetting = draftUtilitySettings.find((row) => row.category === category) ?? { category, price_scope: "category" as const, default_unit_price: null, default_tax_mode: "exclusive" as const, show_in_rent_roll: true };
             const usesSharedPrice = utilitySetting.price_scope === "category";
             return <section className={`configuration-category utility-${category}`} key={category}>
-              <header className="configuration-category-header"><strong>{labels[category]}</strong><label>使用量の単位<input value={setting.usage_unit} onChange={(event) => updateCategory(category, { usage_unit: event.target.value })} /></label><label className="checkbox-label"><input type="checkbox" checked={setting.is_basic_billable} onChange={(event) => updateCategory(category, { is_basic_billable: event.target.checked })} />基本料を請求する</label><label className="price-setting-label">既定単価設定<select value={utilitySetting.price_scope} onChange={(event) => updateUtilitySetting(category, { price_scope: event.target.value as AssetUtilitySetting["price_scope"] })}><option value="category">共通して設定</option><option value="line_item">小分類ごとに設定</option></select></label>{usesSharedPrice && <label className="price-setting-label">共通単価<input type="number" min="0" step="0.0001" value={utilitySetting.default_unit_price ?? ""} onChange={(event) => updateUtilitySetting(category, { default_unit_price: event.target.value === "" ? null : Number(event.target.value) })} /></label>}<label className="checkbox-label"><input type="checkbox" checked={utilitySetting.show_in_rent_roll} onChange={(event) => updateUtilitySetting(category, { show_in_rent_roll: event.target.checked })} />単価をレントロールに表示</label><button type="button" className="text-button" onClick={() => addSubItem(category)}>小分類を追加</button></header>
+              <header className="configuration-category-header"><strong>{labels[category]}</strong><label>使用量の単位<input value={setting.usage_unit} onChange={(event) => updateCategory(category, { usage_unit: event.target.value })} /></label><label className="checkbox-label"><input type="checkbox" checked={setting.is_basic_billable} onChange={(event) => updateBasicBillable(category, event.target.checked)} />基本料を請求する</label><label className="price-setting-label">既定単価設定<select value={utilitySetting.price_scope} onChange={(event) => updateUtilitySetting(category, { price_scope: event.target.value as AssetUtilitySetting["price_scope"] })}><option value="category">共通して設定</option><option value="line_item">小分類ごとに設定</option></select></label>{usesSharedPrice && <label className="price-setting-label">共通単価<input type="number" min="0" step="0.0001" value={utilitySetting.default_unit_price ?? ""} onChange={(event) => updateUtilitySetting(category, { default_unit_price: event.target.value === "" ? null : Number(event.target.value) })} /></label>}<label className="checkbox-label"><input type="checkbox" checked={utilitySetting.show_in_rent_roll} onChange={(event) => updateUtilitySetting(category, { show_in_rent_roll: event.target.checked })} />単価をレントロールに表示</label><button type="button" className="text-button" onClick={() => addSubItem(category)}>小分類を追加</button></header>
               <div className="table-wrap"><ResizableTable className="configuration-table resizable-configuration-table" storageKey={`building-settings:${assetId}:meter-configuration`} storageUserId={columnStorageUserId} columnGroups={["subitem", "line-item", "price-mode", "default-price", "invoice-price", "tax-mode", "tax-rounding", "billing-period", "actions"]}><thead><tr><ColumnHeader columnGroup="subitem">小分類</ColumnHeader><ColumnHeader columnGroup="line-item">請求明細の項目</ColumnHeader><ColumnHeader columnGroup="price-mode">単価計算方法</ColumnHeader><ColumnHeader columnGroup="default-price">既定単価</ColumnHeader><ColumnHeader columnGroup="invoice-price">請求書に単価を表示</ColumnHeader><ColumnHeader columnGroup="tax-mode">税区分</ColumnHeader><ColumnHeader columnGroup="tax-rounding">税込単価の税抜換算</ColumnHeader><ColumnHeader columnGroup="billing-period">既定の請求期間</ColumnHeader><ColumnHeader columnGroup="actions" /></tr></thead><tbody>
                 {items.map((item) => <tr key={item.asset_meter_sub_item_id}>
                   <td><input value={item.sub_item_name} disabled={item.sub_item_kind === "basic"} onChange={(event) => updateSubItem(item.asset_meter_sub_item_id, { sub_item_name: event.target.value })} /></td>
