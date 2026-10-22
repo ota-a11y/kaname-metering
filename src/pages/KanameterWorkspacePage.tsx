@@ -1124,7 +1124,10 @@ function VariableUnitPriceCalculator({
     : null;
 
   const save = async () => {
-    if (calculatedUnitPrice == null) return;
+    if (calculatedUnitPrice == null) {
+      onClose();
+      return;
+    }
     setSaving(true);
     setSaveError("");
     try {
@@ -1163,6 +1166,7 @@ function VariableUnitPriceCalculator({
     try {
       await onSaveTariff(tariffDefinition?.tariff_name ?? "大阪市・一般用・1か月", tariffDefinition?.tax_rate ?? 0.1, draftTariffTiers);
       setEditingTariff(false);
+      onClose();
     } catch (reason) {
       setSaveError((reason as Error).message);
     } finally {
@@ -1180,14 +1184,14 @@ function VariableUnitPriceCalculator({
   };
 
   return (
-    <div className="calculator-modal-backdrop" role="presentation" onMouseDown={onClose}>
+    <div className="calculator-modal-backdrop" role="presentation" onMouseDown={() => { if (!editingTariff) void save(); }}>
       <section className="calculator-modal" role="dialog" aria-modal="true" aria-labelledby="unit-price-calculator-title" onMouseDown={(event) => event.stopPropagation()}>
         <header>
           <div>
             <p className="eyebrow">UNIT PRICE</p>
             <h2 id="unit-price-calculator-title">{itemName}の単価計算</h2>
           </div>
-          <button type="button" className="calculator-modal-close" aria-label="閉じる" onClick={onClose}>×</button>
+          <button type="button" className="calculator-modal-close" aria-label="閉じる" onClick={() => { if (editingTariff) onClose(); else void save(); }}>×</button>
         </header>
         <div className="calculator-tax-mode">
           適用する税区分：<strong>{taxMode === "inclusive" ? "税込" : "税抜"}</strong>
@@ -1231,7 +1235,6 @@ function VariableUnitPriceCalculator({
               {editingTariff ? <div className="tariff-edit-actions">
                 <span>{billingMonth}請求分から適用されます。</span>
                 <button type="button" onClick={() => setEditingTariff(false)}>キャンセル</button>
-                <button type="button" className="primary" disabled={tariffSaving} onClick={() => void saveTariff()}>{tariffSaving ? "保存中…" : `${billingMonth}請求分から適用`}</button>
               </div> : <small>適用期間：{tariffDefinition?.effective_from ?? "2019-11-01"} ～ {tariffDefinition?.effective_to ?? "現在"}</small>}
             </details>
           </div>
@@ -1274,10 +1277,9 @@ function VariableUnitPriceCalculator({
           </div>
         </div>
         {saveError && <p className="calculator-save-error">{saveError}</p>}
-        <footer>
-          <button type="button" onClick={onClose}>閉じる</button>
-          <button type="button" className="primary" disabled={saving || calculatedUnitPrice == null} onClick={() => void save()}>{saving ? "保存中…" : "保存して閉じる"}</button>
-        </footer>
+        {editingTariff && <footer>
+          <button type="button" className="primary" disabled={tariffSaving} onClick={() => void saveTariff()}>{tariffSaving ? "保存中…" : "保存して閉じる"}</button>
+        </footer>}
       </section>
     </div>
   );
