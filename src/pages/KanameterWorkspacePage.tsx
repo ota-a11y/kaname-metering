@@ -18,6 +18,7 @@ import {
   loadMeterReadingPeriod,
   loadAvailableMeterReadingMonths,
   reorderMeters,
+  releaseMeterReadingMonth,
   saveMeterParent,
   saveMeterReading,
   saveMeterReadingDate,
@@ -33,6 +34,7 @@ import type {
   Asset,
   AssetUtilitySetting,
   BillingLineItem,
+  ConfirmedMeterAmount,
   BillingPeriodPattern,
   ContractUnit,
   MeterCategorySetting,
@@ -119,6 +121,164 @@ function calculateUsageCharge(
     usage: roundToDigits(rows.reduce((sum, row) => sum + row.usage, 0), digits, usageRoundingMode),
     amount,
   };
+}
+
+function buildConfirmedMeterAmounts({
+  contracts,
+  meters,
+  categorySettings,
+  utilitySettings,
+  subItems,
+  surcharges,
+  surchargePrices,
+  unitPriceCalculations,
+  billingLineItems,
+}: {
+  contracts: ContractUnit[];
+  meters: MeterReadingRow[];
+  categorySettings: MeterCategorySetting[];
+  utilitySettings: AssetUtilitySetting[];
+  subItems: MeterSubItem[];
+  surcharges: MeterSurcharge[];
+  surchargePrices: Record<string, number>;
+  unitPriceCalculations: Record<string, MeterUnitPriceCalculation>;
+  billingLineItems: BillingLineItem[];
+}): ConfirmedMeterAmount[] {
+  const eligibleContracts = contracts.filter((row) =>
+    ["office", "warehouse", "storage"].includes((row.unit?.unit_type ?? "").toLowerCase()),
+  );
+  const lineItemName = (id: string | null) => id
+    ? billingLineItems.find((item) => item.asset_billing_line_item_id === id)?.line_item_name ?? null
+    : null;
+  const priceFor = (contract: ContractUnit, item: MeterSubItem) => {
+    const itemPrice = contract.prices.find((row) => row.asset_billing_line_item_id === item.asset_billing_line_item_id);
+    const categoryPrice = contract.categoryPrices.find((row) => row.category === item.category);
+    const price = unitPriceCalculations[item.asset_meter_sub_item_id]?.unit_price
+      ?? itemPrice?.unit_price
+      ?? categoryPrice?.unit_price
+      ?? utilitySettings.find((setting) => setting.category === item.category)?.default_unit_price;
+    return {
+      price: price == null ? null : Number(price),
+      taxMode: itemPrice?.tax_mode
+        ?? categoryPrice?.tax_mode
+        ?? utilitySettings.find((setting) => setting.category === item.category)?.default_tax_mode
+        ?? item.tax_mode,
+    };
+  };
+  const rows: ConfirmedMeterAmount[] = [];
+  const billingGroupIds = Array.from(new Set(eligibleContracts.map((contract) => billingGroupKey(contract))));
+  for (const groupId of billingGroupIds) {
+    const tenantContracts = eligibleContracts.filter((contract) => billingGroupKey(contract) === groupId);
+    const representative = tenantContracts[0];
+    const tenantId = representative?.contract?.tenant_id;
+    if (!representative || !tenantId) continue;
+    const billingSetting = representative.meterBilling[0];
+    const shared = {
+      meter_reading_contract_id: billingSetting?.meter_reading_contract_id ?? null,
+      tenant_id: tenantId,
+      tenant_name: billingGroupTenantName(representative),
+      row_no: billingSetting?.row_no ?? 1,
+      invoice_number: billingSetting?.invoice_number ?? 1,
+      amount_rounding_mode: amountRoundingFor(representative),
+      tax_rate: null,
+    } as const;
+    for (const category of categories) {
+      const categorySetting = categorySettings.find((setting) => setting.category === category);
+      if (!categorySetting?.is_billable) continue;
+      const billableContracts = tenantContracts.filter((contract) => isContractCategoryBillable(contract, category));
+      if (!billableContracts.length) continue;
+      const basic = categorySetting.is_basic_billable
+        ? subItems.find((item) => item.category === category && item.sub_item_kind === "basic")
+        : undefined;
+      if (basic) {
+        const amount = billableContracts.reduce(
+          (sum, contract) => sum + Number(contract.basics.find((item) => item.category === category)?.amount ?? 0),
+          0,
+        );
+        if (amount) rows.push({
+          ...shared,
+          category,
+          source_kind: "subItem",
+          source_id: basic.asset_meter_sub_item_id,
+          source_name: basic.sub_item_name,
+          asset_billing_line_item_id: basic.asset_billing_line_item_id,
+          line_item_name: lineItemName(basic.asset_billing_line_item_id),
+          usage_amount: 0,
+          usage_unit: categorySetting.usage_unit,
+          unit_price: null,
+          amount,
+          usage_rounding_digits: basic.aggregation_decimal_digits,
+          usage_rounding_mode: basic.usage_rounding_mode,
+          tax_mode: basic.tax_mode,
+        });
+      }
+      let categoryUsage = 0;
+      for (const item of subItems.filter((candidate) => candidate.category === category && candidate.sub_item_kind === "custom")) {
+        const contractByUnitCode = new Map(
+          billableContracts.flatMap((contract) => contract.unit?.unit_code ? [[contract.unit.unit_code, contract] as const] : []),
+        );
+        const chargeRows = meters.flatMap((meter) => {
+          if (meter.subItem.asset_meter_sub_item_id !== item.asset_meter_sub_item_id) return [];
+          const unitCode = meter.assignments[0]?.unit?.unit_code;
+          const contract = unitCode ? contractByUnitCode.get(unitCode) : undefined;
+          if (!contract) return [];
+          const price = priceFor(contract, item);
+          return [{ meterId: meter.asset_meter_id, usage: adjustedMeterUsage(meter, meters, storedMeterUsage), ...price }];
+        });
+        const calculation = calculateUsageCharge(
+          chargeRows,
+          item.aggregation_decimal_digits,
+          item.usage_rounding_mode,
+          sumModeFor(representative, category),
+          amountRoundingFor(representative),
+        );
+        categoryUsage += calculation.usage;
+        if (!calculation.amount) continue;
+        const prices = Array.from(new Set(chargeRows.map((row) => row.price).filter((price): price is number => price != null)));
+        const taxModes = Array.from(new Set(chargeRows.map((row) => row.taxMode)));
+        rows.push({
+          ...shared,
+          category,
+          source_kind: "subItem",
+          source_id: item.asset_meter_sub_item_id,
+          source_name: item.sub_item_name,
+          asset_billing_line_item_id: item.asset_billing_line_item_id,
+          line_item_name: lineItemName(item.asset_billing_line_item_id),
+          usage_amount: calculation.usage,
+          usage_unit: categorySetting.usage_unit,
+          unit_price: prices.length === 1 ? prices[0] : null,
+          amount: calculation.amount,
+          usage_rounding_digits: item.aggregation_decimal_digits,
+          usage_rounding_mode: item.usage_rounding_mode,
+          tax_mode: taxModes.length === 1 ? taxModes[0] : item.tax_mode,
+        });
+      }
+      const surcharge = category === "electric"
+        ? surcharges.find((item) => item.category === category && item.is_billable)
+        : undefined;
+      const surchargePrice = surcharge ? surchargePrices[surcharge.asset_meter_surcharge_id] : null;
+      const surchargeAmount = surcharge && surchargePrice != null
+        ? roundUtilityAmount(categoryUsage * surchargePrice, amountRoundingFor(representative))
+        : 0;
+      if (surcharge && surchargeAmount) rows.push({
+        ...shared,
+        category,
+        source_kind: "surcharge",
+        source_id: surcharge.asset_meter_surcharge_id,
+        source_name: surcharge.surcharge_name,
+        asset_billing_line_item_id: surcharge.asset_billing_line_item_id,
+        line_item_name: lineItemName(surcharge.asset_billing_line_item_id),
+        usage_amount: categoryUsage,
+        usage_unit: categorySetting.usage_unit,
+        unit_price: surchargePrice,
+        amount: surchargeAmount,
+        usage_rounding_digits: null,
+        usage_rounding_mode: null,
+        tax_mode: null,
+      });
+    }
+  }
+  return rows;
 }
 
 function adjustedMeterUsage(
@@ -567,9 +727,56 @@ export function KanameterWorkspacePage({
     setError("");
     setNotice("");
     try {
-      await confirmMeterReadingMonth(supabase!, assetId, billingMonth);
+      const [readingResults, surchargeRows, calculationRows] = await Promise.all([
+        Promise.all(categories.map((category) => loadMeterReadings(supabase!, assetId, billingMonth, category))),
+        Promise.all(surcharges.map(async (surcharge) => ({
+          surchargeId: surcharge.asset_meter_surcharge_id,
+          evidence: await loadSurchargeEvidence(supabase!, assetId, billingMonth, surcharge.asset_meter_surcharge_id),
+        }))),
+        loadMeterUnitPriceCalculations(supabase!, assetId, billingMonth),
+      ]);
+      const freshMeters = readingResults.flatMap((result) => result.rows);
+      const freshSurchargePrices = Object.fromEntries(surchargeRows.flatMap(({ surchargeId, evidence }) => {
+        const storedPrice = loadStoredSurchargeUnitPrice(assetId, billingMonth, surchargeId);
+        const savedPrice = storedPrice ?? (evidence?.unit_price == null ? null : Number(evidence.unit_price));
+        return savedPrice == null || !Number.isFinite(savedPrice) ? [] : [[surchargeId, Math.max(0, savedPrice)]];
+      }));
+      const freshCalculations = Object.fromEntries(
+        calculationRows.map((row) => [row.asset_meter_sub_item_id, row]),
+      );
+      const amounts = buildConfirmedMeterAmounts({
+        contracts: periodContracts,
+        meters: freshMeters,
+        categorySettings,
+        utilitySettings,
+        subItems,
+        surcharges,
+        surchargePrices: freshSurchargePrices,
+        unitPriceCalculations: freshCalculations,
+        billingLineItems,
+      });
+      await confirmMeterReadingMonth(supabase!, assetId, billingMonth, amounts);
+      setSummaryMeters(freshMeters);
+      setSummarySurchargePrices(freshSurchargePrices);
+      setUnitPriceCalculations(freshCalculations);
       setStatus("confirmed");
-      setNotice("KANAME連携用の確定データとして保存しました。");
+      setNotice(`${amounts.length}件の確定明細をKANAME連携用に保存しました。`);
+    } catch (reason) {
+      setError((reason as Error).message);
+    } finally {
+      setConfirming(false);
+    }
+  };
+  const releaseConfirmation = async () => {
+    if (!assetId || status !== "confirmed" || confirming) return;
+    if (!window.confirm(`${billingMonth}請求分の確定を解除しますか？\nKANAME連携用の確定明細も削除され、再編集できる状態に戻ります。`)) return;
+    setConfirming(true);
+    setError("");
+    setNotice("");
+    try {
+      await releaseMeterReadingMonth(supabase!, assetId, billingMonth);
+      setStatus("draft");
+      setNotice("確定を解除しました。再編集後、改めて確定してください。");
     } catch (reason) {
       setError((reason as Error).message);
     } finally {
@@ -893,14 +1100,14 @@ export function KanameterWorkspacePage({
             </span>
             <button
               type="button"
-              className="primary compact"
-              disabled={confirming || status === "confirmed"}
-              onClick={() => void confirm()}
+              className={status === "confirmed" ? "secondary compact" : "primary compact"}
+              disabled={confirming}
+              onClick={() => void (status === "confirmed" ? releaseConfirmation() : confirm())}
             >
               {confirming
-                ? "確定中…"
+                ? status === "confirmed" ? "解除中…" : "確定中…"
                 : status === "confirmed"
-                  ? "確定済み"
+                  ? "確定を解除"
                   : "確定"}
             </button>
           </div>

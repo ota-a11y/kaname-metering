@@ -63,6 +63,7 @@ export type ContractUnit = {
   meterBilling: Array<{
     meter_reading_contract_id: string;
     row_no: number;
+    invoice_number: number;
     split_label: string | null;
     electric_billable: boolean;
     water_billable: boolean;
@@ -204,4 +205,27 @@ export type BillingLineItem = {
   utility_category: UtilityCategory | null;
   charge_type_name: string;
   is_surcharge: boolean;
+};
+
+export type ConfirmedMeterAmount = {
+  meter_reading_contract_id: string | null;
+  tenant_id: string;
+  tenant_name: string;
+  row_no: number;
+  invoice_number: number;
+  category: UtilityCategory;
+  source_kind: "subItem" | "surcharge";
+  source_id: string;
+  source_name: string;
+  asset_billing_line_item_id: string | null;
+  line_item_name: string | null;
+  usage_amount: number;
+  usage_unit: string;
+  unit_price: number | null;
+  amount: number;
+  amount_rounding_mode: "floor" | "round" | "ceil";
+  usage_rounding_digits: number | null;
+  usage_rounding_mode: "floor" | "round" | "ceil" | null;
+  tax_mode: TaxMode | null;
+  tax_rate: number | null;
 };

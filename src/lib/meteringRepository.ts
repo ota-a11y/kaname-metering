@@ -4,6 +4,7 @@ import type {
   AssetUtilitySetting,
   BillingPeriodPattern,
   BillingLineItem,
+  ConfirmedMeterAmount,
   ContractUnit,
   MeterCategorySetting,
   MeterReadingRow,
@@ -180,7 +181,7 @@ export async function loadContractUnits(
       .eq("asset_id", assetId),
     client
       .from("meter_reading_contract")
-      .select("meter_reading_contract_id, tenant_id, row_no, split_label, electric_billable, water_billable, gas_billable, electric_sum_mode, water_sum_mode, gas_sum_mode, amount_rounding_mode, units:meter_reading_contract_unit(unit_id)")
+      .select("meter_reading_contract_id, tenant_id, row_no, invoice_number, split_label, electric_billable, water_billable, gas_billable, electric_sum_mode, water_sum_mode, gas_sum_mode, amount_rounding_mode, units:meter_reading_contract_unit(unit_id)")
       .eq("asset_id", assetId),
   ]);
   fail("契約ごとの公共料金設定を読み込めませんでした", contracts.error);
@@ -761,11 +762,25 @@ export async function confirmMeterReadingMonth(
   client: SupabaseClient,
   assetId: string,
   billingMonth: string,
+  amounts: ConfirmedMeterAmount[],
 ) {
-  const { data, error } = await client.rpc("confirm_kanameter_month", {
+  const { data, error } = await client.rpc("confirm_kanameter_month_with_amounts", {
     p_asset_id: assetId,
     p_billing_month: `${billingMonth}-01`,
+    p_amounts: amounts,
   });
   fail("検針データを確定できませんでした", error);
   return data as string;
+}
+
+export async function releaseMeterReadingMonth(
+  client: SupabaseClient,
+  assetId: string,
+  billingMonth: string,
+) {
+  const { error } = await client.rpc("release_kanameter_month", {
+    p_asset_id: assetId,
+    p_billing_month: `${billingMonth}-01`,
+  });
+  fail("検針データの確定を解除できませんでした", error);
 }
