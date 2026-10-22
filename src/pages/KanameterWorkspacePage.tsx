@@ -936,6 +936,7 @@ export function KanameterWorkspacePage({
                 subItems={[selectedSubItem]}
                 meters={managedMeters.filter((meter) => meter.subItem.asset_meter_sub_item_id === meterSettingsItemId)}
                 units={units}
+                contracts={contracts}
                 lockedSubItemId={meterSettingsItemId}
                 onChanged={refreshMeterData}
                 onSubItemSettingsChanged={(updated) => {
@@ -1504,6 +1505,7 @@ function SettingsView({
   subItems,
   meters,
   units,
+  contracts,
   onChanged,
   onSubItemSettingsChanged,
   onNotice,
@@ -1514,6 +1516,7 @@ function SettingsView({
   subItems: MeterSubItem[];
   meters: MeterReadingRow[];
   units: MeterUnitOption[];
+  contracts: ContractUnit[];
   onChanged: () => Promise<void>;
   onSubItemSettingsChanged: (subItem: MeterSubItem) => void;
   onNotice: (message: string) => void;
@@ -1533,6 +1536,21 @@ function SettingsView({
   const [aggregationDecimalDigits, setAggregationDecimalDigits] = useState(activeSubItem?.aggregation_decimal_digits ?? 1);
   const [usageRoundingMode, setUsageRoundingMode] = useState<"floor" | "round" | "ceil">(activeSubItem?.usage_rounding_mode ?? "round");
   const [orderedMeters, setOrderedMeters] = useState(meters);
+  const sortedUnits = [...units].sort((left, right) =>
+    floorSortOrder(left.floor_label) - floorSortOrder(right.floor_label)
+    || left.unit_code.localeCompare(right.unit_code, "ja-JP", { numeric: true }),
+  );
+  const tenantNamesByUnitId = new Map<string, string[]>();
+  for (const contract of contracts) {
+    const targetUnitId = contract.unit?.unit_id;
+    const tenantName = contract.contract?.tenant?.tenant_name;
+    if (!targetUnitId || !tenantName) continue;
+    tenantNamesByUnitId.set(targetUnitId, Array.from(new Set([...(tenantNamesByUnitId.get(targetUnitId) ?? []), tenantName])));
+  }
+  const unitOptionLabel = (unit: MeterUnitOption) => {
+    const tenants = tenantNamesByUnitId.get(unit.unit_id);
+    return `${formatFloor(unit.floor_label)} / ${unit.unit_name || unit.unit_code} / ${tenants?.join("・") || "空室"}`;
+  };
   const [draggingMeterId, setDraggingMeterId] = useState<string | null>(null);
   useEffect(() => setOrderedMeters(meters), [meters]);
   useEffect(() => {
@@ -1548,7 +1566,7 @@ function SettingsView({
     else if (!subItems.some((item) => item.asset_meter_sub_item_id === subItemId))
       setSubItemId(subItems[0]?.asset_meter_sub_item_id ?? "");
     if (unitId !== rateSourceUnitValue && !units.some((unit) => unit.unit_id === unitId))
-      setUnitId(units[0]?.unit_id ?? "");
+      setUnitId(sortedUnits[0]?.unit_id ?? "");
   }, [subItems, units, subItemId, unitId, lockedSubItemId]);
 
   const add = async () => {
@@ -1709,9 +1727,9 @@ function SettingsView({
                     <select value={meter.is_rate_source ? rateSourceUnitValue : assignment?.unit_id ?? ""} onChange={(event) => void changeUnit(meter.asset_meter_id, event.target.value)}>
                       <option value="" disabled>区画を選択</option>
                       <option value={rateSourceUnitValue}>大元メーター</option>
-                      {units.map((unit) => (
+                      {sortedUnits.map((unit) => (
                         <option key={unit.unit_id} value={unit.unit_id}>
-                          {formatFloor(unit.floor_label)} / {unit.unit_name || unit.unit_code}
+                          {unitOptionLabel(unit)}
                         </option>
                       ))}
                     </select>
@@ -1755,7 +1773,7 @@ function SettingsView({
           </select>
         </label>}
         <label>メーター番号<input value={meterCode} onChange={(event) => setMeterCode(event.target.value)} /></label>
-        <label>区画<select value={unitId} onChange={(event) => setUnitId(event.target.value)}><option value={rateSourceUnitValue}>大元メーター</option>{units.map((unit) => <option key={unit.unit_id} value={unit.unit_id}>{formatFloor(unit.floor_label)} / {unit.unit_name || unit.unit_code}</option>)}</select></label>
+        <label>区画<select value={unitId} onChange={(event) => setUnitId(event.target.value)}><option value={rateSourceUnitValue}>大元メーター</option>{sortedUnits.map((unit) => <option key={unit.unit_id} value={unit.unit_id}>{unitOptionLabel(unit)}</option>)}</select></label>
         <button className="primary compact" disabled={saving || !subItemId || !unitId || !meterCode.trim()} onClick={() => void add()}>{saving ? "追加中…" : "追加"}</button>
       </div>
     </section>
@@ -2707,6 +2725,16 @@ function getReadingDecimalDigits(subItemId: string, fallback: number) {
 
 function formatFloor(value: string | null | undefined) {
   return value ? value.replace(/[FＦ]$/i, "") : "—";
+}
+
+function floorSortOrder(value: string | null | undefined) {
+  const floor = (value ?? "").trim().toUpperCase().replace(/[ＦF階]/g, "");
+  const basement = floor.match(/^(?:B|地下)\s*(\d+)/);
+  if (basement) return -Number(basement[1]);
+  const aboveGround = floor.match(/-?\d+/);
+  if (aboveGround) return Number(aboveGround[0]);
+  if (/^(?:R|RF|屋上)$/.test(floor)) return 10000;
+  return 20000;
 }
 
 function formatMeterPeriod(previousMeterDate: string, meterDate: string) {
