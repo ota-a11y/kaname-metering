@@ -1906,18 +1906,9 @@ function CustomItemTable({
       null
     );
   };
-  const contractOrder = new Map(
-    contracts.map((contract, index) => [contract.unit?.unit_code, index]),
-  );
   const orderedMeters = [...meters].sort((left, right) => {
-    const leftUnit = left.assignments[0]?.unit;
-    const rightUnit = right.assignments[0]?.unit;
     return (
       Number(right.is_rate_source) - Number(left.is_rate_source) ||
-      (contractOrder.get(leftUnit?.unit_code) ?? Number.MAX_SAFE_INTEGER) -
-        (contractOrder.get(rightUnit?.unit_code) ?? Number.MAX_SAFE_INTEGER) ||
-      (leftUnit?.floor_label ?? "").localeCompare(rightUnit?.floor_label ?? "", "ja-JP", { numeric: true }) ||
-      (leftUnit?.unit_code ?? "").localeCompare(rightUnit?.unit_code ?? "", "ja-JP", { numeric: true }) ||
       left.sort_order - right.sort_order ||
       left.meter_code.localeCompare(right.meter_code, "ja-JP", { numeric: true })
     );
