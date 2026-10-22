@@ -214,14 +214,27 @@ export function KanameterWorkspacePage({
   profile: UserProfile;
   onSignOut: () => Promise<unknown>;
 }) {
+  const workspaceStateKey = `kanameter-workspace-state:${profile.user_id}`;
+  const savedWorkspaceState = (() => {
+    try {
+      return JSON.parse(localStorage.getItem(workspaceStateKey) ?? "{}") as {
+        assetId?: string;
+        billingMonth?: string;
+        mainTab?: MainTab;
+        selectedItemId?: string;
+      };
+    } catch {
+      return {};
+    }
+  })();
   const [assets, setAssets] = useState<Asset[]>([]);
-  const [assetId, setAssetId] = useState("");
-  const [billingMonth, setBillingMonth] = useState(currentMonth);
+  const [assetId, setAssetId] = useState(savedWorkspaceState.assetId ?? "");
+  const [billingMonth, setBillingMonth] = useState(savedWorkspaceState.billingMonth ?? currentMonth);
   const [meterDate, setMeterDate] = useState("");
   const [previousMeterDate, setPreviousMeterDate] = useState("");
   const [availableBillingMonths, setAvailableBillingMonths] = useState<Array<{ billingMonth: string; meterDate: string | null }>>([]);
-  const [mainTab, setMainTab] = useState<MainTab>("summary");
-  const [selectedItemId, setSelectedItemId] = useState("");
+  const [mainTab, setMainTab] = useState<MainTab>(savedWorkspaceState.mainTab ?? "summary");
+  const [selectedItemId, setSelectedItemId] = useState(savedWorkspaceState.selectedItemId ?? "");
   const [utilitySettings, setUtilitySettings] = useState<AssetUtilitySetting[]>(
     [],
   );
@@ -263,7 +276,7 @@ export function KanameterWorkspacePage({
     void loadBillingAssets(supabase!)
       .then((rows) => {
         setAssets(rows);
-        setAssetId(rows[0]?.asset_id ?? "");
+        setAssetId((current) => rows.some((row) => row.asset_id === current) ? current : rows[0]?.asset_id ?? "");
       })
       .catch((reason: Error) => setError(reason.message))
       .finally(() => setLoading(false));
@@ -271,11 +284,14 @@ export function KanameterWorkspacePage({
   }, []);
 
   useEffect(() => {
+    localStorage.setItem(workspaceStateKey, JSON.stringify({ assetId, billingMonth, mainTab, selectedItemId }));
+  }, [workspaceStateKey, assetId, billingMonth, mainTab, selectedItemId]);
+
+  useEffect(() => {
     if (!assetId) return;
     setLoading(true);
     setError("");
     setNotice("");
-    setMainTab("summary");
     void Promise.all([
       loadAssetUtilitySettings(supabase!, assetId),
       loadMeteringConfiguration(supabase!, assetId),
@@ -443,7 +459,8 @@ export function KanameterWorkspacePage({
         setSummaryMeters(results.flatMap((result) => result.rows));
         setSummarySurchargePrices(Object.fromEntries(surchargeRows.flatMap(({ surchargeId, evidence }) => {
           const storedPrice = loadStoredSurchargeUnitPrice(assetId, billingMonth, surchargeId);
-          const price = storedPrice ?? (evidence?.unit_price == null ? null : Number(evidence.unit_price));
+          const savedPrice = storedPrice ?? (evidence?.unit_price == null ? null : Number(evidence.unit_price));
+          const price = savedPrice == null || !Number.isFinite(savedPrice) ? null : Math.max(0, savedPrice);
           return price == null ? [] : [[surchargeId, price]];
         })));
       })
@@ -597,9 +614,9 @@ export function KanameterWorkspacePage({
   };
   const selectedBillingPeriod = billingPeriodRange(billingMonth, selectedPeriodPattern, meterDate, previousMeterDate);
   const fallbackPeriodEnd = new Date(Number(billingMonth.slice(0, 4)), Number(billingMonth.slice(5, 7)), 0);
-  const contractDate = selectedBillingPeriod?.end ?? fallbackPeriodEnd;
+  const contractDate = mainTab === "summary" ? fallbackPeriodEnd : selectedBillingPeriod?.end ?? fallbackPeriodEnd;
   const contractReferenceDate = `${contractDate.getFullYear()}-${String(contractDate.getMonth() + 1).padStart(2, "0")}-${String(contractDate.getDate()).padStart(2, "0")}`;
-  const periodContracts = contracts
+  const matchingPeriodContracts = contracts
     .filter((contract) =>
       (!contract.contract?.contract_start_date || contract.contract.contract_start_date <= contractReferenceDate) &&
       (!contract.contract?.contract_end_date || contract.contract.contract_end_date >= contractReferenceDate),
@@ -607,6 +624,12 @@ export function KanameterWorkspacePage({
     .sort((left, right) =>
       (right.contract?.contract_start_date ?? "").localeCompare(left.contract?.contract_start_date ?? ""),
     );
+  const latestContractByUnit = new Map<string, ContractUnit>();
+  for (const contract of matchingPeriodContracts) {
+    const unitKey = `${contract.unit?.floor_label ?? ""}\u0000${contract.unit?.unit_code.trim().toLowerCase() ?? contract.lease_contract_unit_id}`;
+    if (!latestContractByUnit.has(unitKey)) latestContractByUnit.set(unitKey, contract);
+  }
+  const periodContracts = Array.from(latestContractByUnit.values());
   const billableCategoryContracts = activeCategory
     ? periodContracts.filter((contract) => isContractCategoryBillable(contract, activeCategory))
     : periodContracts;
@@ -905,7 +928,7 @@ export function KanameterWorkspacePage({
             categorySettings={categorySettings}
             utilitySettings={utilitySettings}
             meters={summaryMeters}
-            contracts={contracts}
+            contracts={periodContracts}
             subItems={subItems}
             surcharges={surcharges}
             surchargePrices={summarySurchargePrices}
@@ -1147,7 +1170,7 @@ function loadStoredSurchargeUnitPrice(assetId: string, billingMonth: string, sur
     const stored = JSON.parse(
       localStorage.getItem(`kanameter-surcharge-evidence:${assetId}:${billingMonth}:${surchargeId}`) ?? "{}",
     ) as { unitPrice?: number };
-    return stored.unitPrice == null || !Number.isFinite(Number(stored.unitPrice)) ? null : Number(stored.unitPrice);
+    return stored.unitPrice == null || !Number.isFinite(Number(stored.unitPrice)) ? null : Math.max(0, Number(stored.unitPrice));
   } catch {
     return null;
   }
@@ -2403,7 +2426,7 @@ function SurchargeWorkspace({
     : purchaseInvoiceValue - recoveryAmountIncludingTax;
   const tenantUnitPriceIncludingTax = recoveryShortfall == null || recoveryUsage === 0
     ? null
-    : recoveryShortfall / recoveryUsage;
+    : Math.max(0, recoveryShortfall / recoveryUsage);
   const tenantUnitPriceExcludingTax = tenantUnitPriceIncludingTax == null
     ? null
     : Math.ceil((tenantUnitPriceIncludingTax / 1.1) * 100) / 100;
