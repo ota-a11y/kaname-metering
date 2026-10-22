@@ -1059,7 +1059,6 @@ export function KanameterWorkspacePage({
               </table>
             </div>
             <footer>
-              <button type="button" className="secondary" onClick={() => setRolloverConfirmationOpen(false)}>キャンセル</button>
               <button type="button" className="primary" onClick={() => {
                 rolloverCandidates.forEach(({ meter, rollover }) => setMeterRollover(meter, rollover));
                 setRolloverConfirmationOpen(false);

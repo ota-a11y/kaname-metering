@@ -1440,7 +1440,7 @@ td ul {
 .workspace-view-tabs button.utility-water.active { border-color: #2584c4; color: #176a9f; }
 .workspace-view-tabs button.utility-gas.active { border-color: #c94a43; color: #a63530; }
 .inspection-navigation { display: flex; align-items: center; gap: 18px; min-width: 0; flex: 1; }
-.subitem-period-display { display: flex; align-items: center; gap: 9px; flex: 0 0 auto; margin: 0 auto 0 clamp(36px, 8vw, 130px); white-space: nowrap; }
+.subitem-period-display { display: flex; align-items: center; gap: 9px; flex: 0 0 auto; margin: 0 clamp(24px, 5vw, 90px) 0 clamp(36px, 8vw, 130px); white-space: nowrap; }
 .subitem-period-display span { color: #65756f; font-size: 11px; font-weight: 700; }
 .subitem-period-display strong { color: #26342f; font-size: 13px; }
 .header-rollover-alert {
