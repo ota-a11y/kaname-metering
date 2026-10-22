@@ -236,7 +236,7 @@ export function KanameterWorkspacePage({
   const [utilityTariff, setUtilityTariff] = useState<UtilityTariffVersion | null>(null);
   const [values, setValues] = useState<Record<string, string>>({});
   const [rolloverValues, setRolloverValues] = useState<Record<string, number>>({});
-  const [rolloverAlertMeterId, setRolloverAlertMeterId] = useState<string | null>(null);
+  const [rolloverConfirmationOpen, setRolloverConfirmationOpen] = useState(false);
   const [usageHistory, setUsageHistory] = useState<{
     previous: Record<string, number>;
     previousYear: Record<string, number>;
@@ -457,14 +457,19 @@ export function KanameterWorkspacePage({
       clearTimeout(timers.current[meter.asset_meter_id]);
     if (raw.trim() === "" || !Number.isFinite(Number(raw)) || Number(raw) < 0)
       return;
+    const entered = Number(raw);
+    const previous = Number(meter.entry?.previous_reading);
+    if (meter.subItem.input_mode === "reading" && Number.isFinite(previous) && entered < previous && !activeRolloverValue) {
+      setError("");
+      setSaveStates((current) => ({ ...current, [meter.asset_meter_id]: "idle" }));
+      return;
+    }
     setSaveStates((current) => ({
       ...current,
       [meter.asset_meter_id]: "saving",
     }));
     timers.current[meter.asset_meter_id] = setTimeout(async () => {
       try {
-        const entered = Number(raw);
-        const previous = Number(meter.entry?.previous_reading);
         const usageOverride = meter.subItem.input_mode === "reading" && Number.isFinite(previous)
           ? entered < previous
             ? activeRolloverValue
@@ -525,26 +530,6 @@ export function KanameterWorkspacePage({
     const raw = values[meter.asset_meter_id];
     if (raw != null && raw !== "") queueSave(meter, raw, rolloverValue);
   };
-  const handleRolloverAction = (meter: MeterReadingRow) => {
-    const rolloverValue = rolloverValues[meter.asset_meter_id];
-    if (rolloverValue) {
-      setMeterRollover(meter, null);
-      return;
-    }
-    const previousReading = Number(meter.entry?.previous_reading);
-    const enteredReading = Number(values[meter.asset_meter_id]);
-    const suggestedDigits = Math.max(1, String(Math.trunc(previousReading)).replace("-", "").length);
-    const suggestedValue = 10 ** suggestedDigits;
-    const answer = window.prompt("一周する値を入力してください（例：4桁メーターは10000）", String(suggestedValue));
-    if (answer == null) return;
-    const nextValue = Number(answer.replace(/,/g, ""));
-    if (!Number.isFinite(nextValue) || nextValue <= previousReading || nextValue <= enteredReading) {
-      window.alert("一周する値は、前月値と当月値より大きい数値を入力してください。");
-      return;
-    }
-    setMeterRollover(meter, nextValue);
-  };
-
   const confirm = async () => {
     if (
       !assetId ||
@@ -613,6 +598,29 @@ export function KanameterWorkspacePage({
       ?? "exclusive"
     : "exclusive";
   const billableCategoryUnitCodes = new Set(billableCategoryContracts.map((contract) => contract.unit?.unit_code).filter(Boolean));
+  const displayedReadingMeters = selectedSubItem
+    ? meters.filter(
+        (meter) =>
+          meter.subItem.asset_meter_sub_item_id === selectedSubItem.asset_meter_sub_item_id &&
+          (meter.is_rate_source || billableCategoryUnitCodes.has(meter.assignments[0]?.unit?.unit_code)),
+      )
+    : [];
+  const rolloverCandidates = displayedReadingMeters.flatMap((meter) => {
+    const raw = values[meter.asset_meter_id];
+    const current = Number(raw);
+    const previous = Number(meter.entry?.previous_reading);
+    if (
+      meter.subItem.input_mode !== "reading" ||
+      raw?.trim() === "" ||
+      !Number.isFinite(current) ||
+      !Number.isFinite(previous) ||
+      current >= previous ||
+      rolloverValues[meter.asset_meter_id]
+    ) return [];
+    const digits = Math.max(1, String(Math.trunc(previous)).replace("-", "").length);
+    const rollover = 10 ** digits;
+    return [{ meter, previous, current, rollover, usage: rollover - previous + current }];
+  });
   const selectCategory = (category: UtilityCategory) => {
     setMainTab(category);
     setMeterSettingsItemId(null);
@@ -635,9 +643,8 @@ export function KanameterWorkspacePage({
     setBillingMonth(`${next.getUTCFullYear()}-${String(next.getUTCMonth() + 1).padStart(2, "0")}`);
   };
   const utilityClass = activeCategory ? `utility-${activeCategory}` : "";
-  const rolloverAlertMeter = rolloverAlertMeterId ? meters.find((meter) => meter.asset_meter_id === rolloverAlertMeterId) : undefined;
   useEffect(() => {
-    setRolloverAlertMeterId(null);
+    setRolloverConfirmationOpen(false);
   }, [assetId, billingMonth, selectedItemId]);
   useEffect(() => {
     if (!activeCategory || meterSettingsItemId) return;
@@ -936,10 +943,10 @@ export function KanameterWorkspacePage({
                     <strong>{periodLabelFor(billingMonth, meterDate)}</strong>
                   </div>
                 )}
-                {rolloverAlertMeter && (
-                  <div className={`header-rollover-alert ${rolloverValues[rolloverAlertMeter.asset_meter_id] ? "resolved" : ""}`}>
-                    <span>{rolloverAlertMeter.meter_code}：{rolloverValues[rolloverAlertMeter.asset_meter_id] ? `一周処理済み（${rolloverValues[rolloverAlertMeter.asset_meter_id].toLocaleString("ja-JP")}）` : "当月値が前月値を下回っています"}</span>
-                    <button type="button" disabled={status === "confirmed"} onClick={() => handleRolloverAction(rolloverAlertMeter)}>{rolloverValues[rolloverAlertMeter.asset_meter_id] ? "一周処理を解除" : "一周として処理"}</button>
+                {rolloverCandidates.length > 0 && (
+                  <div className="header-rollover-alert">
+                    <span>当月値が前月値を下回っているメーターがあります。</span>
+                    <button type="button" disabled={status === "confirmed"} onClick={() => setRolloverConfirmationOpen(true)}>一周として処理</button>
                   </div>
                 )}
               </div>
@@ -999,12 +1006,7 @@ export function KanameterWorkspacePage({
                   />
                 ) : selectedSubItem ? (
                   <CustomItemTable
-                    meters={meters.filter(
-                      (meter) =>
-                        meter.subItem.asset_meter_sub_item_id ===
-                        selectedSubItem.asset_meter_sub_item_id &&
-                        (meter.is_rate_source || billableCategoryUnitCodes.has(meter.assignments[0]?.unit?.unit_code)),
-                    )}
+                    meters={displayedReadingMeters}
                     contracts={billableCategoryContracts}
                     category={mainTab as UtilityCategory}
                     lineItemId={selectedSubItem.asset_billing_line_item_id}
@@ -1016,7 +1018,6 @@ export function KanameterWorkspacePage({
                     rolloverValues={rolloverValues}
                     columnStorageUserId={profile.user_id}
                     onChange={queueSave}
-                    onRolloverAlertChange={setRolloverAlertMeterId}
                   />
                 ) : (
                   <div className="empty-cell">小分類が設定されていません。</div>
@@ -1030,6 +1031,43 @@ export function KanameterWorkspacePage({
           新・・・新契約書（小数点以下を切り捨て）
         </footer>
       </main>
+      {rolloverConfirmationOpen && rolloverCandidates.length > 0 && (
+        <div className="rollover-modal-backdrop" role="presentation" onMouseDown={() => setRolloverConfirmationOpen(false)}>
+          <section className="rollover-modal" role="dialog" aria-modal="true" aria-labelledby="rollover-modal-title" onMouseDown={(event) => event.stopPropagation()}>
+            <header>
+              <div>
+                <span>検針値の確認</span>
+                <h2 id="rollover-modal-title">一周として処理しますか？</h2>
+              </div>
+              <button type="button" className="rollover-modal-close" aria-label="閉じる" onClick={() => setRolloverConfirmationOpen(false)}>×</button>
+            </header>
+            <p>以下のメーターを一周として処理し、表示されている使用量で保存します。</p>
+            <div className="rollover-confirmation-table-wrap">
+              <table className="rollover-confirmation-table">
+                <thead><tr><th>メーター番号</th><th>前月値</th><th>当月値</th><th>一周値</th><th>処理後の使用量</th></tr></thead>
+                <tbody>
+                  {rolloverCandidates.map(({ meter, previous, current, rollover, usage }) => (
+                    <tr key={meter.asset_meter_id}>
+                      <td>{meter.meter_code}</td>
+                      <td>{formatUsage(previous, getReadingDecimalDigits(meter.subItem.asset_meter_sub_item_id, meter.subItem.input_decimal_digits))}</td>
+                      <td>{formatUsage(current, getReadingDecimalDigits(meter.subItem.asset_meter_sub_item_id, meter.subItem.input_decimal_digits))}</td>
+                      <td>{formatUsage(rollover, getReadingDecimalDigits(meter.subItem.asset_meter_sub_item_id, meter.subItem.input_decimal_digits))}</td>
+                      <td><strong>{formatUsage(usage, getReadingDecimalDigits(meter.subItem.asset_meter_sub_item_id, meter.subItem.input_decimal_digits))}</strong></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <footer>
+              <button type="button" className="secondary" onClick={() => setRolloverConfirmationOpen(false)}>キャンセル</button>
+              <button type="button" className="primary" onClick={() => {
+                rolloverCandidates.forEach(({ meter, rollover }) => setMeterRollover(meter, rollover));
+                setRolloverConfirmationOpen(false);
+              }}>一周として処理する</button>
+            </footer>
+          </section>
+        </div>
+      )}
       {unitPriceCalculatorOpen && selectedSubItem && selectedSubItem.price_mode !== "fixed" && (
         <VariableUnitPriceCalculator
           itemName={selectedSubItem.sub_item_name}
@@ -1873,7 +1911,6 @@ function CustomItemTable({
   rolloverValues,
   columnStorageUserId,
   onChange,
-  onRolloverAlertChange,
 }: {
   meters: MeterReadingRow[];
   contracts: ContractUnit[];
@@ -1890,7 +1927,6 @@ function CustomItemTable({
   rolloverValues: Record<string, number>;
   columnStorageUserId: string;
   onChange: (meter: MeterReadingRow, value: string) => void;
-  onRolloverAlertChange: (meterId: string | null) => void;
 }) {
   const unitKey = (meter: MeterReadingRow) =>
     meter.assignments[0]?.unit_id ?? `unassigned-${meter.asset_meter_id}`;
@@ -2133,19 +2169,7 @@ function CustomItemTable({
                         inputMode="decimal"
                         disabled={confirmed}
                         value={values[meter.asset_meter_id] ?? ""}
-                        onChange={(event) => {
-                          onRolloverAlertChange(null);
-                          onChange(meter, event.target.value);
-                        }}
-                        onBlur={(event) => {
-                          const entered = Number(event.currentTarget.value);
-                          const previous = Number(meter.entry?.previous_reading);
-                          onRolloverAlertChange(
-                            showReadings && event.currentTarget.value.trim() !== "" && Number.isFinite(entered) && Number.isFinite(previous) && entered < previous
-                              ? meter.asset_meter_id
-                              : null,
-                          );
-                        }}
+                        onChange={(event) => onChange(meter, event.target.value)}
                         onKeyDown={(event) => {
                           if (event.key !== "Enter") return;
                           event.preventDefault();
