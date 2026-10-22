@@ -937,6 +937,7 @@ export function KanameterWorkspacePage({
                 meters={managedMeters.filter((meter) => meter.subItem.asset_meter_sub_item_id === meterSettingsItemId)}
                 units={units}
                 contracts={contracts}
+                billingMonth={billingMonth}
                 lockedSubItemId={meterSettingsItemId}
                 onChanged={refreshMeterData}
                 onSubItemSettingsChanged={(updated) => {
@@ -1506,6 +1507,7 @@ function SettingsView({
   meters,
   units,
   contracts,
+  billingMonth,
   onChanged,
   onSubItemSettingsChanged,
   onNotice,
@@ -1517,6 +1519,7 @@ function SettingsView({
   meters: MeterReadingRow[];
   units: MeterUnitOption[];
   contracts: ContractUnit[];
+  billingMonth: string;
   onChanged: () => Promise<void>;
   onSubItemSettingsChanged: (subItem: MeterSubItem) => void;
   onNotice: (message: string) => void;
@@ -1536,20 +1539,34 @@ function SettingsView({
   const [aggregationDecimalDigits, setAggregationDecimalDigits] = useState(activeSubItem?.aggregation_decimal_digits ?? 1);
   const [usageRoundingMode, setUsageRoundingMode] = useState<"floor" | "round" | "ceil">(activeSubItem?.usage_rounding_mode ?? "round");
   const [orderedMeters, setOrderedMeters] = useState(meters);
-  const sortedUnits = [...units].sort((left, right) =>
+  const monthStart = `${billingMonth}-01`;
+  const monthEnd = new Date(Date.UTC(Number(billingMonth.slice(0, 4)), Number(billingMonth.slice(5, 7)), 0)).toISOString().slice(0, 10);
+  const activeContracts = contracts.filter((contract) =>
+    (!contract.contract?.contract_start_date || contract.contract.contract_start_date <= monthEnd)
+    && (!contract.contract?.contract_end_date || contract.contract.contract_end_date >= monthStart),
+  );
+  const logicalUnitKey = (unit: Pick<MeterUnitOption, "floor_label" | "unit_code">) => `${unit.floor_label ?? ""}\u0000${unit.unit_code.trim().toLowerCase()}`;
+  const activeContractByUnitKey = new Map<string, ContractUnit>();
+  for (const contract of [...activeContracts].sort((left, right) =>
+    (right.contract?.contract_start_date ?? "").localeCompare(left.contract?.contract_start_date ?? ""),
+  )) {
+    if (!contract.unit) continue;
+    const key = logicalUnitKey(contract.unit);
+    if (!activeContractByUnitKey.has(key)) activeContractByUnitKey.set(key, contract);
+  }
+  const uniqueUnitsByKey = new Map<string, MeterUnitOption>();
+  for (const unit of units) {
+    const key = logicalUnitKey(unit);
+    const activeUnitId = activeContractByUnitKey.get(key)?.unit?.unit_id;
+    if (!uniqueUnitsByKey.has(key) || unit.unit_id === activeUnitId) uniqueUnitsByKey.set(key, unit);
+  }
+  const sortedUnits = Array.from(uniqueUnitsByKey.values()).sort((left, right) =>
     floorSortOrder(left.floor_label) - floorSortOrder(right.floor_label)
     || left.unit_code.localeCompare(right.unit_code, "ja-JP", { numeric: true }),
   );
-  const tenantNamesByUnitId = new Map<string, string[]>();
-  for (const contract of contracts) {
-    const targetUnitId = contract.unit?.unit_id;
-    const tenantName = contract.contract?.tenant?.tenant_name;
-    if (!targetUnitId || !tenantName) continue;
-    tenantNamesByUnitId.set(targetUnitId, Array.from(new Set([...(tenantNamesByUnitId.get(targetUnitId) ?? []), tenantName])));
-  }
   const unitOptionLabel = (unit: MeterUnitOption) => {
-    const tenants = tenantNamesByUnitId.get(unit.unit_id);
-    return `${formatFloor(unit.floor_label)} / ${unit.unit_name || unit.unit_code} / ${tenants?.join("・") || "空室"}`;
+    const tenantName = activeContractByUnitKey.get(logicalUnitKey(unit))?.contract?.tenant?.tenant_name;
+    return `${formatFloor(unit.floor_label)} / ${unit.unit_name || unit.unit_code} / ${tenantName || "空室"}`;
   };
   const [draggingMeterId, setDraggingMeterId] = useState<string | null>(null);
   useEffect(() => setOrderedMeters(meters), [meters]);

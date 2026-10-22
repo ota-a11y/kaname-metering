@@ -37,6 +37,9 @@ export type ContractUnit = {
   contract: {
     lease_contract_id: string;
     tenant_id: string;
+    contract_status: string;
+    contract_start_date: string | null;
+    contract_end_date: string | null;
     tenant: { tenant_name: string } | null;
   } | null;
   prices: Array<{
