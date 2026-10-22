@@ -599,10 +599,14 @@ export function KanameterWorkspacePage({
   const fallbackPeriodEnd = new Date(Number(billingMonth.slice(0, 4)), Number(billingMonth.slice(5, 7)), 0);
   const contractDate = selectedBillingPeriod?.end ?? fallbackPeriodEnd;
   const contractReferenceDate = `${contractDate.getFullYear()}-${String(contractDate.getMonth() + 1).padStart(2, "0")}-${String(contractDate.getDate()).padStart(2, "0")}`;
-  const periodContracts = contracts.filter((contract) =>
-    (!contract.contract?.contract_start_date || contract.contract.contract_start_date <= contractReferenceDate) &&
-    (!contract.contract?.contract_end_date || contract.contract.contract_end_date >= contractReferenceDate),
-  );
+  const periodContracts = contracts
+    .filter((contract) =>
+      (!contract.contract?.contract_start_date || contract.contract.contract_start_date <= contractReferenceDate) &&
+      (!contract.contract?.contract_end_date || contract.contract.contract_end_date >= contractReferenceDate),
+    )
+    .sort((left, right) =>
+      (right.contract?.contract_start_date ?? "").localeCompare(left.contract?.contract_start_date ?? ""),
+    );
   const billableCategoryContracts = activeCategory
     ? periodContracts.filter((contract) => isContractCategoryBillable(contract, activeCategory))
     : periodContracts;
