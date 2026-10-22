@@ -12,6 +12,7 @@ import {
   loadMeterManagement,
   loadMeterReadings,
   loadMeterUnitPriceCalculations,
+  loadUtilityTariff,
   loadSurchargeEvidence,
   loadMeterUsageHistory,
   loadMeterReadingPeriod,
@@ -21,6 +22,7 @@ import {
   saveMeterReading,
   saveMeterReadingDate,
   saveMeterUnitPriceCalculation,
+  saveNextUtilityTariffVersion,
   saveSurchargeEvidence,
   saveAssetUtilitySettings,
   saveMeteringSettings,
@@ -42,6 +44,8 @@ import type {
   TaxMode,
   UserProfile,
   UtilityCategory,
+  UtilityTariffTier,
+  UtilityTariffVersion,
 } from "../types";
 import {
   calculateOsakaGeneralWaterTariff,
@@ -59,6 +63,11 @@ const labels: Record<UtilityCategory, string> = {
   gas: "ガス",
 };
 const currentMonth = new Date().toISOString().slice(0, 7);
+function addMonths(month: string, offset: number) {
+  const [year, monthNumber] = month.split("-").map(Number);
+  const result = new Date(Date.UTC(year, monthNumber - 1 + offset, 1));
+  return `${result.getUTCFullYear()}-${String(result.getUTCMonth() + 1).padStart(2, "0")}`;
+}
 type MainTab = "summary" | UtilityCategory | "buildingSettings";
 type SaveState = "idle" | "saving" | "saved" | "error";
 type SumMode = "aggregate" | "perMeter";
@@ -229,6 +238,7 @@ export function KanameterWorkspacePage({
   const [unitPriceCalculatorOpen, setUnitPriceCalculatorOpen] = useState(false);
   const [calculatedUnitPrices, setCalculatedUnitPrices] = useState<Record<string, number>>({});
   const [unitPriceCalculations, setUnitPriceCalculations] = useState<Record<string, MeterUnitPriceCalculation>>({});
+  const [utilityTariff, setUtilityTariff] = useState<UtilityTariffVersion | null>(null);
   const [values, setValues] = useState<Record<string, string>>({});
   const [rolloverValues, setRolloverValues] = useState<Record<string, number>>({});
   const [usageHistory, setUsageHistory] = useState<{
@@ -298,6 +308,13 @@ export function KanameterWorkspacePage({
         setMeterDate(period.meterDate ?? "");
         setPreviousMeterDate(period.previousMeterDate ?? "");
       })
+      .catch((reason: Error) => setError(reason.message));
+  }, [assetId, billingMonth]);
+
+  useEffect(() => {
+    if (!assetId || !billingMonth) return;
+    void loadUtilityTariff(supabase!, assetId, billingMonth)
+      .then(setUtilityTariff)
       .catch((reason: Error) => setError(reason.message));
   }, [assetId, billingMonth]);
 
@@ -992,6 +1009,8 @@ export function KanameterWorkspacePage({
           taxMode={selectedUnitPriceTaxMode}
           priceMode={selectedSubItem.price_mode}
           initialCalculation={unitPriceCalculations[selectedSubItem.asset_meter_sub_item_id]}
+          tariffDefinition={utilityTariff}
+          billingMonth={billingMonth}
           rateSourceMeters={meters
             .filter((meter) => meter.is_rate_source && meter.subItem.asset_meter_sub_item_id === selectedSubItem.asset_meter_sub_item_id)
             .map((meter) => ({
@@ -1005,6 +1024,11 @@ export function KanameterWorkspacePage({
             setUnitPriceCalculations((current) => ({ ...current, [selectedSubItem.asset_meter_sub_item_id]: saved }));
             setCalculatedUnitPrices((current) => ({ ...current, [selectedSubItem.asset_meter_sub_item_id]: Number(saved.unit_price) }));
             setNotice("単価計算を共通DBに保存しました。");
+          }}
+          onSaveTariff={async (name, taxRate, tiers) => {
+            await saveNextUtilityTariffVersion(supabase!, assetId, billingMonth, name, taxRate, tiers);
+            const nextMonth = addMonths(billingMonth, 1);
+            setNotice(`${nextMonth}から適用する料金表を保存しました。`);
           }}
           onClose={() => setUnitPriceCalculatorOpen(false)}
         />
@@ -1049,16 +1073,22 @@ function VariableUnitPriceCalculator({
   taxMode,
   priceMode,
   initialCalculation,
+  tariffDefinition,
+  billingMonth,
   rateSourceMeters,
   onSave,
+  onSaveTariff,
   onClose,
 }: {
   itemName: string;
   taxMode: TaxMode;
   priceMode: "amount" | "master_meter";
   initialCalculation?: MeterUnitPriceCalculation;
+  tariffDefinition: UtilityTariffVersion | null;
+  billingMonth: string;
   rateSourceMeters: Array<{ id: string; label: string; usage: number }>;
   onSave: (calculation: MeterUnitPriceCalculation) => Promise<void>;
+  onSaveTariff: (name: string, taxRate: number, tiers: UtilityTariffTier[]) => Promise<void>;
   onClose: () => void;
 }) {
   const [grossExpression, setGrossExpression] = useState(formatAdditionExpression(String(initialCalculation?.billed_inclusive ?? "")));
@@ -1075,12 +1105,19 @@ function VariableUnitPriceCalculator({
   );
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState("");
+  const [editingTariff, setEditingTariff] = useState(false);
+  const [tariffSaving, setTariffSaving] = useState(false);
+  const databaseWaterTiers = tariffDefinition?.tiers.filter((tier) => tier.component === "water").map((tier) => ({ min: tier.min_usage, max: tier.max_usage ?? Number.POSITIVE_INFINITY, rate: tier.rate, deduction: tier.deduction }));
+  const databaseSewerTiers = tariffDefinition?.tiers.filter((tier) => tier.component === "sewer").map((tier) => ({ min: tier.min_usage, max: tier.max_usage ?? Number.POSITIVE_INFINITY, rate: tier.rate, deduction: tier.deduction }));
+  const waterTiers = databaseWaterTiers?.length ? databaseWaterTiers : osakaGeneralWaterTiers;
+  const sewerTiers = databaseSewerTiers?.length ? databaseSewerTiers : osakaGeneralSewerTiers;
+  const [draftTariffTiers, setDraftTariffTiers] = useState<UtilityTariffTier[]>(tariffDefinition?.tiers ?? []);
   const grossAmount = evaluateAdditionExpression(grossExpression);
   const automaticTaxAmount = grossAmount == null ? null : Math.floor(grossAmount * 10 / 110);
   const enteredTaxAmount = evaluateAdditionExpression(taxExpression);
   const selectedRateSource = rateSourceMeters.find((meter) => meter.id === rateSourceMeterId);
   const tariff = priceMode === "master_meter" && selectedRateSource
-    ? calculateOsakaGeneralWaterTariff(selectedRateSource.usage)
+    ? calculateOsakaGeneralWaterTariff(selectedRateSource.usage, waterTiers, sewerTiers, tariffDefinition?.tax_rate ?? 0.1)
     : null;
   const effectiveGrossAmount = priceMode === "master_meter" ? tariff?.totalGross ?? null : grossAmount;
   const taxAmount = priceMode === "master_meter" ? tariff?.tax ?? null : enteredTaxAmount ?? automaticTaxAmount;
@@ -1104,7 +1141,7 @@ function VariableUnitPriceCalculator({
         billed_exclusive: netAmount,
         billed_usage: usage,
         rate_source_meter_id: priceMode === "master_meter" ? rateSourceMeterId || null : null,
-        tariff_code: priceMode === "master_meter" ? OSAKA_GENERAL_WATER_TARIFF_CODE : null,
+        tariff_code: priceMode === "master_meter" ? tariffDefinition?.utility_tariff_version_id ?? OSAKA_GENERAL_WATER_TARIFF_CODE : null,
         water_inclusive: priceMode === "master_meter" ? tariff?.waterGross ?? null : null,
         sewer_inclusive: priceMode === "master_meter" ? tariff?.sewerGross ?? null : null,
         unit_price_rounding_digits: unitPriceDigits,
@@ -1115,6 +1152,26 @@ function VariableUnitPriceCalculator({
       setSaveError((reason as Error).message);
     } finally {
       setSaving(false);
+    }
+  };
+
+  const beginTariffEdit = () => {
+    setDraftTariffTiers(tariffDefinition?.tiers ?? [
+      ...osakaGeneralWaterTiers.map((tier, index) => ({ component: "water" as const, min_usage: tier.min, max_usage: Number.isFinite(tier.max) ? tier.max : null, rate: tier.rate, deduction: tier.deduction, sort_order: index + 1 })),
+      ...osakaGeneralSewerTiers.map((tier, index) => ({ component: "sewer" as const, min_usage: tier.min, max_usage: Number.isFinite(tier.max) ? tier.max : null, rate: tier.rate, deduction: tier.deduction, sort_order: index + 1 })),
+    ]);
+    setEditingTariff(true);
+  };
+  const saveTariff = async () => {
+    setTariffSaving(true);
+    setSaveError("");
+    try {
+      await onSaveTariff(tariffDefinition?.tariff_name ?? "大阪市・一般用・1か月", tariffDefinition?.tax_rate ?? 0.1, draftTariffTiers);
+      setEditingTariff(false);
+    } catch (reason) {
+      setSaveError((reason as Error).message);
+    } finally {
+      setTariffSaving(false);
     }
   };
 
@@ -1150,7 +1207,7 @@ function VariableUnitPriceCalculator({
                   {rateSourceMeters.map((meter) => <option key={meter.id} value={meter.id}>{meter.label}</option>)}
                 </select>
               </label>
-              <div className="calculator-result-field"><span>料金表</span><strong>大阪市・一般用・1か月</strong></div>
+              <div className="calculator-result-field"><span>料金表</span><strong>{tariffDefinition?.tariff_name ?? "大阪市・一般用・1か月"}</strong></div>
             </div>
             <div className="calculator-result-field calculator-usage-field"><span>計算使用量</span><strong>{tariff ? `${tariff.billedUsage.toLocaleString("ja-JP")} m³` : "—"}</strong></div>
             <table className="calculator-amount-breakdown">
@@ -1163,12 +1220,24 @@ function VariableUnitPriceCalculator({
             </table>
             <details className="tariff-details">
               <summary>段階料金表と計算方法を確認</summary>
-              <p>使用量は小数点以下を切り捨てます。該当段階の「単価 × 使用量 − 控除額」で税抜額を求め、上水道・下水道をそれぞれ10%税込にして合算します。</p>
-              <div className="tariff-tables">
-                <TariffTable title="上水道料金" tiers={osakaGeneralWaterTiers} />
-                <TariffTable title="下水道使用料" tiers={osakaGeneralSewerTiers} />
+              <div className="tariff-details-header">
+                <p>使用量は小数点以下を切り捨てます。該当段階の「単価 × 使用量 − 控除額」で税抜額を求め、上水道・下水道をそれぞれ{((tariffDefinition?.tax_rate ?? 0.1) * 100).toLocaleString("ja-JP")}%税込にして合算します。</p>
+                {!editingTariff && <button type="button" onClick={beginTariffEdit}>編集</button>}
               </div>
-              <small>料金表：大阪市 一般用・1か月（令和元年11月1日適用）</small>
+              <div className="tariff-tables">
+                {editingTariff ? <>
+                  <TariffEditorTable title="上水道料金" component="water" tiers={draftTariffTiers} onChange={setDraftTariffTiers} />
+                  <TariffEditorTable title="下水道使用料" component="sewer" tiers={draftTariffTiers} onChange={setDraftTariffTiers} />
+                </> : <>
+                  <TariffTable title="上水道料金" tiers={waterTiers} />
+                  <TariffTable title="下水道使用料" tiers={sewerTiers} />
+                </>}
+              </div>
+              {editingTariff ? <div className="tariff-edit-actions">
+                <span>{addMonths(billingMonth, 1)}から適用されます。</span>
+                <button type="button" onClick={() => setEditingTariff(false)}>キャンセル</button>
+                <button type="button" className="primary" disabled={tariffSaving} onClick={() => void saveTariff()}>{tariffSaving ? "保存中…" : "翌月から適用"}</button>
+              </div> : <small>適用期間：{tariffDefinition?.effective_from ?? "2019-11-01"} ～ {tariffDefinition?.effective_to ?? "現在"}</small>}
             </details>
           </div>
         ) : <div className="calculator-fields" onKeyDown={moveToNextInput}>
@@ -1229,6 +1298,31 @@ function TariffTable({ title, tiers }: { title: string; tiers: OsakaWaterTariffT
           <td>{Number.isFinite(tier.max) ? `${tier.min}～${tier.max}m³` : `${tier.min.toLocaleString("ja-JP")}m³以上`}</td>
           <td>{tier.rate.toLocaleString("ja-JP")}円</td>
           <td>{tier.deduction < 0 ? `＋${Math.abs(tier.deduction).toLocaleString("ja-JP")}円` : `${tier.deduction.toLocaleString("ja-JP")}円`}</td>
+        </tr>
+      ))}</tbody>
+    </table>
+  );
+}
+
+function TariffEditorTable({ title, component, tiers, onChange }: {
+  title: string;
+  component: "water" | "sewer";
+  tiers: UtilityTariffTier[];
+  onChange: (tiers: UtilityTariffTier[]) => void;
+}) {
+  const rows = tiers.filter((tier) => tier.component === component).sort((left, right) => left.sort_order - right.sort_order);
+  const update = (sortOrder: number, patch: Partial<UtilityTariffTier>) => onChange(tiers.map((tier) =>
+    tier.component === component && tier.sort_order === sortOrder ? { ...tier, ...patch } : tier,
+  ));
+  return (
+    <table className="tariff-editor-table">
+      <caption>{title}</caption>
+      <thead><tr><th>使用量</th><th>単価</th><th>控除額</th></tr></thead>
+      <tbody>{rows.map((tier) => (
+        <tr key={tier.sort_order}>
+          <td>{tier.max_usage == null ? `${tier.min_usage.toLocaleString("ja-JP")}m³以上` : `${tier.min_usage}～${tier.max_usage}m³`}</td>
+          <td><input type="number" min="0" step="0.01" value={tier.rate} onChange={(event) => update(tier.sort_order, { rate: Number(event.target.value) })} /></td>
+          <td><input type="number" step="1" value={tier.deduction} onChange={(event) => update(tier.sort_order, { deduction: Number(event.target.value) })} /></td>
         </tr>
       ))}</tbody>
     </table>

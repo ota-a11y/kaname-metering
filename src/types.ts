@@ -156,6 +156,24 @@ export type MeterUnitPriceCalculation = {
   unit_price_rounding_mode: "floor" | "round" | "ceil";
 };
 
+export type UtilityTariffTier = {
+  component: "water" | "sewer";
+  min_usage: number;
+  max_usage: number | null;
+  rate: number;
+  deduction: number;
+  sort_order: number;
+};
+
+export type UtilityTariffVersion = {
+  utility_tariff_version_id: string;
+  tariff_name: string;
+  effective_from: string;
+  effective_to: string | null;
+  tax_rate: number;
+  tiers: UtilityTariffTier[];
+};
+
 export type MeterSurcharge = {
   asset_meter_surcharge_id: string;
   category: UtilityCategory;

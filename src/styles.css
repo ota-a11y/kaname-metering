@@ -1634,6 +1634,9 @@ td ul {
 .tariff-details summary { cursor: pointer; color: #176a9f; font-weight: 700; }
 .tariff-details p { margin: 12px 0; color: #52635d; font-size: 12px; line-height: 1.7; }
 .tariff-details small { display: block; margin-top: 10px; color: #6c7c76; }
+.tariff-details-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.tariff-details-header button,
+.tariff-edit-actions button { padding: 6px 12px; border: 1px solid #176a9f; border-radius: 5px; color: #176a9f; background: #fff; font-weight: 700; white-space: nowrap; }
 .tariff-tables { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .tariff-tables table { width: 100%; border-collapse: collapse; font-size: 11px; }
 .tariff-tables caption { padding: 6px; color: #26342f; font-weight: 700; text-align: left; }
@@ -1641,6 +1644,10 @@ td ul {
 .tariff-tables td { padding: 5px 7px; border: 1px solid #d5dfdb; text-align: right; }
 .tariff-tables th:first-child,
 .tariff-tables td:first-child { text-align: left; }
+.tariff-editor-table input { width: 100%; min-width: 70px; padding: 5px 6px; border: 1px solid #bccbc5; border-radius: 4px; text-align: right; }
+.tariff-edit-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+.tariff-edit-actions span { margin-right: auto; color: #52635d; font-size: 12px; font-weight: 700; }
+.tariff-edit-actions button.primary { color: #fff; background: #176a9f; }
 @media (max-width: 720px) {
   .calculator-master-overview { grid-template-columns: 1fr; }
   .calculator-usage-field { width: 100%; }

@@ -12,7 +12,60 @@ import type {
   MeterUnitPriceCalculation,
   MeterUnitOption,
   UtilityCategory,
+  UtilityTariffTier,
+  UtilityTariffVersion,
 } from "../types";
+
+export async function loadUtilityTariff(
+  client: SupabaseClient,
+  assetId: string,
+  billingMonth: string,
+): Promise<UtilityTariffVersion | null> {
+  const month = `${billingMonth}-01`;
+  const { data, error } = await client
+    .from("utility_tariff_version")
+    .select("utility_tariff_version_id, tariff_name, effective_from, effective_to, tax_rate, tiers:utility_tariff_tier(component, min_usage, max_usage, rate, deduction, sort_order)")
+    .eq("asset_id", assetId)
+    .eq("tariff_kind", "osaka_general_water")
+    .lte("effective_from", month)
+    .or(`effective_to.is.null,effective_to.gte.${month}`)
+    .order("effective_from", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  fail("料金表を読み込めませんでした", error);
+  if (!data) return null;
+  return {
+    ...data,
+    tax_rate: Number(data.tax_rate),
+    tiers: ((data.tiers ?? []) as UtilityTariffTier[]).map((tier) => ({
+      ...tier,
+      min_usage: Number(tier.min_usage),
+      max_usage: tier.max_usage == null ? null : Number(tier.max_usage),
+      rate: Number(tier.rate),
+      deduction: Number(tier.deduction),
+      sort_order: Number(tier.sort_order),
+    })).sort((left, right) => left.component.localeCompare(right.component) || left.sort_order - right.sort_order),
+  } as UtilityTariffVersion;
+}
+
+export async function saveNextUtilityTariffVersion(
+  client: SupabaseClient,
+  assetId: string,
+  billingMonth: string,
+  tariffName: string,
+  taxRate: number,
+  tiers: UtilityTariffTier[],
+) {
+  const { data, error } = await client.rpc("save_next_utility_tariff_version", {
+    p_asset_id: assetId,
+    p_billing_month: `${billingMonth}-01`,
+    p_tariff_name: tariffName,
+    p_tax_rate: taxRate,
+    p_tiers: tiers,
+  });
+  fail("翌月適用の料金表を保存できませんでした", error);
+  return data as string;
+}
 
 export async function loadMeterUnitPriceCalculations(
   client: SupabaseClient,

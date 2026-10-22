@@ -43,12 +43,17 @@ function netAmount(usage: number, tiers: OsakaWaterTariffTier[]) {
 }
 
 // 大阪市の一般用・1か月分（令和元年11月1日適用）の料金式です。
-export function calculateOsakaGeneralWaterTariff(usage: number): OsakaWaterTariffResult {
+export function calculateOsakaGeneralWaterTariff(
+  usage: number,
+  waterTiers: OsakaWaterTariffTier[] = osakaGeneralWaterTiers,
+  sewerTiers: OsakaWaterTariffTier[] = osakaGeneralSewerTiers,
+  taxRate = 0.1,
+): OsakaWaterTariffResult {
   const billedUsage = Math.max(0, Math.floor(usage));
   const waterNet = netAmount(billedUsage, osakaGeneralWaterTiers);
   const sewerNet = netAmount(billedUsage, osakaGeneralSewerTiers);
-  const waterGross = Math.floor(waterNet * 1.1);
-  const sewerGross = Math.floor(sewerNet * 1.1);
+  const waterGross = Math.floor(waterNet * (1 + taxRate));
+  const sewerGross = Math.floor(sewerNet * (1 + taxRate));
   const totalNet = waterNet + sewerNet;
   const totalGross = waterGross + sewerGross;
   return {
