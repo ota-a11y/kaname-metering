@@ -1862,6 +1862,7 @@ function CustomItemTable({
   onChange: (meter: MeterReadingRow, value: string) => void;
   onRollover: (meter: MeterReadingRow, rolloverValue: number | null) => void;
 }) {
+  const [validatedMeterIds, setValidatedMeterIds] = useState<Set<string>>(new Set());
   const unitKey = (meter: MeterReadingRow) =>
     meter.assignments[0]?.unit_id ?? `unassigned-${meter.asset_meter_id}`;
   const contractFor = (meter: MeterReadingRow) =>
@@ -1913,6 +1914,7 @@ function CustomItemTable({
       left.meter_code.localeCompare(right.meter_code, "ja-JP", { numeric: true })
     );
   });
+  const billableMeters = orderedMeters.filter((meter) => !meter.is_rate_source);
   const rankedUnitPrices = Array.from(new Set(
     orderedMeters.map((meter) => unitPrice(meter)).filter((price): price is number => price != null),
   )).sort((left, right) => right - left);
@@ -1922,10 +1924,10 @@ function CustomItemTable({
     return rank >= 0 && rank < 3 ? `unit-price-rank-${rank + 1}` : "";
   };
   const tenantGroups = Array.from(new Map(
-    orderedMeters.map((meter) => [tenantKey(meter), orderedMeters.filter((row) => tenantKey(row) === tenantKey(meter))]),
+    billableMeters.map((meter) => [tenantKey(meter), billableMeters.filter((row) => tenantKey(row) === tenantKey(meter))]),
   ).values());
   const billingGroups = Array.from(new Map(
-    orderedMeters.map((meter) => [billingKey(meter), orderedMeters.filter((row) => billingKey(row) === billingKey(meter))]),
+    billableMeters.map((meter) => [billingKey(meter), billableMeters.filter((row) => billingKey(row) === billingKey(meter))]),
   ).values());
   const chargeForMeters = (targetMeters: MeterReadingRow[]) => {
     const first = targetMeters[0];
@@ -1955,7 +1957,7 @@ function CustomItemTable({
       tenantSum + displayGroupsForBilling(billingMeters)
         .reduce((groupSum, group) => groupSum + chargeForMeters(group).usage, 0), 0);
   };
-  const totalMeterUsage = orderedMeters.reduce((sum, meter) => sum + roundToDigits(
+  const totalMeterUsage = billableMeters.reduce((sum, meter) => sum + roundToDigits(
     meterUsage(meter),
     showReadings ? meter.subItem.aggregation_decimal_digits : meter.subItem.input_decimal_digits,
     meter.subItem.usage_rounding_mode,
@@ -1966,22 +1968,16 @@ function CustomItemTable({
   const totalTenantUsage = tenantGroups.reduce((sum, group) => sum + displayedUsageForTenant(group), 0);
   const previousUsageFor = (meter: MeterReadingRow) => usageHistory.previous[meter.asset_meter_id] ?? 0;
   const previousYearUsageFor = (meter: MeterReadingRow) => usageHistory.previousYear[meter.asset_meter_id] ?? 0;
-  const totalPreviousUsage = orderedMeters.reduce((sum, meter) => sum + roundToDigits(
+  const totalPreviousUsage = billableMeters.reduce((sum, meter) => sum + roundToDigits(
     adjustedMeterUsage(meter, meters, previousUsageFor),
     meter.subItem.aggregation_decimal_digits,
     meter.subItem.usage_rounding_mode,
   ), 0);
-  const totalPreviousYearUsage = orderedMeters.reduce((sum, meter) => sum + roundToDigits(
+  const totalPreviousYearUsage = billableMeters.reduce((sum, meter) => sum + roundToDigits(
     adjustedMeterUsage(meter, meters, previousYearUsageFor),
     meter.subItem.aggregation_decimal_digits,
     meter.subItem.usage_rounding_mode,
   ), 0);
-  const totalPreviousReading = orderedMeters.reduce((sum, meter) => sum + roundToDigits(
-    Number(meter.entry?.previous_reading ?? 0),
-    getReadingDecimalDigits(meter.subItem.asset_meter_sub_item_id, meter.subItem.input_decimal_digits),
-    "round",
-  ), 0);
-  const totalCurrentReading = orderedMeters.reduce((sum, meter) => sum + Number(values[meter.asset_meter_id] || meter.entry?.current_reading || 0), 0);
   const inputTotalDigits = orderedMeters[0]?.subItem.input_decimal_digits ?? 1;
   const aggregationTotalDigits = orderedMeters[0]?.subItem.aggregation_decimal_digits ?? 1;
   return (
@@ -2099,7 +2095,7 @@ function CustomItemTable({
                   </td>
                 )}
                 <td><strong>{meter.parent_meter_id && <span className="child-meter-mark">↳ 子</span>}{meter.meter_code}</strong></td>
-                <td className={`numeric unit-price-cell ${unitPriceClass(price)}`}>{formatYen(price)}</td>
+                <td className={`numeric unit-price-cell ${meter.is_rate_source ? "" : unitPriceClass(price)}`}>{meter.is_rate_source ? "—" : formatYen(price)}</td>
                 {showReadings && (
                   <td className="numeric reading-value">
                     {meter.entry?.previous_reading == null ? "—" : formatUsage(Number(meter.entry.previous_reading), getReadingDecimalDigits(meter.subItem.asset_meter_sub_item_id, meter.subItem.input_decimal_digits))}
@@ -2112,7 +2108,16 @@ function CustomItemTable({
                       inputMode="decimal"
                       disabled={confirmed}
                       value={values[meter.asset_meter_id] ?? ""}
-                      onChange={(event) => onChange(meter, event.target.value)}
+                      onChange={(event) => {
+                        setValidatedMeterIds((current) => {
+                          if (!current.has(meter.asset_meter_id)) return current;
+                          const next = new Set(current);
+                          next.delete(meter.asset_meter_id);
+                          return next;
+                        });
+                        onChange(meter, event.target.value);
+                      }}
+                      onBlur={() => setValidatedMeterIds((current) => new Set(current).add(meter.asset_meter_id))}
                       onKeyDown={(event) => {
                         if (event.key !== "Enter") return;
                         event.preventDefault();
@@ -2127,7 +2132,7 @@ function CustomItemTable({
                       }}
                     />
                     {state === "error" && <span className="save-error" title="保存エラー" />}
-                    {rolloverCandidate && (
+                    {rolloverCandidate && validatedMeterIds.has(meter.asset_meter_id) && (
                       <div className={`rollover-notice ${rolloverValue ? "resolved" : ""}`}>
                         <span>{rolloverValue ? `一周処理済み（${rolloverValue.toLocaleString("ja-JP")}）` : "当月値が前月値を下回っています"}</span>
                         <button
@@ -2161,7 +2166,9 @@ function CustomItemTable({
                     <strong>{formatUsage(currentUsage, aggregationDigits)}</strong>
                   </td>
                 )}
-                {aggregateBilling && firstInBillingGroup ? (
+                {meter.is_rate_source ? (
+                  <td className="numeric">—</td>
+                ) : aggregateBilling && firstInBillingGroup ? (
                   <td className="numeric unit-total tenant-boundary" rowSpan={billingMeters.length}>
                     <span className="merged-value">{formatUsage(billingUsage, aggregationDigits)}</span>
                   </td>
@@ -2170,7 +2177,9 @@ function CustomItemTable({
                     <span className="merged-value">{unit ? formatUsage(unitUsage, aggregationDigits) : "—"}</span>
                   </td>
                 ) : null}
-                {aggregateBilling && firstInBillingGroup ? (
+                {meter.is_rate_source ? (
+                  <td className="numeric">—</td>
+                ) : aggregateBilling && firstInBillingGroup ? (
                   <td className="numeric unit-amount tenant-boundary" rowSpan={billingMeters.length}>
                     <span className="merged-value">{formatYen(billingAmount)}</span>
                   </td>
@@ -2179,7 +2188,9 @@ function CustomItemTable({
                     <span className="merged-value">{unitAmount == null ? "未設定" : formatYen(unitAmount)}</span>
                   </td>
                 ) : null}
-                {firstInTenant && (
+                {meter.is_rate_source ? (
+                  <><td className="numeric">—</td><td className="numeric">—</td></>
+                ) : firstInTenant && (
                   <>
                     <td className="numeric tenant-total" rowSpan={tenantMeters.length}><span className="merged-value">{formatUsage(tenantUsage, aggregationDigits)}</span></td>
                     <td className="numeric tenant-total" rowSpan={tenantMeters.length}><span className="merged-value">{formatYen(tenantAmount)}</span></td>
@@ -2205,7 +2216,7 @@ function CustomItemTable({
             <tr className="table-total-row">
               <th colSpan={4}>合計</th>
               <th>—</th>
-              {showReadings && <><th className="numeric">{formatUsage(totalPreviousReading, getReadingDecimalDigits(orderedMeters[0].subItem.asset_meter_sub_item_id, orderedMeters[0].subItem.input_decimal_digits))}</th><th className="numeric">{formatUsage(totalCurrentReading, getReadingDecimalDigits(orderedMeters[0].subItem.asset_meter_sub_item_id, orderedMeters[0].subItem.input_decimal_digits))}</th></>}
+              {showReadings && <><th className="numeric">—</th><th className="numeric">—</th></>}
               <th className="numeric">{formatUsage(totalMeterUsage, showReadings ? aggregationTotalDigits : inputTotalDigits)}</th>
               <th className="numeric">{formatUsage(totalUnitUsage, aggregationTotalDigits)}</th>
               <th className="numeric">{formatYen(totalAmount)}</th>
