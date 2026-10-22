@@ -1896,6 +1896,7 @@ function CustomItemTable({
     const leftUnit = left.assignments[0]?.unit;
     const rightUnit = right.assignments[0]?.unit;
     return (
+      Number(right.is_rate_source) - Number(left.is_rate_source) ||
       (contractOrder.get(leftUnit?.unit_code) ?? Number.MAX_SAFE_INTEGER) -
         (contractOrder.get(rightUnit?.unit_code) ?? Number.MAX_SAFE_INTEGER) ||
       (leftUnit?.floor_label ?? "").localeCompare(rightUnit?.floor_label ?? "", "ja-JP", { numeric: true }) ||
