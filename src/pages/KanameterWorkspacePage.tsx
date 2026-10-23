@@ -1772,7 +1772,8 @@ function SummaryView({
     const basic = setting?.is_basic_billable ? subItems.find((item) => item.category === category && item.sub_item_kind === "basic") : undefined;
     const custom = subItems.filter((item) => item.category === category && item.sub_item_kind === "custom");
     const surcharge = category === "electric" ? surcharges.find((item) => item.category === category && item.is_billable) : undefined;
-    return { category, enabled: !!setting?.is_billable, basic, custom, surcharge, showTotal: custom.length > 1 };
+    const subItemCount = (basic ? 1 : 0) + custom.length;
+    return { category, enabled: !!setting?.is_billable, basic, custom, surcharge, showTotal: subItemCount >= 2 };
   }).filter((group) => group.enabled);
   const billingGroupIds = Array.from(new Set(eligibleContracts.map((row) => billingGroupKey(row))));
   const priceForContractItem = (contract: ContractUnit, item: MeterSubItem) => {
@@ -1865,12 +1866,12 @@ function SummaryView({
             </tr>
             <tr>{categoryColumns.flatMap((group) => [
               ...(group.basic ? [<ColumnHeader className={`summary-subhead utility-${group.category}`} rowSpan={2} textAlign="amount" columnGroup="summary-amount" key={`${group.category}-basic`}>基本料</ColumnHeader>] : []),
-              ...group.custom.flatMap((item) => group.custom.length === 1
+              ...group.custom.flatMap((item) => !group.showTotal
                 ? [<ColumnHeader className={`summary-subhead utility-${group.category}`} rowSpan={2} columnGroup="summary-usage" key={`${item.asset_meter_sub_item_id}-usage-direct`}>使用量</ColumnHeader>, <ColumnHeader className={`summary-subhead utility-${group.category}`} rowSpan={2} textAlign="amount" columnGroup="summary-amount" key={`${item.asset_meter_sub_item_id}-amount-direct`}>金額</ColumnHeader>]
                 : [<th className={`summary-subhead utility-${group.category}`} colSpan={2} key={item.asset_meter_sub_item_id}>{item.sub_item_name}</th>]),
               ...(group.showTotal ? [<th className={`summary-subhead utility-${group.category}`} colSpan={2} key={`${group.category}-total`}>{labels[group.category]}合計</th>] : []),
             ])}</tr>
-            <tr>{categoryColumns.flatMap((group) => group.custom.length > 1 ? [
+            <tr>{categoryColumns.flatMap((group) => group.showTotal ? [
               ...group.custom.flatMap((item) => [<ColumnHeader className={`summary-subhead utility-${group.category}`} columnGroup="summary-usage" key={`${item.asset_meter_sub_item_id}-usage`}>使用量</ColumnHeader>, <ColumnHeader className={`summary-subhead utility-${group.category}`} textAlign="amount" columnGroup="summary-amount" key={`${item.asset_meter_sub_item_id}-amount`}>金額</ColumnHeader>]),
               <ColumnHeader className={`summary-subhead utility-${group.category}`} columnGroup="summary-usage" key={`${group.category}-total-usage`}>使用量</ColumnHeader>,
               <ColumnHeader className={`summary-subhead utility-${group.category}`} textAlign="amount" columnGroup="summary-amount" key={`${group.category}-total-amount`}>金額</ColumnHeader>,
