@@ -3104,7 +3104,16 @@ function BuildingSettingsView({
     setDraftCategories((current) => current.map((row) => row.category === category ? { ...row, ...patch } : row));
   const updateBasicBillable = (category: UtilityCategory, checked: boolean) => {
     setDraftCategories((current) => current.map((row) => row.category === category ? { ...row, is_basic_billable: checked } : row));
-    if (checked) setDraftSubItems((current) => ensureBasicSubItems([{ category, usage_unit: "", is_billable: true, is_basic_billable: true }], current));
+    if (checked) setDraftSubItems((current) => ensureBasicSubItems([{
+      category,
+      usage_unit: "",
+      is_billable: true,
+      is_basic_billable: true,
+      basic_charge_method: "fixed",
+      basic_charge_fixed_amount: null,
+      basic_charge_area_unit_price: null,
+      basic_charge_rounding_mode: "round",
+    }], current));
   };
   const updateUtilitySetting = (category: UtilityCategory, patch: Partial<AssetUtilitySetting>) =>
     setDraftUtilitySettings((current) => {
@@ -3166,6 +3175,14 @@ function BuildingSettingsView({
             const usesSharedPrice = utilitySetting.price_scope === "category";
             return <section className={`configuration-category utility-${category}`} key={category}>
               <header className="configuration-category-header"><strong>{labels[category]}</strong><label>使用量の単位<input value={setting.usage_unit} onChange={(event) => updateCategory(category, { usage_unit: event.target.value })} /></label><label className="checkbox-label"><input type="checkbox" checked={setting.is_basic_billable} onChange={(event) => updateBasicBillable(category, event.target.checked)} />基本料を請求する</label><label className="price-setting-label">既定単価設定<select value={utilitySetting.price_scope} onChange={(event) => updateUtilitySetting(category, { price_scope: event.target.value as AssetUtilitySetting["price_scope"] })}><option value="category">共通して設定</option><option value="line_item">小分類ごとに設定</option></select></label>{usesSharedPrice && <label className="price-setting-label">共通単価<input type="number" min="0" step="0.0001" value={utilitySetting.default_unit_price ?? ""} onChange={(event) => updateUtilitySetting(category, { default_unit_price: event.target.value === "" ? null : Number(event.target.value) })} /></label>}<label className="checkbox-label"><input type="checkbox" checked={utilitySetting.show_in_rent_roll} onChange={(event) => updateUtilitySetting(category, { show_in_rent_roll: event.target.checked })} />単価をレントロールに表示</label><button type="button" className="text-button" onClick={() => addSubItem(category)}>小分類を追加</button></header>
+              {setting.is_basic_billable && <div className="basic-charge-rule-settings">
+                <strong>新規契約の基本料</strong>
+                <label>算定方法<select value={setting.basic_charge_method} onChange={(event) => updateCategory(category, { basic_charge_method: event.target.value as MeterCategorySetting["basic_charge_method"] })}><option value="fixed">定額</option><option value="area">契約面積 × 単価</option></select></label>
+                {setting.basic_charge_method === "fixed"
+                  ? <label>既定額<input type="number" min="0" step="1" value={setting.basic_charge_fixed_amount ?? ""} placeholder="未設定" onChange={(event) => updateCategory(category, { basic_charge_fixed_amount: event.target.value === "" ? null : Number(event.target.value) })} /><span>円</span></label>
+                  : <><label>面積単価<input type="number" min="0" step="0.01" value={setting.basic_charge_area_unit_price ?? ""} placeholder="未設定" onChange={(event) => updateCategory(category, { basic_charge_area_unit_price: event.target.value === "" ? null : Number(event.target.value) })} /><span>円/㎡</span></label><label>1円未満<select value={setting.basic_charge_rounding_mode} onChange={(event) => updateCategory(category, { basic_charge_rounding_mode: event.target.value as MeterCategorySetting["basic_charge_rounding_mode"] })}><option value="floor">切り捨て</option><option value="round">四捨五入</option><option value="ceil">切り上げ</option></select></label></>}
+                <small>新規契約の登録時に一度だけ計算し、契約へ保存します。保存後の金額は手直しできます。</small>
+              </div>}
               <div className="table-wrap"><ResizableTable className="configuration-table resizable-configuration-table" storageKey={`building-settings:${assetId}:meter-configuration`} storageUserId={columnStorageUserId} columnGroups={["subitem", "line-item", "price-mode", "default-price", "invoice-price", "tax-mode", "tax-rounding", "billing-period", "actions"]}><thead><tr><ColumnHeader columnGroup="subitem">小分類</ColumnHeader><ColumnHeader columnGroup="line-item">請求明細の項目</ColumnHeader><ColumnHeader columnGroup="price-mode">単価計算方法</ColumnHeader><ColumnHeader columnGroup="default-price">既定単価</ColumnHeader><ColumnHeader columnGroup="invoice-price">請求書に単価を表示</ColumnHeader><ColumnHeader columnGroup="tax-mode">税区分</ColumnHeader><ColumnHeader columnGroup="tax-rounding">税込単価の税抜換算</ColumnHeader><ColumnHeader columnGroup="billing-period">既定の請求期間</ColumnHeader><ColumnHeader columnGroup="actions" /></tr></thead><tbody>
                 {items.map((item) => <tr key={item.asset_meter_sub_item_id}>
                   <td>{item.sub_item_kind === "basic"

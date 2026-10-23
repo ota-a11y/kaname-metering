@@ -837,6 +837,12 @@ td ul {
 .configuration-category > header select { box-sizing: border-box; height: 34px; padding: 7px 9px; }
 .configuration-category-header .price-setting-label { flex-wrap: nowrap; white-space: nowrap; }
 .configuration-category-header .checkbox-label + .price-setting-label { margin-left: 12px; }
+.basic-charge-rule-settings { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; padding: 12px 14px; border-bottom: 1px solid #e5e8df; background: #fafbf7; }
+.basic-charge-rule-settings > strong { align-self: center; color: #334338; }
+.basic-charge-rule-settings label { display: grid; gap: 4px; color: #657169; font-size: 11px; }
+.basic-charge-rule-settings label span { margin-left: 5px; color: #7b857e; }
+.basic-charge-rule-settings input { width: 120px; }
+.basic-charge-rule-settings small { flex-basis: 100%; color: #7b857e; }
 .configuration-category .text-button { margin-left: auto; border: 0; color: #a43c32; background: transparent; text-decoration: underline; }
 .checkbox-label input { width: auto; }
 .configuration-table { width: 100%; border-collapse: collapse; font-size: 12px; }
