@@ -1147,6 +1147,8 @@ td ul {
   display: inline-block;
 }
 .workspace-data-table tbody tr { height: 48px; }
+.workspace-data-table tbody tr.vacant-meter-row > td { background-color: #f2f4f3; }
+.workspace-data-table tbody tr.vacant-meter-row .reading-input { background-color: #fafbfa; }
 .workspace-data-table tfoot th,
 .summary-billing-table tfoot th {
   padding: 13px 14px;
@@ -1390,6 +1392,8 @@ td ul {
   cursor: not-allowed;
 }
 .meter-settings-table { min-width: 720px; }
+.meter-name-editor { display: flex; align-items: center; gap: 6px; }
+.meter-name-editor input { min-width: 96px; width: 100%; font-weight: 700; }
 .meter-settings-table th:first-child,
 .meter-settings-table td.drag-cell { width: 44px; padding-inline: 8px; }
 .drag-handle {
@@ -1406,6 +1410,27 @@ td ul {
 .drag-handle:active { cursor: grabbing; }
 .meter-settings-table tr.is-dragging { opacity: .42; }
 .muted-setting { color: #89958f; font-size: 11px; white-space: nowrap; }
+.meter-adjustment-control { display: flex; align-items: center; justify-content: center; gap: 8px; white-space: nowrap; }
+.meter-adjustment-control label { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 700; }
+.meter-adjustment-control input { margin: 0; }
+.meter-adjustment-modal { width: min(560px, 100%); }
+.meter-adjustment-form { display: grid; gap: 16px; margin-top: 18px; }
+.meter-adjustment-form label { display: grid; gap: 6px; color: #52645e; font-size: 12px; font-weight: 700; }
+.meter-adjustment-form select,
+.meter-adjustment-form input,
+.meter-adjustment-form textarea {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 9px 10px;
+  border: 1px solid #ccd9d4;
+  border-radius: 4px;
+  color: #26342f;
+  background: #fff;
+  font: inherit;
+}
+.meter-adjustment-form textarea { resize: vertical; }
+.meter-adjustment-ratio { display: grid; grid-template-columns: 1fr auto 1fr; align-items: end; gap: 12px; }
+.meter-adjustment-ratio > span { padding-bottom: 10px; color: #65756f; font-weight: 800; }
 .child-meter-mark {
   display: inline-block;
   margin-right: 6px;

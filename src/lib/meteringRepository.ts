@@ -114,6 +114,32 @@ export async function saveMeterParent(
   fail("親メーター設定を保存できませんでした", error);
 }
 
+export async function saveMeterBillingAdjustment(
+  client: SupabaseClient,
+  meterId: string,
+  adjustment: {
+    enabled: boolean;
+    method: "ratio" | "percent";
+    percent: number | null;
+    numerator: number | null;
+    denominator: number | null;
+    note: string;
+  },
+) {
+  const { error } = await client
+    .from("asset_meter")
+    .update({
+      billing_adjustment_enabled: adjustment.enabled,
+      billing_adjustment_method: adjustment.enabled ? adjustment.method : null,
+      billing_adjustment_percent: adjustment.enabled && adjustment.method === "percent" ? adjustment.percent : null,
+      billing_adjustment_numerator: adjustment.enabled && adjustment.method === "ratio" ? adjustment.numerator : null,
+      billing_adjustment_denominator: adjustment.enabled && adjustment.method === "ratio" ? adjustment.denominator : null,
+      billing_adjustment_note: adjustment.note.trim() || null,
+    })
+    .eq("asset_meter_id", meterId);
+  fail("メーター補正設定を保存できませんでした", error);
+}
+
 function withDatabaseMeterParent<T extends { asset_meter_id: string; parent_asset_meter_id?: string | null }>(meter: T) {
   const { parent_asset_meter_id: parentMeterId, ...rest } = meter;
   return {
@@ -243,7 +269,7 @@ export async function loadMeterReadings(
     client
       .from("asset_meter")
       .select(
-        `asset_meter_id, parent_asset_meter_id, is_rate_source, sort_order, meter_code, meter_label, subItem:asset_meter_sub_item!inner(asset_meter_sub_item_id, category, sub_item_name, input_mode, input_decimal_digits, aggregation_decimal_digits, usage_rounding_mode), assignments:asset_meter_unit_assignment(asset_meter_unit_assignment_id, unit_id, effective_from, effective_to, unit:unit_master(unit_id, unit_code, unit_name, floor_label))`,
+        `asset_meter_id, parent_asset_meter_id, is_rate_source, sort_order, meter_code, meter_label, billing_adjustment_enabled, billing_adjustment_method, billing_adjustment_percent, billing_adjustment_numerator, billing_adjustment_denominator, billing_adjustment_note, subItem:asset_meter_sub_item!inner(asset_meter_sub_item_id, category, sub_item_name, input_mode, input_decimal_digits, aggregation_decimal_digits, usage_rounding_mode), assignments:asset_meter_unit_assignment(asset_meter_unit_assignment_id, unit_id, effective_from, effective_to, unit:unit_master(unit_id, unit_code, unit_name, floor_label))`,
       )
       .eq("asset_id", assetId)
       .eq("is_active", true)
@@ -285,11 +311,17 @@ export async function loadMeterReadings(
       const previousReading = previousReadings.get(meter.asset_meter_id);
       return withDatabaseMeterParent({
         ...meter,
-        assignments: (meter.assignments ?? []).filter(
-          (assignment: { effective_from: string; effective_to: string | null }) =>
-            assignment.effective_from <= monthEnd &&
-            (!assignment.effective_to || assignment.effective_to >= month),
-        ),
+        assignments: (meter.assignments ?? [])
+          .filter(
+            (assignment: { effective_from: string; effective_to: string | null }) =>
+              assignment.effective_from <= monthEnd &&
+              (!assignment.effective_to || assignment.effective_to >= monthEnd),
+          )
+          .sort(
+            (left: { effective_from: string }, right: { effective_from: string }) =>
+              right.effective_from.localeCompare(left.effective_from),
+          )
+          .slice(0, 1),
         entry: currentEntry
           ? {
               ...currentEntry,
@@ -350,7 +382,7 @@ export async function loadMeterManagement(
     client
       .from("asset_meter")
       .select(
-        `asset_meter_id, parent_asset_meter_id, is_rate_source, sort_order, meter_code, meter_label, subItem:asset_meter_sub_item!inner(asset_meter_sub_item_id, category, sub_item_name, input_mode, input_decimal_digits, aggregation_decimal_digits, usage_rounding_mode), assignments:asset_meter_unit_assignment(asset_meter_unit_assignment_id, unit_id, effective_from, effective_to, unit:unit_master(unit_id, unit_code, unit_name, floor_label))`,
+        `asset_meter_id, parent_asset_meter_id, is_rate_source, sort_order, meter_code, meter_label, billing_adjustment_enabled, billing_adjustment_method, billing_adjustment_percent, billing_adjustment_numerator, billing_adjustment_denominator, billing_adjustment_note, subItem:asset_meter_sub_item!inner(asset_meter_sub_item_id, category, sub_item_name, input_mode, input_decimal_digits, aggregation_decimal_digits, usage_rounding_mode), assignments:asset_meter_unit_assignment(asset_meter_unit_assignment_id, unit_id, effective_from, effective_to, unit:unit_master(unit_id, unit_code, unit_name, floor_label))`,
       )
       .eq("asset_id", assetId)
       .eq("is_active", true)
@@ -393,10 +425,12 @@ export async function assignMeterUnit(
   client: SupabaseClient,
   meterId: string,
   unitId: string | null,
+  effectiveFrom: string,
 ) {
-  const { error } = await client.rpc("assign_kanameter_meter_unit", {
+  const { error } = await client.rpc("assign_kanameter_meter_unit_from", {
     p_asset_meter_id: meterId,
     p_unit_id: unitId,
+    p_effective_from: effectiveFrom,
   });
   fail("区画を変更できませんでした", error);
 }
@@ -756,6 +790,33 @@ export async function saveMeterReading(
     saved.usage_amount = usageOverride;
   }
   return saved;
+}
+
+export async function clearMeterReading(
+  client: SupabaseClient,
+  assetId: string,
+  billingMonth: string,
+  meterId: string,
+) {
+  const { error } = await client
+    .from("meter_reading_entry")
+    .delete()
+    .eq("asset_id", assetId)
+    .eq("billing_month", `${billingMonth}-01`)
+    .eq("asset_meter_id", meterId);
+  fail("検針値を未入力に戻せませんでした", error);
+}
+
+export async function saveMeterName(
+  client: SupabaseClient,
+  meterId: string,
+  meterName: string,
+) {
+  const { error } = await client
+    .from("asset_meter")
+    .update({ meter_code: meterName.trim() })
+    .eq("asset_meter_id", meterId);
+  fail("メーター名を保存できませんでした", error);
 }
 
 export async function confirmMeterReadingMonth(

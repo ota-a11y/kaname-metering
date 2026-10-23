@@ -83,6 +83,12 @@ export type MeterReadingRow = {
   sort_order: number;
   meter_code: string;
   meter_label: string | null;
+  billing_adjustment_enabled: boolean;
+  billing_adjustment_method: "ratio" | "percent" | null;
+  billing_adjustment_percent: number | null;
+  billing_adjustment_numerator: number | null;
+  billing_adjustment_denominator: number | null;
+  billing_adjustment_note: string | null;
   subItem: {
     asset_meter_sub_item_id: string;
     category: UtilityCategory;
@@ -105,7 +111,7 @@ export type MeterReadingRow = {
     } | null;
   }>;
   entry: {
-    usage_amount: number;
+    usage_amount: number | null;
     previous_reading: number | null;
     current_reading: number | null;
   } | null;
