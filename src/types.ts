@@ -130,10 +130,9 @@ export type MeterCategorySetting = {
   usage_unit: string;
   is_billable: boolean;
   is_basic_billable: boolean;
-  basic_charge_method: "fixed" | "area";
+  basic_charge_method: "fixed" | "sqm" | "tsubo";
   basic_charge_fixed_amount: number | null;
   basic_charge_area_unit_price: number | null;
-  basic_charge_rounding_mode: "floor" | "round" | "ceil";
 };
 
 export type MeterSubItem = {

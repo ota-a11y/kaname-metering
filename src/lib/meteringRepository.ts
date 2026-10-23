@@ -582,9 +582,9 @@ export async function loadMeteringConfiguration(
   periodPatterns: BillingPeriodPattern[];
 }> {
   const defaultCategories: MeterCategorySetting[] = [
-    { category: "electric", usage_unit: "kWh", is_billable: true, is_basic_billable: false, basic_charge_method: "fixed", basic_charge_fixed_amount: null, basic_charge_area_unit_price: null, basic_charge_rounding_mode: "round" },
-    { category: "water", usage_unit: "m³", is_billable: true, is_basic_billable: false, basic_charge_method: "fixed", basic_charge_fixed_amount: null, basic_charge_area_unit_price: null, basic_charge_rounding_mode: "round" },
-    { category: "gas", usage_unit: "m³", is_billable: true, is_basic_billable: false, basic_charge_method: "fixed", basic_charge_fixed_amount: null, basic_charge_area_unit_price: null, basic_charge_rounding_mode: "round" },
+    { category: "electric", usage_unit: "kWh", is_billable: true, is_basic_billable: false, basic_charge_method: "fixed", basic_charge_fixed_amount: null, basic_charge_area_unit_price: null },
+    { category: "water", usage_unit: "m³", is_billable: true, is_basic_billable: false, basic_charge_method: "fixed", basic_charge_fixed_amount: null, basic_charge_area_unit_price: null },
+    { category: "gas", usage_unit: "m³", is_billable: true, is_basic_billable: false, basic_charge_method: "fixed", basic_charge_fixed_amount: null, basic_charge_area_unit_price: null },
   ];
   const defaultPeriods = [
     { pattern_name: "前月分", start_month_offset: -1, start_day_type: "first", start_meter_day_offset: 0, end_month_offset: -1, end_day_type: "last", end_meter_day_offset: 0, sort_order: 0 },
@@ -642,7 +642,7 @@ export async function loadMeteringConfiguration(
   const [categories, subItems, surcharges, periodPatterns] = await Promise.all([
     client
       .from("asset_meter_category_setting")
-      .select("category, usage_unit, is_billable, is_basic_billable, basic_charge_method, basic_charge_fixed_amount, basic_charge_area_unit_price, basic_charge_rounding_mode")
+      .select("category, usage_unit, is_billable, is_basic_billable, basic_charge_method, basic_charge_fixed_amount, basic_charge_area_unit_price")
       .eq("asset_id", assetId)
       .order("category"),
     client
@@ -721,8 +721,7 @@ export async function saveMeteringSettings(
       is_basic_billable: row.is_basic_billable,
       basic_charge_method: row.basic_charge_method,
       basic_charge_fixed_amount: row.basic_charge_method === "fixed" ? row.basic_charge_fixed_amount : null,
-      basic_charge_area_unit_price: row.basic_charge_method === "area" ? row.basic_charge_area_unit_price : null,
-      basic_charge_rounding_mode: row.basic_charge_rounding_mode,
+      basic_charge_area_unit_price: row.basic_charge_method === "sqm" || row.basic_charge_method === "tsubo" ? row.basic_charge_area_unit_price : null,
     })),
     { onConflict: "asset_id,category" },
   );
