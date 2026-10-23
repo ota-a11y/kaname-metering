@@ -217,6 +217,25 @@ function buildConfirmedMeterAmounts({
       }
       let categoryUsage = 0;
       for (const item of subItems.filter((candidate) => candidate.category === category && candidate.sub_item_kind === "custom")) {
+        if (item.is_monthly_fixed) {
+          rows.push({
+            ...shared,
+            category,
+            source_kind: "subItem",
+            source_id: item.asset_meter_sub_item_id,
+            source_name: item.sub_item_name,
+            asset_billing_line_item_id: item.asset_billing_line_item_id,
+            line_item_name: lineItemName(item.asset_billing_line_item_id),
+            usage_amount: 0,
+            usage_unit: categorySetting.usage_unit,
+            unit_price: null,
+            amount: Number(item.monthly_fixed_amount ?? 0),
+            usage_rounding_digits: null,
+            usage_rounding_mode: null,
+            tax_mode: item.tax_mode,
+          });
+          continue;
+        }
         const contractByUnitId = new Map(
           billableContracts.flatMap((contract) => contract.unit?.unit_id ? [[contract.unit.unit_id, contract] as const] : []),
         );
@@ -304,6 +323,8 @@ function ensureBasicSubItems(categoriesToCheck: MeterCategorySetting[], current:
       tax_mode: "exclusive",
       tax_rounding_mode: "floor",
       show_unit_price_on_invoice: false,
+      is_monthly_fixed: false,
+      monthly_fixed_amount: null,
     };
     const firstCategoryIndex = next.findIndex((item) => item.category === setting.category);
     next = firstCategoryIndex < 0
@@ -890,8 +911,8 @@ export function KanameterWorkspacePage({
     (item) => item.asset_meter_surcharge_id === selectedItemId,
   );
   useEffect(() => {
-    if (!selectedSubItem || selectedSubItem.price_mode === "fixed") setUnitPriceCalculatorOpen(false);
-  }, [selectedSubItem?.asset_meter_sub_item_id, selectedSubItem?.price_mode]);
+    if (!selectedSubItem || selectedSubItem.is_monthly_fixed || selectedSubItem.price_mode === "fixed") setUnitPriceCalculatorOpen(false);
+  }, [selectedSubItem?.asset_meter_sub_item_id, selectedSubItem?.is_monthly_fixed, selectedSubItem?.price_mode]);
   const selectedPeriodPatternId = selectedSubItem?.billing_period_pattern_id ?? selectedSurcharge?.billing_period_pattern_id;
   const selectedPeriodPattern = periodPatterns.find((pattern) => pattern.billing_period_pattern_id === selectedPeriodPatternId);
   const billingPeriods = Array.from(
@@ -1293,7 +1314,7 @@ export function KanameterWorkspacePage({
                   </div>
                 )}
               </div>
-              {selectedSubItem?.sub_item_kind === "custom" && (
+              {selectedSubItem?.sub_item_kind === "custom" && !selectedSubItem.is_monthly_fixed && (
                 <div className="sub-navigation-actions">
                   {!meterSettingsItemId && selectedSubItem.price_mode !== "fixed" && (
                     <button type="button" className="unit-price-calculator-link" onClick={() => setUnitPriceCalculatorOpen(true)}>
@@ -1346,6 +1367,11 @@ export function KanameterWorkspacePage({
                   <BasicChargeTable
                     contracts={billableCategoryContracts}
                     category={mainTab as UtilityCategory}
+                  />
+                ) : selectedSubItem?.is_monthly_fixed ? (
+                  <MonthlyFixedChargeTable
+                    contracts={billableCategoryContracts}
+                    amount={selectedSubItem.monthly_fixed_amount}
                   />
                 ) : selectedSubItem ? (
                   <CustomItemTable
@@ -1411,7 +1437,7 @@ export function KanameterWorkspacePage({
           </section>
         </div>
       )}
-      {unitPriceCalculatorOpen && selectedSubItem && selectedSubItem.price_mode !== "fixed" && (
+      {unitPriceCalculatorOpen && selectedSubItem && !selectedSubItem.is_monthly_fixed && selectedSubItem.price_mode !== "fixed" && (
         <VariableUnitPriceCalculator
           itemName={selectedSubItem.sub_item_name}
           taxMode={selectedUnitPriceTaxMode}
@@ -1788,6 +1814,9 @@ function SummaryView({
     return price == null ? null : Number(price);
   };
   const calculationForContracts = (billableContracts: ContractUnit[], item: MeterSubItem) => {
+    if (item.is_monthly_fixed) {
+      return { usage: 0, amount: billableContracts.length ? Number(item.monthly_fixed_amount ?? 0) : 0 };
+    }
     const contractByUnitId = new Map(
       billableContracts.flatMap((contract) => contract.unit?.unit_id ? [[contract.unit.unit_id, contract] as const] : []),
     );
@@ -2447,6 +2476,34 @@ function BasicChargeTable({
     />
   );
 }
+function MonthlyFixedChargeTable({
+  contracts,
+  amount,
+}: {
+  contracts: ContractUnit[];
+  amount: number | null;
+}) {
+  const groups = Array.from(new Map(
+    contracts
+      .filter((row) => ["office", "warehouse", "storage"].includes(row.unit?.unit_type ?? ""))
+      .map((row) => [billingGroupKey(row), row]),
+  ).values());
+  const fixedAmount = Number(amount ?? 0);
+  return (
+    <DataTable
+      headers={["階数", "区画", "テナント名", "使用量", "金額"]}
+      rows={groups.map((row) => [
+        formatFloor(row.unit?.floor_label),
+        row.unit?.unit_name || row.unit?.unit_code || "—",
+        billingGroupTenantName(row),
+        "—",
+        formatYen(fixedAmount),
+      ])}
+      totalRow={["合計", "", "", "—", formatYen(fixedAmount * groups.length)]}
+    />
+  );
+}
+
 function CustomItemTable({
   meters,
   contracts,
@@ -3131,10 +3188,15 @@ function BuildingSettingsView({
     input_mode: "usage", input_decimal_digits: 1, aggregation_decimal_digits: 1, usage_rounding_mode: "round",
     billing_period_pattern_id: null, price_mode: "fixed", default_unit_price: null, tax_mode: "exclusive",
     tax_rounding_mode: "floor", show_unit_price_on_invoice: true,
+    is_monthly_fixed: false, monthly_fixed_amount: null,
   }]);
   const save = async () => {
     if (draftSubItems.some((item) => !item.sub_item_name.trim())) {
       onError("小分類名を入力してください。");
+      return;
+    }
+    if (draftSubItems.some((item) => item.is_monthly_fixed && item.monthly_fixed_amount == null)) {
+      onError("毎月定額にした小分類の定額金額を入力してください。");
       return;
     }
     setSaving(true); onError("");
@@ -3174,21 +3236,23 @@ function BuildingSettingsView({
             const usesSharedPrice = utilitySetting.price_scope === "category";
             return <section className={`configuration-category utility-${category}`} key={category}>
               <header className="configuration-category-header"><strong>{labels[category]}</strong><label>使用量の単位<input value={setting.usage_unit} onChange={(event) => updateCategory(category, { usage_unit: event.target.value })} /></label><label className="checkbox-label"><input type="checkbox" checked={setting.is_basic_billable} onChange={(event) => updateBasicBillable(category, event.target.checked)} />基本料を請求する</label>{setting.is_basic_billable && <><label className="basic-charge-setting">算定方法<select value={setting.basic_charge_method} onChange={(event) => updateCategory(category, { basic_charge_method: event.target.value as MeterCategorySetting["basic_charge_method"] })}><option value="fixed">定額</option><option value="sqm">㎡ × 単価</option><option value="tsubo">坪数 × 単価</option></select></label>{setting.basic_charge_method !== "fixed" && <label className="basic-charge-setting">面積単価<input type="number" min="0" step="0.01" value={setting.basic_charge_area_unit_price ?? ""} placeholder="未設定" onChange={(event) => updateCategory(category, { basic_charge_area_unit_price: event.target.value === "" ? null : Number(event.target.value) })} /><span>{setting.basic_charge_method === "sqm" ? "円/㎡" : "円/坪"}</span></label>}</>}<label className="price-setting-label price-setting-separator">既定単価設定<select value={utilitySetting.price_scope} onChange={(event) => updateUtilitySetting(category, { price_scope: event.target.value as AssetUtilitySetting["price_scope"] })}><option value="category">共通して設定</option><option value="line_item">小分類ごとに設定</option></select></label>{usesSharedPrice && <label className="price-setting-label">共通単価<input type="number" min="0" step="0.0001" value={utilitySetting.default_unit_price ?? ""} onChange={(event) => updateUtilitySetting(category, { default_unit_price: event.target.value === "" ? null : Number(event.target.value) })} /></label>}<label className="checkbox-label"><input type="checkbox" checked={utilitySetting.show_in_rent_roll} onChange={(event) => updateUtilitySetting(category, { show_in_rent_roll: event.target.checked })} />単価をレントロールに表示</label><button type="button" className="text-button" onClick={() => addSubItem(category)}>小分類を追加</button></header>
-              <div className="table-wrap"><ResizableTable className="configuration-table resizable-configuration-table" storageKey={`building-settings:${assetId}:meter-configuration`} storageUserId={columnStorageUserId} columnGroups={["subitem", "line-item", "price-mode", "default-price", "invoice-price", "tax-mode", "tax-rounding", "billing-period", "actions"]}><thead><tr><ColumnHeader columnGroup="subitem">小分類</ColumnHeader><ColumnHeader columnGroup="line-item">請求明細の項目</ColumnHeader><ColumnHeader columnGroup="price-mode">単価計算方法</ColumnHeader><ColumnHeader columnGroup="default-price">既定単価</ColumnHeader><ColumnHeader columnGroup="invoice-price">請求書に単価を表示</ColumnHeader><ColumnHeader columnGroup="tax-mode">税区分</ColumnHeader><ColumnHeader columnGroup="tax-rounding">税込単価の税抜換算</ColumnHeader><ColumnHeader columnGroup="billing-period">既定の請求期間</ColumnHeader><ColumnHeader columnGroup="actions" /></tr></thead><tbody>
+              <div className="table-wrap"><ResizableTable className="configuration-table resizable-configuration-table" storageKey={`building-settings:${assetId}:meter-configuration`} storageUserId={columnStorageUserId} columnGroups={["subitem", "line-item", "monthly-fixed", "monthly-amount", "price-mode", "default-price", "invoice-price", "tax-mode", "tax-rounding", "billing-period", "actions"]}><thead><tr><ColumnHeader columnGroup="subitem">小分類</ColumnHeader><ColumnHeader columnGroup="line-item">請求明細の項目</ColumnHeader><ColumnHeader columnGroup="monthly-fixed">毎月定額</ColumnHeader><ColumnHeader columnGroup="monthly-amount">定額金額</ColumnHeader><ColumnHeader columnGroup="price-mode">単価計算方法</ColumnHeader><ColumnHeader columnGroup="default-price">既定単価</ColumnHeader><ColumnHeader columnGroup="invoice-price">請求書に単価を表示</ColumnHeader><ColumnHeader columnGroup="tax-mode">税区分</ColumnHeader><ColumnHeader columnGroup="tax-rounding">税込単価の税抜換算</ColumnHeader><ColumnHeader columnGroup="billing-period">既定の請求期間</ColumnHeader><ColumnHeader columnGroup="actions" /></tr></thead><tbody>
                 {items.map((item) => <tr key={item.asset_meter_sub_item_id}>
                   <td>{item.sub_item_kind === "basic"
                     ? <strong>{item.sub_item_name}</strong>
                     : <input value={item.sub_item_name} placeholder="新しい小分類" onChange={(event) => updateSubItem(item.asset_meter_sub_item_id, { sub_item_name: event.target.value })} />}</td>
-                  <td className="align-left"><select value={item.asset_billing_line_item_id ?? ""} onChange={(event) => updateSubItem(item.asset_meter_sub_item_id, { asset_billing_line_item_id: event.target.value || null })}><option value="">未設定</option>{categoryLineItems.map((line) => <option key={line.asset_billing_line_item_id} value={line.asset_billing_line_item_id}>{line.display_name || line.line_item_name}</option>)}</select></td>
-                  <td>{item.sub_item_kind === "basic" ? "—" : <select value={item.price_mode} onChange={(event) => updateSubItem(item.asset_meter_sub_item_id, { price_mode: event.target.value as MeterSubItem["price_mode"] })}><option value="fixed">固定</option><option value="amount">金額から計算</option><option value="master_meter">大元メーターから計算</option></select>}</td>
-                  <td><input type="number" min="0" step="0.0001" disabled={item.sub_item_kind === "basic" || usesSharedPrice} value={item.default_unit_price ?? ""} onChange={(event) => updateSubItem(item.asset_meter_sub_item_id, { default_unit_price: event.target.value === "" ? null : Number(event.target.value) })} /></td>
-                  <td>{item.sub_item_kind === "basic" ? "—" : <input type="checkbox" checked={item.show_unit_price_on_invoice} onChange={(event) => updateSubItem(item.asset_meter_sub_item_id, { show_unit_price_on_invoice: event.target.checked })} />}</td>
+                  <td className="align-left"><select value={item.asset_billing_line_item_id ?? ""} onChange={(event) => updateSubItem(item.asset_meter_sub_item_id, { asset_billing_line_item_id: event.target.value || null })}><option value="">未設定</option>{categoryLineItems.map((line) => <option key={line.asset_billing_line_item_id} value={line.asset_billing_line_item_id}>{line.line_item_name}</option>)}</select></td>
+                  <td>{item.sub_item_kind === "basic" ? "—" : <input type="checkbox" checked={item.is_monthly_fixed} onChange={(event) => updateSubItem(item.asset_meter_sub_item_id, { is_monthly_fixed: event.target.checked })} />}</td>
+                  <td>{item.sub_item_kind === "custom" && item.is_monthly_fixed ? <label className="inline-amount-input"><input type="number" min="0" step="1" value={item.monthly_fixed_amount ?? ""} placeholder="未設定" onChange={(event) => updateSubItem(item.asset_meter_sub_item_id, { monthly_fixed_amount: event.target.value === "" ? null : Number(event.target.value) })} /><span>円</span></label> : "—"}</td>
+                  <td>{item.sub_item_kind === "basic" || item.is_monthly_fixed ? "—" : <select value={item.price_mode} onChange={(event) => updateSubItem(item.asset_meter_sub_item_id, { price_mode: event.target.value as MeterSubItem["price_mode"] })}><option value="fixed">固定</option><option value="amount">金額から計算</option><option value="master_meter">大元メーターから計算</option></select>}</td>
+                  <td>{item.is_monthly_fixed ? "—" : <input type="number" min="0" step="0.0001" disabled={item.sub_item_kind === "basic" || usesSharedPrice} value={item.default_unit_price ?? ""} onChange={(event) => updateSubItem(item.asset_meter_sub_item_id, { default_unit_price: event.target.value === "" ? null : Number(event.target.value) })} />}</td>
+                  <td>{item.sub_item_kind === "basic" || item.is_monthly_fixed ? "—" : <input type="checkbox" checked={item.show_unit_price_on_invoice} onChange={(event) => updateSubItem(item.asset_meter_sub_item_id, { show_unit_price_on_invoice: event.target.checked })} />}</td>
                   <td><select value={item.tax_mode} onChange={(event) => updateSubItem(item.asset_meter_sub_item_id, { tax_mode: event.target.value as TaxMode })}><option value="exclusive">税抜</option><option value="inclusive">税込</option></select></td>
                   <td>{item.tax_mode === "inclusive" ? <select value={item.tax_rounding_mode} onChange={(event) => updateSubItem(item.asset_meter_sub_item_id, { tax_rounding_mode: event.target.value as "floor" | "round" | "ceil" })}><option value="floor">切り捨て</option><option value="round">四捨五入</option><option value="ceil">切り上げ</option></select> : "—"}</td>
                   <td className="align-left"><select value={item.billing_period_pattern_id ?? ""} onChange={(event) => updateSubItem(item.asset_meter_sub_item_id, { billing_period_pattern_id: event.target.value || null })}><option value="">未設定</option>{periodOptions.map((period) => <option key={period.billing_period_pattern_id} value={period.billing_period_pattern_id}>{period.pattern_name}</option>)}</select></td>
                   <td>{item.sub_item_kind === "custom" && <button type="button" className="danger-link" onClick={() => window.confirm(`「${item.sub_item_name}」を削除しますか？`) && setDraftSubItems((current) => current.filter((row) => row.asset_meter_sub_item_id !== item.asset_meter_sub_item_id))}>削除</button>}</td>
                 </tr>)}
-                {categorySurcharges.filter((item) => item.is_billable && surchargeLineItems.length > 0).map((item) => <tr key={item.asset_meter_surcharge_id} className="surcharge-setting-row"><td><strong>{item.surcharge_name}</strong></td><td className="align-left"><select value={item.asset_billing_line_item_id ?? ""} onChange={(event) => updateSurcharge(item.asset_meter_surcharge_id, { asset_billing_line_item_id: event.target.value || null })}><option value="">未設定</option>{surchargeLineItems.map((line) => <option key={line.asset_billing_line_item_id} value={line.asset_billing_line_item_id}>{line.display_name || line.line_item_name}</option>)}</select></td><td colSpan={5}>—</td><td className="align-left"><select value={item.billing_period_pattern_id ?? ""} onChange={(event) => updateSurcharge(item.asset_meter_surcharge_id, { billing_period_pattern_id: event.target.value || null })}><option value="">未設定</option>{periodOptions.map((period) => <option key={period.billing_period_pattern_id} value={period.billing_period_pattern_id}>{period.pattern_name}</option>)}</select></td><td /></tr>)}
+                {categorySurcharges.filter((item) => item.is_billable && surchargeLineItems.length > 0).map((item) => <tr key={item.asset_meter_surcharge_id} className="surcharge-setting-row"><td><strong>{item.surcharge_name}</strong></td><td className="align-left"><select value={item.asset_billing_line_item_id ?? ""} onChange={(event) => updateSurcharge(item.asset_meter_surcharge_id, { asset_billing_line_item_id: event.target.value || null })}><option value="">未設定</option>{surchargeLineItems.map((line) => <option key={line.asset_billing_line_item_id} value={line.asset_billing_line_item_id}>{line.line_item_name}</option>)}</select></td><td colSpan={7}>—</td><td className="align-left"><select value={item.billing_period_pattern_id ?? ""} onChange={(event) => updateSurcharge(item.asset_meter_surcharge_id, { billing_period_pattern_id: event.target.value || null })}><option value="">未設定</option>{periodOptions.map((period) => <option key={period.billing_period_pattern_id} value={period.billing_period_pattern_id}>{period.pattern_name}</option>)}</select></td><td /></tr>)}
               </tbody></ResizableTable></div>
             </section>;
           })}

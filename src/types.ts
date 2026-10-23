@@ -152,6 +152,8 @@ export type MeterSubItem = {
   tax_mode: TaxMode;
   tax_rounding_mode: "floor" | "round" | "ceil";
   show_unit_price_on_invoice: boolean;
+  is_monthly_fixed: boolean;
+  monthly_fixed_amount: number | null;
 };
 
 export type MeterUnitPriceCalculation = {
