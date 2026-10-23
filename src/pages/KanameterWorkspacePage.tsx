@@ -12,6 +12,7 @@ import {
   loadMeteringConfiguration,
   loadMeterManagement,
   loadMeterReadings,
+  loadMonthlyFixedCharges,
   loadMeterUnitPriceCalculations,
   loadUtilityTariff,
   loadSurchargeEvidence,
@@ -25,6 +26,7 @@ import {
   saveMeterName,
   saveMeterReading,
   saveMeterReadingDate,
+  saveMonthlyFixedCharge,
   saveMeterUnitPriceCalculation,
   saveNextUtilityTariffVersion,
   saveSurchargeEvidence,
@@ -136,6 +138,7 @@ function buildConfirmedMeterAmounts({
   surchargePrices,
   unitPriceCalculations,
   billingLineItems,
+  monthlyFixedCharges,
 }: {
   contracts: ContractUnit[];
   meters: MeterReadingRow[];
@@ -146,6 +149,7 @@ function buildConfirmedMeterAmounts({
   surchargePrices: Record<string, number>;
   unitPriceCalculations: Record<string, MeterUnitPriceCalculation>;
   billingLineItems: BillingLineItem[];
+  monthlyFixedCharges: Record<string, number>;
 }): ConfirmedMeterAmount[] {
   const eligibleContracts = contracts.filter((row) =>
     ["office", "warehouse", "storage"].includes((row.unit?.unit_type ?? "").toLowerCase()),
@@ -219,6 +223,8 @@ function buildConfirmedMeterAmounts({
       let categoryUsage = 0;
       for (const item of subItems.filter((candidate) => candidate.category === category && candidate.sub_item_kind === "custom")) {
         if (item.is_monthly_fixed) {
+          const amount = monthlyFixedCharges[`${billingSetting?.meter_reading_contract_id}|${item.asset_meter_sub_item_id}`];
+          if (amount == null) continue;
           rows.push({
             ...shared,
             category,
@@ -230,7 +236,7 @@ function buildConfirmedMeterAmounts({
             usage_amount: 0,
             usage_unit: categorySetting.usage_unit,
             unit_price: null,
-            amount: Number(billingSetting?.items.find((setting) => setting.asset_meter_sub_item_id === item.asset_meter_sub_item_id && setting.is_billable)?.fixed_amount ?? 0),
+            amount,
             usage_rounding_digits: null,
             usage_rounding_mode: null,
             tax_mode: item.tax_mode,
@@ -492,6 +498,7 @@ export function KanameterWorkspacePage({
   const [unitPriceCalculations, setUnitPriceCalculations] = useState<Record<string, MeterUnitPriceCalculation>>({});
   const [utilityTariff, setUtilityTariff] = useState<UtilityTariffVersion | null>(null);
   const [values, setValues] = useState<Record<string, string>>({});
+  const [monthlyFixedCharges, setMonthlyFixedCharges] = useState<Record<string, number>>({});
   const [rolloverValues, setRolloverValues] = useState<Record<string, number>>({});
   const [rolloverConfirmationOpen, setRolloverConfirmationOpen] = useState(false);
   const [usageHistory, setUsageHistory] = useState<{
@@ -565,6 +572,16 @@ export function KanameterWorkspacePage({
         setMeterDate(period.meterDate ?? "");
         setPreviousMeterDate(period.previousMeterDate ?? "");
       })
+      .catch((reason: Error) => setError(reason.message));
+  }, [assetId, billingMonth]);
+
+  useEffect(() => {
+    if (!assetId || !billingMonth) return;
+    void loadMonthlyFixedCharges(supabase!, assetId, billingMonth)
+      .then((rows) => setMonthlyFixedCharges(Object.fromEntries(rows.map((row) => [
+        `${row.meter_reading_contract_id}|${row.asset_meter_sub_item_id}`,
+        row.amount,
+      ]))))
       .catch((reason: Error) => setError(reason.message));
   }, [assetId, billingMonth]);
 
@@ -652,6 +669,7 @@ export function KanameterWorkspacePage({
         const eligibleSubItems = subItems.filter(
           (item) =>
             item.category === activeCategory &&
+            !item.is_monthly_fixed &&
             (item.sub_item_kind !== "basic" || basicEnabled),
         );
         const eligibleSurcharges =
@@ -859,6 +877,7 @@ export function KanameterWorkspacePage({
         surchargePrices: freshSurchargePrices,
         unitPriceCalculations: freshCalculations,
         billingLineItems,
+        monthlyFixedCharges,
       });
       await confirmMeterReadingMonth(supabase!, assetId, billingMonth, amounts);
       setSummaryMeters(freshMeters);
@@ -904,7 +923,8 @@ export function KanameterWorkspacePage({
   const categorySurcharges = activeCategory === "electric"
     ? surcharges.filter((item) => item.category === activeCategory)
     : [];
-  const selectedSubItem = categorySubItems.find(
+  const categoryTabItems = categorySubItems.filter((item) => !item.is_monthly_fixed);
+  const selectedSubItem = categoryTabItems.find(
     (item) => item.asset_meter_sub_item_id === selectedItemId,
   );
   const selectedSurcharge = categorySurcharges.find(
@@ -990,7 +1010,7 @@ export function KanameterWorkspacePage({
     setMeterSettingsItemId(null);
     const setting = categorySettings.find((row) => row.category === category);
     const firstSubItem = subItems.find(
-      (item) => item.category === category && (item.sub_item_kind !== "basic" || setting?.is_basic_billable),
+      (item) => item.category === category && !item.is_monthly_fixed && (item.sub_item_kind !== "basic" || setting?.is_basic_billable),
     );
     const firstSurcharge = category === "electric"
       ? surcharges.find((item) => item.category === category && item.is_billable)
@@ -1013,7 +1033,7 @@ export function KanameterWorkspacePage({
   useEffect(() => {
     if (!activeCategory || meterSettingsItemId) return;
     const selectableIds = [
-      ...categorySubItems.map((item) => item.asset_meter_sub_item_id),
+      ...categoryTabItems.map((item) => item.asset_meter_sub_item_id),
       ...categorySurcharges
         .filter((item) => item.is_billable)
         .map((item) => item.asset_meter_surcharge_id),
@@ -1028,7 +1048,7 @@ export function KanameterWorkspacePage({
     };
     window.addEventListener("keydown", switchSubItem);
     return () => window.removeEventListener("keydown", switchSubItem);
-  }, [activeCategory, meterSettingsItemId, selectedItemId, categorySubItems, categorySurcharges]);
+  }, [activeCategory, meterSettingsItemId, selectedItemId, categoryTabItems, categorySurcharges]);
 
   useEffect(() => {
     if (mainTab === "buildingSettings" || meterSettingsItemId) return;
@@ -1098,7 +1118,7 @@ export function KanameterWorkspacePage({
           </button>
           {categories.map((category) => {
             const basicEnabled = categorySettings.find((setting) => setting.category === category)?.is_basic_billable ?? false;
-            const items = subItems.filter((item) => item.category === category && (item.sub_item_kind !== "basic" || basicEnabled));
+            const items = subItems.filter((item) => item.category === category && !item.is_monthly_fixed && (item.sub_item_kind !== "basic" || basicEnabled));
             const categorySurchargeItems = category === "electric"
               ? surcharges.filter((item) => item.category === category && item.is_billable)
               : [];
@@ -1280,7 +1300,7 @@ export function KanameterWorkspacePage({
             <div className="sub-navigation">
               <div className="inspection-navigation">
                 <div className="sub-tabs" aria-label="小分類">
-                  {categorySubItems.map((item) => (
+                  {categoryTabItems.map((item) => (
                     <button
                       key={item.asset_meter_sub_item_id}
                       type="button"
@@ -1368,11 +1388,16 @@ export function KanameterWorkspacePage({
                     contracts={billableCategoryContracts}
                     category={mainTab as UtilityCategory}
                     subItemId={selectedSubItem.asset_meter_sub_item_id}
-                  />
-                ) : selectedSubItem?.is_monthly_fixed ? (
-                  <MonthlyFixedChargeTable
-                    contracts={billableCategoryContracts}
-                    subItemId={selectedSubItem.asset_meter_sub_item_id}
+                    monthlyFixedItems={categorySubItems.filter((item) => item.is_monthly_fixed)}
+                    monthlyFixedCharges={monthlyFixedCharges}
+                    confirmed={status === "confirmed"}
+                    onMonthlyFixedChange={(contractId, subItemId, amount) => {
+                      const key = `${contractId}|${subItemId}`;
+                      setMonthlyFixedCharges((current) => ({ ...current, [key]: amount }));
+                      void saveMonthlyFixedCharge(supabase!, assetId, billingMonth, contractId, subItemId, amount)
+                        .then(() => { setStatus((current) => current ?? "draft"); setNotice("月額定額を保存しました。"); })
+                        .catch((reason: Error) => setError(reason.message));
+                    }}
                   />
                 ) : selectedSubItem ? (
                   <CustomItemTable
@@ -2449,10 +2474,18 @@ function BasicChargeTable({
   contracts,
   category,
   subItemId,
+  monthlyFixedItems,
+  monthlyFixedCharges,
+  confirmed,
+  onMonthlyFixedChange,
 }: {
   contracts: ContractUnit[];
   category: UtilityCategory;
   subItemId: string;
+  monthlyFixedItems: MeterSubItem[];
+  monthlyFixedCharges: Record<string, number>;
+  confirmed: boolean;
+  onMonthlyFixedChange: (contractId: string, subItemId: string, amount: number) => void;
 }) {
   const eligibleContracts = contracts.filter((row) =>
     ["office", "warehouse", "storage"].includes(row.unit?.unit_type ?? ""),
@@ -2467,10 +2500,14 @@ function BasicChargeTable({
       : rows.reduce((sum, row) => sum + Number(row.basics.find((item) => item.category === category)?.amount ?? 0), 0);
   };
   const totalAmount = groups.reduce((sum, rows) => sum + amountFor(rows), 0);
+  const fixedAmountFor = (rows: ContractUnit[], item: MeterSubItem) => {
+    const contractId = rows[0]?.meterBilling[0]?.meter_reading_contract_id;
+    return contractId ? monthlyFixedCharges[`${contractId}|${item.asset_meter_sub_item_id}`] : undefined;
+  };
 
   return (
     <DataTable
-      headers={["階数", "区画", "テナント名", "基本料"]}
+      headers={["階数", "区画", "テナント名", "基本料", ...monthlyFixedItems.map((item) => item.sub_item_name)]}
       rows={groups.map((rows) => [
         formatFloor(rows[0]?.unit?.floor_label),
         rows.map((row) => row.unit?.unit_name || row.unit?.unit_code).filter(Boolean).join("・") || "—",
@@ -2479,35 +2516,33 @@ function BasicChargeTable({
           contracts={rows}
         />,
         formatYen(amountFor(rows)),
+        ...monthlyFixedItems.map((item) => {
+          const contractId = rows[0]?.meterBilling[0]?.meter_reading_contract_id;
+          const amount = fixedAmountFor(rows, item);
+          return contractId ? (
+            <input
+              key={`${contractId}-${item.asset_meter_sub_item_id}-${amount ?? ""}`}
+              className="reading-input monthly-fixed-input"
+              type="number"
+              min="0"
+              step="1"
+              defaultValue={amount ?? ""}
+              disabled={confirmed}
+              placeholder="未入力"
+              onBlur={(event) => {
+                const next = Number(event.currentTarget.value);
+                if (event.currentTarget.value.trim() !== "" && Number.isFinite(next) && next >= 0 && next !== amount) {
+                  onMonthlyFixedChange(contractId, item.asset_meter_sub_item_id, next);
+                }
+              }}
+            />
+          ) : "—";
+        }),
       ])}
-      totalRow={["合計", "", "", formatYen(totalAmount)]}
-    />
-  );
-}
-function MonthlyFixedChargeTable({
-  contracts,
-  subItemId,
-}: {
-  contracts: ContractUnit[];
-  subItemId: string;
-}) {
-  const groups = Array.from(new Map(
-    contracts
-      .filter((row) => ["office", "warehouse", "storage"].includes(row.unit?.unit_type ?? ""))
-      .map((row) => [billingGroupKey(row), row]),
-  ).values());
-  const amountFor = (row: ContractUnit) => Number(row.meterBilling[0]?.items.find((item) => item.asset_meter_sub_item_id === subItemId && item.is_billable)?.fixed_amount ?? 0);
-  return (
-    <DataTable
-      headers={["階数", "区画", "テナント名", "使用量", "金額"]}
-      rows={groups.map((row) => [
-        formatFloor(row.unit?.floor_label),
-        row.unit?.unit_name || row.unit?.unit_code || "—",
-        billingGroupTenantName(row),
-        "—",
-        formatYen(amountFor(row)),
-      ])}
-      totalRow={["合計", "", "", "—", formatYen(groups.reduce((sum, row) => sum + amountFor(row), 0))]}
+      totalRow={[
+        "合計", "", "", formatYen(totalAmount),
+        ...monthlyFixedItems.map((item) => formatYen(groups.reduce((sum, rows) => sum + (fixedAmountFor(rows, item) ?? 0), 0))),
+      ]}
     />
   );
 }
