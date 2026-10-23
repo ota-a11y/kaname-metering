@@ -557,10 +557,33 @@ export async function saveMonthlyFixedCharge(
   client: SupabaseClient,
   assetId: string,
   billingMonth: string,
-  contractId: string,
+  contractId: string | null,
+  tenantId: string,
   subItemId: string,
   amount: number,
-) {
+): Promise<string> {
+  let effectiveContractId = contractId;
+  if (!effectiveContractId) {
+    const existing = await client
+      .from("meter_reading_contract")
+      .select("meter_reading_contract_id")
+      .eq("asset_id", assetId)
+      .eq("tenant_id", tenantId)
+      .order("row_no")
+      .limit(1)
+      .maybeSingle();
+    fail("請求グループを確認できませんでした", existing.error);
+    effectiveContractId = existing.data?.meter_reading_contract_id ?? null;
+    if (!effectiveContractId) {
+      const created = await client
+        .from("meter_reading_contract")
+        .insert({ asset_id: assetId, tenant_id: tenantId, row_no: 1 })
+        .select("meter_reading_contract_id")
+        .single();
+      fail("請求グループを準備できませんでした", created.error);
+      effectiveContractId = created.data!.meter_reading_contract_id;
+    }
+  }
   const month = `${billingMonth}-01`;
   const monthResult = await client.from("meter_reading_month").upsert(
     { asset_id: assetId, billing_month: month },
@@ -570,11 +593,12 @@ export async function saveMonthlyFixedCharge(
   const { error } = await client.from("meter_reading_month_fixed_charge").upsert({
     asset_id: assetId,
     billing_month: month,
-    meter_reading_contract_id: contractId,
+    meter_reading_contract_id: effectiveContractId,
     asset_meter_sub_item_id: subItemId,
     amount,
   }, { onConflict: "asset_id,billing_month,meter_reading_contract_id,asset_meter_sub_item_id" });
   fail("月額定額を保存できませんでした", error);
+  return effectiveContractId as string;
 }
 
 export async function loadSurchargeEvidence(

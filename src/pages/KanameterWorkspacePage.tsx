@@ -1391,11 +1391,18 @@ export function KanameterWorkspacePage({
                     monthlyFixedItems={categorySubItems.filter((item) => item.is_monthly_fixed)}
                     monthlyFixedCharges={monthlyFixedCharges}
                     confirmed={status === "confirmed"}
-                    onMonthlyFixedChange={(contractId, subItemId, amount) => {
-                      const key = `${contractId}|${subItemId}`;
+                    onMonthlyFixedChange={(contractId, tenantId, subItemId, amount) => {
+                      const key = `${contractId ?? tenantId}|${subItemId}`;
                       setMonthlyFixedCharges((current) => ({ ...current, [key]: amount }));
-                      void saveMonthlyFixedCharge(supabase!, assetId, billingMonth, contractId, subItemId, amount)
-                        .then(() => { setStatus((current) => current ?? "draft"); setNotice("月額定額を保存しました。"); })
+                      void saveMonthlyFixedCharge(supabase!, assetId, billingMonth, contractId, tenantId, subItemId, amount)
+                        .then((savedContractId) => {
+                          setMonthlyFixedCharges((current) => ({ ...current, [`${savedContractId}|${subItemId}`]: amount }));
+                          setContracts((current) => current.map((row) => row.contract?.tenant_id === tenantId && !row.meterBilling.length
+                            ? { ...row, meterBilling: [{ meter_reading_contract_id: savedContractId, row_no: 1, invoice_number: 1, electric_billable: true, water_billable: true, gas_billable: true, electric_sum_mode: "aggregate", water_sum_mode: "aggregate", gas_sum_mode: "aggregate", amount_rounding_mode: "floor", split_label: null, units: [], items: [] }] }
+                            : row));
+                          setStatus((current) => current ?? "draft");
+                          setNotice("月額定額を保存しました。");
+                        })
                         .catch((reason: Error) => setError(reason.message));
                     }}
                   />
@@ -2485,7 +2492,7 @@ function BasicChargeTable({
   monthlyFixedItems: MeterSubItem[];
   monthlyFixedCharges: Record<string, number>;
   confirmed: boolean;
-  onMonthlyFixedChange: (contractId: string, subItemId: string, amount: number) => void;
+  onMonthlyFixedChange: (contractId: string | null, tenantId: string, subItemId: string, amount: number) => void;
 }) {
   const eligibleContracts = contracts.filter((row) =>
     ["office", "warehouse", "storage"].includes(row.unit?.unit_type ?? ""),
@@ -2502,7 +2509,8 @@ function BasicChargeTable({
   const totalAmount = groups.reduce((sum, rows) => sum + amountFor(rows), 0);
   const fixedAmountFor = (rows: ContractUnit[], item: MeterSubItem) => {
     const contractId = rows[0]?.meterBilling[0]?.meter_reading_contract_id;
-    return contractId ? monthlyFixedCharges[`${contractId}|${item.asset_meter_sub_item_id}`] : undefined;
+    const tenantId = rows[0]?.contract?.tenant_id;
+    return monthlyFixedCharges[`${contractId ?? tenantId}|${item.asset_meter_sub_item_id}`];
   };
 
   return (
@@ -2518,10 +2526,11 @@ function BasicChargeTable({
         formatYen(amountFor(rows)),
         ...monthlyFixedItems.map((item) => {
           const contractId = rows[0]?.meterBilling[0]?.meter_reading_contract_id;
+          const tenantId = rows[0]?.contract?.tenant_id;
           const amount = fixedAmountFor(rows, item);
-          return contractId ? (
+          return tenantId ? (
             <input
-              key={`${contractId}-${item.asset_meter_sub_item_id}-${amount ?? ""}`}
+              key={`${contractId ?? tenantId}-${item.asset_meter_sub_item_id}-${amount ?? ""}`}
               className="reading-input monthly-fixed-input"
               type="number"
               min="0"
@@ -2532,7 +2541,7 @@ function BasicChargeTable({
               onBlur={(event) => {
                 const next = Number(event.currentTarget.value);
                 if (event.currentTarget.value.trim() !== "" && Number.isFinite(next) && next >= 0 && next !== amount) {
-                  onMonthlyFixedChange(contractId, item.asset_meter_sub_item_id, next);
+                  onMonthlyFixedChange(contractId ?? null, tenantId, item.asset_meter_sub_item_id, next);
                 }
               }}
             />
