@@ -207,7 +207,7 @@ export async function loadContractUnits(
       .eq("asset_id", assetId),
     client
       .from("meter_reading_contract")
-      .select("meter_reading_contract_id, tenant_id, row_no, invoice_number, split_label, electric_billable, water_billable, gas_billable, electric_sum_mode, water_sum_mode, gas_sum_mode, amount_rounding_mode, units:meter_reading_contract_unit(unit_id)")
+      .select("meter_reading_contract_id, tenant_id, row_no, invoice_number, split_label, electric_billable, water_billable, gas_billable, electric_sum_mode, water_sum_mode, gas_sum_mode, amount_rounding_mode, units:meter_reading_contract_unit(unit_id), items:meter_reading_contract_item(asset_meter_sub_item_id, is_billable, fixed_amount)")
       .eq("asset_id", assetId),
   ]);
   fail("契約ごとの公共料金設定を読み込めませんでした", contracts.error);
@@ -648,7 +648,7 @@ export async function loadMeteringConfiguration(
     client
       .from("asset_meter_sub_item")
       .select(
-        "asset_meter_sub_item_id, category, sub_item_name, sub_item_kind, asset_billing_line_item_id, sort_order, input_mode, input_decimal_digits, aggregation_decimal_digits, usage_rounding_mode, billing_period_pattern_id, price_mode, default_unit_price, tax_mode, tax_rounding_mode, show_unit_price_on_invoice, is_monthly_fixed, monthly_fixed_amount",
+        "asset_meter_sub_item_id, category, sub_item_name, sub_item_kind, asset_billing_line_item_id, sort_order, input_mode, input_decimal_digits, aggregation_decimal_digits, usage_rounding_mode, billing_period_pattern_id, price_mode, default_unit_price, tax_mode, tax_rounding_mode, show_unit_price_on_invoice, is_monthly_fixed",
       )
       .eq("asset_id", assetId)
       .order("sort_order"),
@@ -750,7 +750,6 @@ export async function saveMeteringSettings(
       tax_rounding_mode: row.tax_rounding_mode,
       show_unit_price_on_invoice: row.show_unit_price_on_invoice,
       is_monthly_fixed: row.sub_item_kind === "custom" && row.is_monthly_fixed,
-      monthly_fixed_amount: row.sub_item_kind === "custom" && row.is_monthly_fixed ? row.monthly_fixed_amount : null,
     })),
   );
   fail("小分類設定を保存できませんでした", subItemResult.error);

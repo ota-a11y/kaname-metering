@@ -73,6 +73,11 @@ export type ContractUnit = {
     gas_sum_mode: "aggregate" | "perMeter";
     amount_rounding_mode: "floor" | "round" | "ceil";
     units: Array<{ unit_id: string }>;
+    items: Array<{
+      asset_meter_sub_item_id: string;
+      is_billable: boolean;
+      fixed_amount: number | null;
+    }>;
   }>;
 };
 
@@ -153,7 +158,6 @@ export type MeterSubItem = {
   tax_rounding_mode: "floor" | "round" | "ceil";
   show_unit_price_on_invoice: boolean;
   is_monthly_fixed: boolean;
-  monthly_fixed_amount: number | null;
 };
 
 export type MeterUnitPriceCalculation = {
