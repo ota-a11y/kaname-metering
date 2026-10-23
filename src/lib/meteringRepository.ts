@@ -720,7 +720,7 @@ export async function saveMeteringSettings(
       is_billable: row.is_billable,
       is_basic_billable: row.is_basic_billable,
       basic_charge_method: row.basic_charge_method,
-      basic_charge_fixed_amount: row.basic_charge_method === "fixed" ? row.basic_charge_fixed_amount : null,
+      basic_charge_fixed_amount: null,
       basic_charge_area_unit_price: row.basic_charge_method === "sqm" || row.basic_charge_method === "tsubo" ? row.basic_charge_area_unit_price : null,
     })),
     { onConflict: "asset_id,category" },

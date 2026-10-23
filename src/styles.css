@@ -837,6 +837,7 @@ td ul {
 .configuration-category > header select { box-sizing: border-box; height: 34px; padding: 7px 9px; }
 .configuration-category-header .price-setting-label { flex-wrap: nowrap; white-space: nowrap; }
 .configuration-category-header .checkbox-label + .price-setting-label { margin-left: 12px; }
+.configuration-category-header .price-setting-separator { margin-left: 28px; padding-left: 28px; border-left: 1px solid #d9c77b; }
 .configuration-category-header .basic-charge-setting { flex-wrap: nowrap; white-space: nowrap; }
 .configuration-category-header .basic-charge-setting input { width: 100px; }
 .configuration-category-header .basic-charge-setting span { color: #6f7a72; font-size: 11px; }
