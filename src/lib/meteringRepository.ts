@@ -207,7 +207,7 @@ export async function loadContractUnits(
       .eq("asset_id", assetId),
     client
       .from("meter_reading_contract")
-      .select("meter_reading_contract_id, tenant_id, row_no, invoice_number, split_label, electric_billable, water_billable, gas_billable, electric_sum_mode, water_sum_mode, gas_sum_mode, amount_rounding_mode, units:meter_reading_contract_unit(unit_id)")
+      .select("meter_reading_contract_id, tenant_id, row_no, invoice_number, split_label, electric_billable, water_billable, gas_billable, electric_sum_mode, water_sum_mode, gas_sum_mode, amount_rounding_mode, units:meter_reading_contract_unit(unit_id), items:meter_reading_contract_item(asset_meter_sub_item_id, is_billable, fixed_amount)")
       .eq("asset_id", assetId),
   ]);
   fail("契約ごとの公共料金設定を読み込めませんでした", contracts.error);
@@ -529,6 +529,78 @@ export async function saveMeterReadingDate(
   fail("検針日を保存できませんでした", error);
 }
 
+export async function loadMonthlyFixedCharges(
+  client: SupabaseClient,
+  assetId: string,
+  billingMonth: string,
+): Promise<Array<{ meter_reading_contract_id: string; asset_meter_sub_item_id: string; amount: number }>> {
+  const { data, error } = await client
+    .from("meter_reading_month_fixed_charge")
+    .select("billing_month, meter_reading_contract_id, asset_meter_sub_item_id, amount")
+    .eq("asset_id", assetId)
+    .lte("billing_month", `${billingMonth}-01`)
+    .order("billing_month", { ascending: false });
+  fail("月額定額を読み込めませんでした", error);
+  const latest = new Map<string, { meter_reading_contract_id: string; asset_meter_sub_item_id: string; amount: number }>();
+  for (const row of data ?? []) {
+    const key = `${row.meter_reading_contract_id}|${row.asset_meter_sub_item_id}`;
+    if (!latest.has(key)) latest.set(key, {
+      meter_reading_contract_id: row.meter_reading_contract_id,
+      asset_meter_sub_item_id: row.asset_meter_sub_item_id,
+      amount: Number(row.amount),
+    });
+  }
+  return Array.from(latest.values());
+}
+
+export async function saveMonthlyFixedCharge(
+  client: SupabaseClient,
+  assetId: string,
+  billingMonth: string,
+  contractId: string | null,
+  tenantId: string,
+  subItemId: string,
+  amount: number,
+): Promise<string> {
+  let effectiveContractId = contractId;
+  if (!effectiveContractId) {
+    const existing = await client
+      .from("meter_reading_contract")
+      .select("meter_reading_contract_id")
+      .eq("asset_id", assetId)
+      .eq("tenant_id", tenantId)
+      .order("row_no")
+      .limit(1)
+      .maybeSingle();
+    fail("請求グループを確認できませんでした", existing.error);
+    effectiveContractId = existing.data?.meter_reading_contract_id ?? null;
+    if (!effectiveContractId) {
+      const created = await client
+        .from("meter_reading_contract")
+        .insert({ asset_id: assetId, tenant_id: tenantId, row_no: 1 })
+        .select("meter_reading_contract_id")
+        .single();
+      fail("請求グループを準備できませんでした", created.error);
+      effectiveContractId = created.data!.meter_reading_contract_id;
+    }
+  }
+  const month = `${billingMonth}-01`;
+  const monthResult = await client.from("meter_reading_month").upsert(
+    { asset_id: assetId, billing_month: month },
+    { onConflict: "asset_id,billing_month" },
+  );
+  fail("月次検針データを準備できませんでした", monthResult.error);
+  const { error } = await client.from("meter_reading_month_fixed_charge").upsert({
+    asset_id: assetId,
+    billing_month: month,
+    meter_reading_contract_id: effectiveContractId,
+    asset_meter_sub_item_id: subItemId,
+    amount,
+  }, { onConflict: "asset_id,billing_month,meter_reading_contract_id,asset_meter_sub_item_id" });
+  fail("月額定額を保存できませんでした", error);
+  return effectiveContractId as string;
+}
+
 export async function loadSurchargeEvidence(
   client: SupabaseClient,
   assetId: string,
@@ -582,9 +654,9 @@ export async function loadMeteringConfiguration(
   periodPatterns: BillingPeriodPattern[];
 }> {
   const defaultCategories: MeterCategorySetting[] = [
-    { category: "electric", usage_unit: "kWh", is_billable: true, is_basic_billable: false },
-    { category: "water", usage_unit: "m³", is_billable: true, is_basic_billable: false },
-    { category: "gas", usage_unit: "m³", is_billable: true, is_basic_billable: false },
+    { category: "electric", usage_unit: "kWh", is_billable: true, is_basic_billable: false, basic_charge_method: "fixed", basic_charge_fixed_amount: null, basic_charge_area_unit_price: null },
+    { category: "water", usage_unit: "m³", is_billable: true, is_basic_billable: false, basic_charge_method: "fixed", basic_charge_fixed_amount: null, basic_charge_area_unit_price: null },
+    { category: "gas", usage_unit: "m³", is_billable: true, is_basic_billable: false, basic_charge_method: "fixed", basic_charge_fixed_amount: null, basic_charge_area_unit_price: null },
   ];
   const defaultPeriods = [
     { pattern_name: "前月分", start_month_offset: -1, start_day_type: "first", start_meter_day_offset: 0, end_month_offset: -1, end_day_type: "last", end_meter_day_offset: 0, sort_order: 0 },
@@ -642,13 +714,13 @@ export async function loadMeteringConfiguration(
   const [categories, subItems, surcharges, periodPatterns] = await Promise.all([
     client
       .from("asset_meter_category_setting")
-      .select("category, usage_unit, is_billable, is_basic_billable")
+      .select("category, usage_unit, is_billable, is_basic_billable, basic_charge_method, basic_charge_fixed_amount, basic_charge_area_unit_price")
       .eq("asset_id", assetId)
       .order("category"),
     client
       .from("asset_meter_sub_item")
       .select(
-        "asset_meter_sub_item_id, category, sub_item_name, sub_item_kind, asset_billing_line_item_id, sort_order, input_mode, input_decimal_digits, aggregation_decimal_digits, usage_rounding_mode, billing_period_pattern_id, price_mode, default_unit_price, tax_mode, tax_rounding_mode, show_unit_price_on_invoice",
+        "asset_meter_sub_item_id, category, sub_item_name, sub_item_kind, asset_billing_line_item_id, sort_order, input_mode, input_decimal_digits, aggregation_decimal_digits, usage_rounding_mode, billing_period_pattern_id, price_mode, default_unit_price, tax_mode, tax_rounding_mode, show_unit_price_on_invoice, is_monthly_fixed",
       )
       .eq("asset_id", assetId)
       .order("sort_order"),
@@ -713,7 +785,16 @@ export async function saveMeteringSettings(
   removedSubItemIds: string[] = [],
 ) {
   const categoryResult = await client.from("asset_meter_category_setting").upsert(
-    categories.map((row) => ({ asset_id: assetId, category: row.category, usage_unit: row.usage_unit, is_billable: row.is_billable, is_basic_billable: row.is_basic_billable })),
+    categories.map((row) => ({
+      asset_id: assetId,
+      category: row.category,
+      usage_unit: row.usage_unit,
+      is_billable: row.is_billable,
+      is_basic_billable: row.is_basic_billable,
+      basic_charge_method: row.basic_charge_method,
+      basic_charge_fixed_amount: null,
+      basic_charge_area_unit_price: row.basic_charge_method === "sqm" || row.basic_charge_method === "tsubo" ? row.basic_charge_area_unit_price : null,
+    })),
     { onConflict: "asset_id,category" },
   );
   fail("分類設定を保存できませんでした", categoryResult.error);
@@ -740,6 +821,7 @@ export async function saveMeteringSettings(
       tax_mode: row.tax_mode,
       tax_rounding_mode: row.tax_rounding_mode,
       show_unit_price_on_invoice: row.show_unit_price_on_invoice,
+      is_monthly_fixed: row.sub_item_kind === "custom" && row.is_monthly_fixed,
     })),
   );
   fail("小分類設定を保存できませんでした", subItemResult.error);

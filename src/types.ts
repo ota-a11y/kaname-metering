@@ -73,6 +73,11 @@ export type ContractUnit = {
     gas_sum_mode: "aggregate" | "perMeter";
     amount_rounding_mode: "floor" | "round" | "ceil";
     units: Array<{ unit_id: string }>;
+    items: Array<{
+      asset_meter_sub_item_id: string;
+      is_billable: boolean;
+      fixed_amount: number | null;
+    }>;
   }>;
 };
 
@@ -130,6 +135,9 @@ export type MeterCategorySetting = {
   usage_unit: string;
   is_billable: boolean;
   is_basic_billable: boolean;
+  basic_charge_method: "fixed" | "sqm" | "tsubo";
+  basic_charge_fixed_amount: number | null;
+  basic_charge_area_unit_price: number | null;
 };
 
 export type MeterSubItem = {
@@ -149,6 +157,7 @@ export type MeterSubItem = {
   tax_mode: TaxMode;
   tax_rounding_mode: "floor" | "round" | "ceil";
   show_unit_price_on_invoice: boolean;
+  is_monthly_fixed: boolean;
 };
 
 export type MeterUnitPriceCalculation = {
