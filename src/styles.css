@@ -1003,6 +1003,11 @@ td ul {
 }
 .workspace-data-table td.tenant-cell { text-align: left; }
 .workspace-data-table td.numeric { text-align: right; }
+.workspace-data-table .monthly-fixed-input {
+  width: 100%;
+  min-width: 0;
+  text-align: right;
+}
 .workspace-data-table td.unit-price-cell {
   font-weight: 700;
 }
@@ -1349,14 +1354,14 @@ td ul {
 .meter-settings header p:last-child { margin: 0; color: #74827d; font-size: 12px; }
 .meter-add-form {
   display: grid;
-  grid-template-columns: minmax(180px, 1fr) minmax(160px, .8fr) minmax(180px, 1fr) auto;
+  grid-template-columns: minmax(180px, 1fr) minmax(130px, .7fr) minmax(160px, .8fr) minmax(180px, 1fr) auto;
   align-items: end;
   gap: 12px;
   padding: 18px 26px;
   background: #f7faf8;
   border-top: 1px solid #e4ebe8;
 }
-.meter-add-form.is-locked { grid-template-columns: minmax(160px, .8fr) minmax(180px, 1fr) auto; }
+.meter-add-form.is-locked { grid-template-columns: minmax(130px, .7fr) minmax(160px, .8fr) minmax(180px, 1fr) auto; }
 .meter-add-form label { margin: 0; color: #65756f; font-size: 11px; font-weight: 700; }
 .meter-add-form input, .meter-add-form select, .meter-settings-table select {
   width: 100%;
@@ -1398,6 +1403,24 @@ td ul {
 .meter-settings-table { min-width: 720px; }
 .meter-name-editor { display: flex; align-items: center; gap: 6px; }
 .meter-name-editor input { min-width: 96px; width: 100%; font-weight: 700; }
+.unit-assignment-control { display: flex; align-items: center; gap: 7px; }
+.unit-assignment-control select { min-width: 170px; }
+.unit-assignment-control button { flex: 0 0 auto; padding: 6px 8px; border: 1px solid #168168; border-radius: 4px; color: #0d7058; background: #fff; font-size: 10px; font-weight: 800; white-space: nowrap; }
+.meter-tag-select { min-width: 120px; font-weight: 700; }
+.meter-tag-modal { width: min(500px, 100%); }
+.meter-tag-form { display: grid; gap: 18px; margin-top: 18px; }
+.meter-tag-form > label { display: grid; gap: 7px; color: #52645e; font-size: 12px; font-weight: 700; }
+.meter-tag-form input[type="text"],
+.meter-tag-form > label > input:not([type="color"]) { width: 100%; box-sizing: border-box; padding: 9px 10px; border: 1px solid #ccd9d4; border-radius: 4px; }
+.meter-tag-color-field { display: grid; gap: 10px; margin: 0; padding: 0; border: 0; }
+.meter-tag-color-field legend { margin-bottom: 7px; color: #52645e; font-size: 12px; font-weight: 700; }
+.meter-tag-palette { display: grid; grid-template-columns: repeat(8, 28px); gap: 5px; width: max-content; padding: 10px; border: 1px solid #ccd9d4; border-radius: 5px; background: #f8faf9; }
+.meter-tag-palette button { width: 28px; height: 28px; padding: 0; border: 1px solid rgb(23 34 31 / 15%); border-radius: 2px; cursor: pointer; }
+.meter-tag-palette button:hover { outline: 2px solid #80b9aa; outline-offset: 1px; }
+.meter-tag-palette button.selected { outline: 3px solid #168168; outline-offset: 1px; }
+.meter-tag-preview,
+.meter-tag-badge { display: inline-flex; align-items: center; justify-content: center; min-height: 22px; padding: 2px 9px; border-radius: 999px; font-size: 10px; font-weight: 800; line-height: 1.2; white-space: nowrap; }
+.meter-code-with-tag { display: inline-flex; align-items: center; justify-content: center; gap: 7px; }
 .meter-settings-table th:first-child,
 .meter-settings-table td.drag-cell { width: 44px; padding-inline: 8px; }
 .drag-handle {
@@ -1415,8 +1438,8 @@ td ul {
 .meter-settings-table tr.is-dragging { opacity: .42; }
 .muted-setting { color: #89958f; font-size: 11px; white-space: nowrap; }
 .meter-adjustment-control { display: flex; align-items: center; justify-content: center; gap: 8px; white-space: nowrap; }
-.meter-adjustment-control label { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 700; }
 .meter-adjustment-control input { margin: 0; }
+.meter-adjustment-status { padding: 0; border: 0; color: #0d7058; background: transparent; font-size: 11px; font-weight: 800; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
 .meter-adjustment-modal { width: min(560px, 100%); }
 .meter-adjustment-form { display: grid; gap: 16px; margin-top: 18px; }
 .meter-adjustment-form label { display: grid; gap: 6px; color: #52645e; font-size: 12px; font-weight: 700; }
@@ -1435,6 +1458,19 @@ td ul {
 .meter-adjustment-form textarea { resize: vertical; }
 .meter-adjustment-ratio { display: grid; grid-template-columns: 1fr auto 1fr; align-items: end; gap: 12px; }
 .meter-adjustment-ratio > span { padding-bottom: 10px; color: #65756f; font-weight: 800; }
+.meter-allocation-modal { width: min(720px, 100%); }
+.meter-allocation-form { display: grid; gap: 16px; margin-top: 18px; }
+.meter-allocation-form > label { display: grid; gap: 6px; color: #52645e; font-size: 12px; font-weight: 700; }
+.meter-allocation-form > label select { padding: 9px 10px; border: 1px solid #ccd9d4; border-radius: 4px; background: #fff; }
+.meter-allocation-list { max-height: 390px; overflow: auto; border: 1px solid #d9e2de; border-radius: 5px; }
+.meter-allocation-head, .meter-allocation-row { display: grid; grid-template-columns: 52px minmax(240px, 1fr) 130px; align-items: center; gap: 10px; min-height: 42px; padding: 0 12px; }
+.meter-allocation-head { position: sticky; top: 0; z-index: 1; color: #52645e; background: #f1f6f4; font-size: 11px; font-weight: 800; }
+.meter-allocation-row { border-top: 1px solid #e4ebe8; font-size: 12px; }
+.meter-allocation-row > input[type="checkbox"] { justify-self: center; }
+.meter-allocation-row > input[type="number"] { width: 100%; box-sizing: border-box; padding: 7px 8px; border: 1px solid #ccd9d4; border-radius: 4px; text-align: right; }
+.meter-allocation-row strong { text-align: right; }
+.meter-allocation-row .allocation-missing { color: #b33f49; }
+.meter-allocation-form > p { margin: 0; color: #65756f; font-size: 11px; }
 .child-meter-mark {
   display: inline-block;
   margin-right: 6px;
@@ -1477,6 +1513,8 @@ td ul {
 .subitem-period-display { display: flex; align-items: center; gap: 9px; flex: 0 0 auto; margin: 0 clamp(24px, 5vw, 90px) 0 clamp(36px, 8vw, 130px); white-space: nowrap; }
 .subitem-period-display span { color: #65756f; font-size: 11px; font-weight: 700; }
 .subitem-period-display strong { color: #26342f; font-size: 13px; }
+.inspection-tag-filter { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; color: #65756f; font-size: 11px; font-weight: 700; white-space: nowrap; }
+.inspection-tag-filter select { min-width: 130px; height: 34px; padding: 5px 28px 5px 9px; border: 1px solid #ccd9d4; border-radius: 4px; color: #26342f; background: #fff; }
 .header-rollover-alert {
   display: flex;
   align-items: center;

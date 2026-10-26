@@ -24,6 +24,12 @@ export type AssetUtilitySetting = {
   default_tax_mode: TaxMode;
   show_in_rent_roll: boolean;
 };
+export type MeterTag = {
+  asset_meter_tag_id: string;
+  asset_id: string;
+  tag_name: string;
+  color: string;
+};
 export type ContractUnit = {
   lease_contract_unit_id: string;
   utility_amount_rounding_mode: "floor" | "round" | "ceil";
@@ -46,6 +52,7 @@ export type ContractUnit = {
     asset_billing_line_item_id: string;
     unit_price: number;
     tax_mode: TaxMode;
+    billing_month_prices: Array<{ start_month: number; end_month: number; unit_price: number }>;
     item: {
       line_item_name: string;
     } | null;
@@ -54,6 +61,7 @@ export type ContractUnit = {
     category: UtilityCategory;
     unit_price: number;
     tax_mode: TaxMode;
+    billing_month_prices: Array<{ start_month: number; end_month: number; unit_price: number }>;
   }>;
   basics: Array<{
     category: UtilityCategory;
@@ -94,6 +102,7 @@ export type MeterReadingRow = {
   billing_adjustment_numerator: number | null;
   billing_adjustment_denominator: number | null;
   billing_adjustment_note: string | null;
+  tag: MeterTag | null;
   subItem: {
     asset_meter_sub_item_id: string;
     category: UtilityCategory;
@@ -108,11 +117,15 @@ export type MeterReadingRow = {
     unit_id: string;
     effective_from: string;
     effective_to: string | null;
+    allocation_method: "single" | "area" | "ratio";
+    allocation_weight: number;
+    area_sqm_snapshot: number | null;
     unit: {
       unit_id: string;
       unit_code: string;
       unit_name: string | null;
       floor_label: string | null;
+      rentable_area_sqm: number | null;
     } | null;
   }>;
   entry: {
@@ -127,6 +140,7 @@ export type MeterUnitOption = {
   unit_code: string;
   unit_name: string | null;
   floor_label: string | null;
+  rentable_area_sqm: number | null;
   unit_type: "office" | "warehouse" | "storage";
 };
 
