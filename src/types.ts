@@ -29,9 +29,12 @@ export type MeterTag = {
   asset_id: string;
   tag_name: string;
   color: string;
+  created_at?: string;
 };
 export type ContractUnit = {
   lease_contract_unit_id: string;
+  lease_contract_billing_unit_id?: string;
+  member_unit_ids?: string[];
   utility_amount_rounding_mode: "floor" | "round" | "ceil";
   unit: {
     unit_id: string;
@@ -142,6 +145,9 @@ export type MeterUnitOption = {
   floor_label: string | null;
   rentable_area_sqm: number | null;
   unit_type: "office" | "warehouse" | "storage";
+  billing_unit_id?: string;
+  tenant_name?: string | null;
+  source_sort_order?: number;
 };
 
 export type MeterCategorySetting = {

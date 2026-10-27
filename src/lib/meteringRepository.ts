@@ -134,7 +134,7 @@ export async function createMeterTag(
     asset_id: assetId,
     tag_name: tagName.trim(),
     color,
-  }).select("asset_meter_tag_id, asset_id, tag_name, color").single();
+  }).select("asset_meter_tag_id, asset_id, tag_name, color, created_at").single();
   fail("新しいメータータグを追加できませんでした", error);
   return data as MeterTag;
 }
@@ -175,6 +175,17 @@ function withDatabaseMeterParent<T extends { asset_meter_id: string; parent_asse
 
 function fail(context: string, error: { message: string } | null) {
   if (error) throw new Error(`${context}: ${error.message}`);
+}
+
+const billingUnitValue = (id: string) => `billing:${id}`;
+const billingUnitIdOf = (value: string | null) => value?.startsWith("billing:") ? value.slice(8) : null;
+function normalizeAssignment<T extends { unit_id: string | null; lease_contract_billing_unit_id?: string | null; billingUnit?: { billing_unit_name: string; members?: Array<{ contractUnit: { unit: { floor_label: string | null } | Array<{ floor_label: string | null }> } | Array<{ unit: { floor_label: string | null } | Array<{ floor_label: string | null }> }> }> } | Array<{ billing_unit_name: string; members?: Array<{ contractUnit: { unit: { floor_label: string | null } | Array<{ floor_label: string | null }> } | Array<{ unit: { floor_label: string | null } | Array<{ floor_label: string | null }> }> }> }> | null }>(row: T) {
+  if (!row.lease_contract_billing_unit_id) return row;
+  const billingUnit = Array.isArray(row.billingUnit) ? row.billingUnit[0] : row.billingUnit;
+  const member = billingUnit?.members?.[0]?.contractUnit;
+  const contractUnit = Array.isArray(member) ? member[0] : member;
+  const memberUnit = Array.isArray(contractUnit?.unit) ? contractUnit.unit[0] : contractUnit?.unit;
+  return { ...row, unit_id: billingUnitValue(row.lease_contract_billing_unit_id), unit: { unit_id: billingUnitValue(row.lease_contract_billing_unit_id), unit_code: billingUnit?.billing_unit_name ?? "請求区画", unit_name: billingUnit?.billing_unit_name ?? "請求区画", floor_label: memberUnit?.floor_label ?? null, rentable_area_sqm: null } };
 }
 
 export async function loadBillingAssets(
@@ -218,7 +229,7 @@ export async function loadContractUnits(
   client: SupabaseClient,
   assetId: string,
 ): Promise<ContractUnit[]> {
-  const [contracts, order, meterBilling] = await Promise.all([
+  const [contracts, billingUnits, order, meterBilling] = await Promise.all([
     client
       .from("lease_contract_unit")
       .select(
@@ -226,6 +237,11 @@ export async function loadContractUnits(
       )
       .eq("unit.property_id", assetId)
       .order("lease_contract_unit_id"),
+    client
+      .from("lease_contract_billing_unit")
+      .select(`lease_contract_billing_unit_id, billing_unit_name, contract:lease_contract!inner(lease_contract_id, tenant_id, contract_status, contract_start_date, contract_end_date, tenant:tenant_master(tenant_name)), members:lease_contract_billing_unit_member(contractUnit:lease_contract_unit!inner(lease_contract_unit_id, utility_amount_rounding_mode, unit:unit_master!inner(unit_id, floor_label, property_id))), prices:lease_contract_billing_unit_utility_price(asset_billing_line_item_id, unit_price, tax_mode, billing_month_prices, item:asset_billing_line_item(line_item_name)), categoryPrices:lease_contract_billing_unit_category_price(category, unit_price, tax_mode, billing_month_prices), basics:lease_contract_billing_unit_basic_charge(category, amount, tax_mode)`)
+      .eq("members.contractUnit.unit.property_id", assetId)
+      .order("sort_order"),
     client
       .from("asset_billing_tenant_order")
       .select("tenant_id, sort_order")
@@ -236,18 +252,36 @@ export async function loadContractUnits(
       .eq("asset_id", assetId),
   ]);
   fail("契約ごとの公共料金設定を読み込めませんでした", contracts.error);
+  fail("請求区画ごとの公共料金設定を読み込めませんでした", billingUnits.error);
   fail("テナントの並び順を読み込めませんでした", order.error);
   fail("テナントの請求設定を読み込めませんでした", meterBilling.error);
   const rank = new Map(
     (order.data ?? []).map((row) => [row.tenant_id, row.sort_order]),
   );
-  const rows = (contracts.data ?? []) as unknown as ContractUnit[];
+  type BillingMemberUnit = { lease_contract_unit_id: string; utility_amount_rounding_mode: ContractUnit["utility_amount_rounding_mode"]; unit: { unit_id: string; floor_label: string | null } | Array<{ unit_id: string; floor_label: string | null }> };
+  const asArray = <T>(value: T | T[] | null | undefined): T[] => value == null ? [] : Array.isArray(value) ? value : [value];
+  const billingRows = (billingUnits.data ?? []) as unknown as Array<{ lease_contract_billing_unit_id: string; billing_unit_name: string; contract: ContractUnit["contract"] | ContractUnit["contract"][]; members: Array<{ contractUnit: BillingMemberUnit | BillingMemberUnit[] }>; prices: ContractUnit["prices"]; categoryPrices: ContractUnit["categoryPrices"]; basics: ContractUnit["basics"] }>;
+  const groupedContractUnitIds = new Set(billingRows.flatMap((row) => row.members.flatMap((member) => asArray(member.contractUnit).map((unit) => unit.lease_contract_unit_id))));
+  const rows = ((contracts.data ?? []) as unknown as ContractUnit[]).filter((row) => !groupedContractUnitIds.has(row.lease_contract_unit_id));
+  for (const billing of billingRows) {
+    const members = billing.members.flatMap((member) => asArray(member.contractUnit));
+    const contract = Array.isArray(billing.contract) ? billing.contract[0] : billing.contract;
+    rows.push({
+      lease_contract_unit_id: billing.lease_contract_billing_unit_id,
+      lease_contract_billing_unit_id: billing.lease_contract_billing_unit_id,
+      member_unit_ids: members.flatMap((member) => asArray(member.unit).map((unit) => unit.unit_id)),
+      utility_amount_rounding_mode: members[0]?.utility_amount_rounding_mode ?? "floor",
+      unit: { unit_id: billingUnitValue(billing.lease_contract_billing_unit_id), unit_code: billing.billing_unit_name, unit_name: billing.billing_unit_name, floor_label: asArray(members[0]?.unit)[0]?.floor_label ?? null, unit_type: "office" },
+      contract: contract ?? null,
+      prices: billing.prices ?? [], categoryPrices: billing.categoryPrices ?? [], basics: billing.basics ?? [], meterBilling: [],
+    });
+  }
   for (const row of rows) {
     const tenantSettings = (meterBilling.data ?? [])
       .filter((setting) => setting.tenant_id === row.contract?.tenant_id)
       .sort((left, right) => left.row_no - right.row_no);
     const matchingSetting = tenantSettings.find((setting) =>
-      setting.units?.some((unit: { unit_id: string }) => unit.unit_id === row.unit?.unit_id),
+      setting.units?.some((unit: { unit_id: string }) => (row.member_unit_ids ?? [row.unit?.unit_id]).includes(unit.unit_id)),
     );
     // 分割行のどこにも明示されていない区画は、KANAMEと同じく1行目へ含める。
     row.meterBilling = matchingSetting ? [matchingSetting] : tenantSettings.slice(0, 1);
@@ -294,7 +328,7 @@ export async function loadMeterReadings(
     client
       .from("asset_meter")
       .select(
-        `asset_meter_id, parent_asset_meter_id, is_rate_source, sort_order, meter_code, meter_label, billing_adjustment_enabled, billing_adjustment_method, billing_adjustment_percent, billing_adjustment_numerator, billing_adjustment_denominator, billing_adjustment_note, tag:asset_meter_tag(asset_meter_tag_id, asset_id, tag_name, color), subItem:asset_meter_sub_item!inner(asset_meter_sub_item_id, category, sub_item_name, input_mode, input_decimal_digits, aggregation_decimal_digits, usage_rounding_mode), assignments:asset_meter_unit_assignment(asset_meter_unit_assignment_id, unit_id, effective_from, effective_to, allocation_method, allocation_weight, area_sqm_snapshot, unit:unit_master(unit_id, unit_code, unit_name, floor_label, rentable_area_sqm))`,
+        `asset_meter_id, parent_asset_meter_id, is_rate_source, sort_order, meter_code, meter_label, billing_adjustment_enabled, billing_adjustment_method, billing_adjustment_percent, billing_adjustment_numerator, billing_adjustment_denominator, billing_adjustment_note, tag:asset_meter_tag(asset_meter_tag_id, asset_id, tag_name, color), subItem:asset_meter_sub_item!inner(asset_meter_sub_item_id, category, sub_item_name, input_mode, input_decimal_digits, aggregation_decimal_digits, usage_rounding_mode), assignments:asset_meter_unit_assignment(asset_meter_unit_assignment_id, unit_id, lease_contract_billing_unit_id, effective_from, effective_to, allocation_method, allocation_weight, area_sqm_snapshot, unit:unit_master(unit_id, unit_code, unit_name, floor_label, rentable_area_sqm), billingUnit:lease_contract_billing_unit(billing_unit_name, members:lease_contract_billing_unit_member(contractUnit:lease_contract_unit(unit:unit_master(floor_label)))))`,
       )
       .eq("asset_id", assetId)
       .eq("is_active", true)
@@ -336,7 +370,7 @@ export async function loadMeterReadings(
       const previousReading = previousReadings.get(meter.asset_meter_id);
       return withDatabaseMeterParent({
         ...meter,
-        assignments: (meter.assignments ?? [])
+        assignments: (meter.assignments ?? []).map(normalizeAssignment)
           .filter(
             (assignment: { effective_from: string; effective_to: string | null }) =>
               assignment.effective_from <= monthEnd &&
@@ -402,11 +436,11 @@ export async function loadMeterManagement(
   client: SupabaseClient,
   assetId: string,
 ): Promise<{ meters: MeterReadingRow[]; units: MeterUnitOption[]; tags: MeterTag[] }> {
-  const [meters, units, tags] = await Promise.all([
+  const [meters, units, billingUnits, tags] = await Promise.all([
     client
       .from("asset_meter")
       .select(
-        `asset_meter_id, parent_asset_meter_id, is_rate_source, sort_order, meter_code, meter_label, billing_adjustment_enabled, billing_adjustment_method, billing_adjustment_percent, billing_adjustment_numerator, billing_adjustment_denominator, billing_adjustment_note, tag:asset_meter_tag(asset_meter_tag_id, asset_id, tag_name, color), subItem:asset_meter_sub_item!inner(asset_meter_sub_item_id, category, sub_item_name, input_mode, input_decimal_digits, aggregation_decimal_digits, usage_rounding_mode), assignments:asset_meter_unit_assignment(asset_meter_unit_assignment_id, unit_id, effective_from, effective_to, allocation_method, allocation_weight, area_sqm_snapshot, unit:unit_master(unit_id, unit_code, unit_name, floor_label, rentable_area_sqm))`,
+        `asset_meter_id, parent_asset_meter_id, is_rate_source, sort_order, meter_code, meter_label, billing_adjustment_enabled, billing_adjustment_method, billing_adjustment_percent, billing_adjustment_numerator, billing_adjustment_denominator, billing_adjustment_note, tag:asset_meter_tag(asset_meter_tag_id, asset_id, tag_name, color), subItem:asset_meter_sub_item!inner(asset_meter_sub_item_id, category, sub_item_name, input_mode, input_decimal_digits, aggregation_decimal_digits, usage_rounding_mode), assignments:asset_meter_unit_assignment(asset_meter_unit_assignment_id, unit_id, lease_contract_billing_unit_id, effective_from, effective_to, allocation_method, allocation_weight, area_sqm_snapshot, unit:unit_master(unit_id, unit_code, unit_name, floor_label, rentable_area_sqm), billingUnit:lease_contract_billing_unit(billing_unit_name, members:lease_contract_billing_unit_member(contractUnit:lease_contract_unit(unit:unit_master(floor_label)))))`,
       )
       .eq("asset_id", assetId)
       .eq("is_active", true)
@@ -419,14 +453,33 @@ export async function loadMeterManagement(
       .in("unit_type", ["office", "warehouse", "storage"])
       .order("floor_label")
       .order("unit_code"),
-    client.from("asset_meter_tag").select("asset_meter_tag_id, asset_id, tag_name, color").eq("asset_id", assetId).order("tag_name"),
+    client.from("lease_contract_billing_unit").select("lease_contract_billing_unit_id, billing_unit_name, sort_order, contract:lease_contract!inner(tenant:tenant_master(tenant_name)), members:lease_contract_billing_unit_member(contractUnit:lease_contract_unit!inner(unit_id, unit:unit_master!inner(unit_id, unit_code, unit_name, floor_label, rentable_area_sqm, property_id)))").eq("members.contractUnit.unit.property_id", assetId).order("sort_order"),
+    client.from("asset_meter_tag").select("asset_meter_tag_id, asset_id, tag_name, color, created_at").eq("asset_id", assetId).order("created_at").order("asset_meter_tag_id"),
   ]);
   fail("メーター設定を読み込めませんでした", meters.error);
   fail("区画を読み込めませんでした", units.error);
+  fail("請求区画を読み込めませんでした", billingUnits.error);
   fail("メータータグを読み込めませんでした", tags.error);
+  type BillingPhysicalUnit = { unit_id: string; unit: { unit_id: string; unit_code: string; unit_name: string | null; floor_label: string | null; rentable_area_sqm: number | null } | Array<{ unit_id: string; unit_code: string; unit_name: string | null; floor_label: string | null; rentable_area_sqm: number | null }> };
+  const billingRows = (billingUnits.data ?? []) as unknown as Array<{ lease_contract_billing_unit_id: string; billing_unit_name: string; sort_order: number; contract: { tenant: { tenant_name: string } | Array<{ tenant_name: string }> | null } | Array<{ tenant: { tenant_name: string } | Array<{ tenant_name: string }> | null }>; members: Array<{ contractUnit: BillingPhysicalUnit | BillingPhysicalUnit[] }> }>;
+  const asArray = <T>(value: T | T[] | null | undefined): T[] => value == null ? [] : Array.isArray(value) ? value : [value];
+  const physicalUnits = (units.data ?? []) as MeterUnitOption[];
+  const groupedPhysicalUnitIds = new Set(billingRows.flatMap((row) => row.members.flatMap((member) => asArray(member.contractUnit).map((unit) => unit.unit_id))));
+  const billingOptions = billingRows.map((row) => {
+    const memberUnits = row.members.flatMap((member) => asArray(member.contractUnit)).flatMap((contractUnit) => asArray(contractUnit.unit));
+    const firstUnit = memberUnits.slice().sort((left, right) => physicalUnits.findIndex((unit) => unit.unit_id === left.unit_id) - physicalUnits.findIndex((unit) => unit.unit_id === right.unit_id))[0];
+    const contract = asArray(row.contract)[0];
+    const tenant = asArray(contract?.tenant)[0];
+    const baseOrder = Math.max(0, physicalUnits.findIndex((unit) => unit.unit_id === firstUnit?.unit_id));
+    const area = memberUnits.every((unit) => Number(unit.rentable_area_sqm) > 0) ? memberUnits.reduce((sum, unit) => sum + Number(unit.rentable_area_sqm), 0) : null;
+    return { unit_id: billingUnitValue(row.lease_contract_billing_unit_id), billing_unit_id: row.lease_contract_billing_unit_id, unit_code: firstUnit?.unit_code ?? row.billing_unit_name, unit_name: row.billing_unit_name, floor_label: firstUnit?.floor_label ?? null, rentable_area_sqm: area, unit_type: "office" as const, tenant_name: tenant?.tenant_name ?? null, source_sort_order: baseOrder * 1000 + row.sort_order };
+  });
   return {
-    meters: (meters.data ?? []).map((meter) => withDatabaseMeterParent(meter)) as unknown as MeterReadingRow[],
-    units: (units.data ?? []) as MeterUnitOption[],
+    meters: (meters.data ?? []).map((meter) => withDatabaseMeterParent({ ...meter, assignments: (meter.assignments ?? []).map(normalizeAssignment) })) as unknown as MeterReadingRow[],
+    units: [
+      ...physicalUnits.map((row, index) => ({ ...row, source_sort_order: index * 1000 })).filter((row) => !groupedPhysicalUnitIds.has(row.unit_id)),
+      ...billingOptions,
+    ],
     tags: (tags.data ?? []) as MeterTag[],
   };
 }
@@ -438,12 +491,10 @@ export async function createMeter(
   meterCode: string,
   unitId: string | null,
 ) {
-  const { data, error } = await client.rpc("create_kanameter_meter", {
-    p_asset_id: assetId,
-    p_asset_meter_sub_item_id: subItemId,
-    p_meter_code: meterCode,
-    p_unit_id: unitId,
-  });
+  const billingUnitId = unitId ? billingUnitIdOf(unitId) : null;
+  const { data, error } = billingUnitId
+    ? await client.rpc("create_kanameter_meter_for_billing_unit", { p_asset_id: assetId, p_asset_meter_sub_item_id: subItemId, p_meter_code: meterCode, p_lease_contract_billing_unit_id: billingUnitId })
+    : await client.rpc("create_kanameter_meter", { p_asset_id: assetId, p_asset_meter_sub_item_id: subItemId, p_meter_code: meterCode, p_unit_id: unitId });
   fail("メーターを追加できませんでした", error);
   return data as string;
 }
@@ -454,6 +505,12 @@ export async function assignMeterUnit(
   unitId: string | null,
   effectiveFrom: string,
 ) {
+  const billingUnitId = unitId ? billingUnitIdOf(unitId) : null;
+  if (billingUnitId) {
+    const { error } = await client.rpc("assign_kanameter_meter_billing_unit_from", { p_asset_meter_id: meterId, p_lease_contract_billing_unit_id: billingUnitId, p_effective_from: effectiveFrom });
+    fail("請求区画を変更できませんでした", error);
+    return;
+  }
   const { error } = await client.rpc("assign_kanameter_meter_unit_from", {
     p_asset_meter_id: meterId,
     p_unit_id: unitId,
@@ -472,7 +529,7 @@ export async function assignMeterUnits(
   const { error } = await client.rpc("assign_kanameter_meter_units_from", {
     p_asset_meter_id: meterId,
     p_method: method,
-    p_allocations: allocations.map((row) => ({ unit_id: row.unitId, weight: row.weight })),
+    p_allocations: allocations.map((row) => ({ unit_id: billingUnitIdOf(row.unitId) ? null : row.unitId, billing_unit_id: billingUnitIdOf(row.unitId), weight: row.weight })),
     p_effective_from: effectiveFrom,
   });
   fail("複数区画の按分設定を保存できませんでした", error);
