@@ -535,6 +535,7 @@ export function KanameterWorkspacePage({
   const [managedMeters, setManagedMeters] = useState<MeterReadingRow[]>([]);
   const [meterTags, setMeterTags] = useState<MeterTag[]>([]);
   const [meterTagFilter, setMeterTagFilter] = useState("");
+  const [usageOnly, setUsageOnly] = useState(false);
   const [units, setUnits] = useState<MeterUnitOption[]>([]);
   const [meterSettingsItemId, setMeterSettingsItemId] = useState<string | null>(null);
   const [unitPriceCalculatorOpen, setUnitPriceCalculatorOpen] = useState(false);
@@ -1381,14 +1382,17 @@ export function KanameterWorkspacePage({
                   </div>
                 )}
                 {selectedSubItem?.sub_item_kind === "custom" && !selectedSubItem.is_monthly_fixed && (
-                  <label className="inspection-tag-filter">
-                    <span>タグ</span>
-                    <select value={meterTagFilter} onChange={(event) => setMeterTagFilter(event.target.value)}>
-                      <option value="">すべて</option>
-                      <option value="__untagged__">—</option>
-                      {meterTags.map((tag) => <option key={tag.asset_meter_tag_id} value={tag.asset_meter_tag_id}>{tag.tag_name}</option>)}
-                    </select>
-                  </label>
+                  <div className="inspection-view-options">
+                    <label className="inspection-tag-filter">
+                      <span>タグ</span>
+                      <select value={meterTagFilter} onChange={(event) => setMeterTagFilter(event.target.value)}>
+                        <option value="">すべて</option>
+                        <option value="__untagged__">—</option>
+                        {meterTags.map((tag) => <option key={tag.asset_meter_tag_id} value={tag.asset_meter_tag_id}>{tag.tag_name}</option>)}
+                      </select>
+                    </label>
+                    <label className="checkbox-label usage-only-toggle"><input type="checkbox" checked={usageOnly} onChange={(event) => setUsageOnly(event.target.checked)} />使用量だけを表示</label>
+                  </div>
                 )}
                 {rolloverCandidates.length > 0 && (
                   <div className="header-rollover-alert">
@@ -1483,6 +1487,7 @@ export function KanameterWorkspacePage({
                     usageHistory={usageHistory}
                     rolloverValues={rolloverValues}
                     columnStorageUserId={profile.user_id}
+                    usageOnly={usageOnly}
                     onChange={queueSave}
                   />
                 ) : (
@@ -1970,7 +1975,7 @@ function SummaryView({
       tenantId: billingGroupId,
       tenantName: billingGroupTenantName(tenantContracts[0]),
       tenantContracts,
-      units: tenantContracts.map((row) => row.unit?.unit_name || row.unit?.unit_code).filter(Boolean).join("・") || "—",
+      floors: Array.from(new Set(tenantContracts.map((row) => formatFloor(row.unit?.floor_label)).filter((value) => value && value !== "—"))).join("・") || "—",
       groups,
       total: groups.reduce((sum, group) => sum + group.total + (group.surchargeAmount ?? 0), 0),
     };
@@ -1993,7 +1998,7 @@ function SummaryView({
           <thead>
             <tr>
               <ColumnHeader rowSpan={3} textAlign="tenant" columnGroup="summary-tenant">テナント名</ColumnHeader>
-              <ColumnHeader rowSpan={3} columnGroup="summary-unit">区画</ColumnHeader>
+              <ColumnHeader rowSpan={3} columnGroup="summary-unit">階</ColumnHeader>
               {categoryColumns.flatMap((group) => [
                 <th className={`summary-category utility-${group.category}`} colSpan={(group.basic ? 1 : 0) + group.custom.reduce((sum, item) => sum + (item.is_monthly_fixed ? 1 : 2), 0) + (group.showTotal ? 2 : 0)} key={group.category}>{labels[group.category]}</th>,
                 ...(group.surcharge ? [<ColumnHeader rowSpan={3} textAlign="amount" columnGroup="summary-amount" className="summary-surcharge" key={`${group.category}-surcharge-top`}>電気代<br />増額分</ColumnHeader>] : []),
@@ -2023,7 +2028,7 @@ function SummaryView({
             {summaryRows.map((row) => (
               <tr key={row.tenantId}>
                 <td><TenantNameWithRounding name={row.tenantName} contracts={row.tenantContracts} /></td>
-                <td className="summary-unit-cell">{row.units}</td>
+                <td className="summary-unit-cell">{row.floors}</td>
                 {row.groups.flatMap((group, groupIndex) => [
                   ...(group.basicAmount != null ? [<td className={`numeric ${group.enabled ? "" : "summary-disabled-cell"}`} key={`${groupIndex}-basic`}>{group.enabled ? formatYen(group.basicAmount) : null}</td>] : []),
                   ...group.custom.flatMap((item, itemIndex) => categoryColumns[groupIndex].custom[itemIndex].is_monthly_fixed
@@ -2123,7 +2128,7 @@ function SettingsView({
     (!contract.contract?.contract_start_date || contract.contract.contract_start_date <= monthEnd)
     && (!contract.contract?.contract_end_date || contract.contract.contract_end_date >= monthStart),
   );
-  const logicalUnitKey = (unit: Pick<MeterUnitOption, "floor_label" | "unit_code">) => `${unit.floor_label ?? ""}\u0000${unit.unit_code.trim().toLowerCase()}`;
+  const logicalUnitKey = (unit: Pick<MeterUnitOption, "unit_id" | "billing_unit_id" | "floor_label" | "unit_code">) => unit.billing_unit_id ? `billing:${unit.billing_unit_id}` : `${unit.floor_label ?? ""}\u0000${unit.unit_code.trim().toLowerCase()}`;
   const activeContractByUnitKey = new Map<string, ContractUnit>();
   for (const contract of [...activeContracts].sort((left, right) =>
     (right.contract?.contract_start_date ?? "").localeCompare(left.contract?.contract_start_date ?? ""),
@@ -2139,11 +2144,12 @@ function SettingsView({
     if (!uniqueUnitsByKey.has(key) || unit.unit_id === activeUnitId) uniqueUnitsByKey.set(key, unit);
   }
   const sortedUnits = Array.from(uniqueUnitsByKey.values()).sort((left, right) =>
-    floorSortOrder(left.floor_label) - floorSortOrder(right.floor_label)
+    (left.source_sort_order ?? Number.MAX_SAFE_INTEGER) - (right.source_sort_order ?? Number.MAX_SAFE_INTEGER)
+    || floorSortOrder(left.floor_label) - floorSortOrder(right.floor_label)
     || left.unit_code.localeCompare(right.unit_code, "ja-JP", { numeric: true }),
   );
   const unitOptionLabel = (unit: MeterUnitOption) => {
-    const tenantName = activeContractByUnitKey.get(logicalUnitKey(unit))?.contract?.tenant?.tenant_name;
+    const tenantName = unit.tenant_name ?? activeContractByUnitKey.get(logicalUnitKey(unit))?.contract?.tenant?.tenant_name;
     return `${formatFloor(unit.floor_label)} / ${unit.unit_name || unit.unit_code} / ${tenantName || "空室"}`;
   };
   const [draggingMeterId, setDraggingMeterId] = useState<string | null>(null);
@@ -2907,6 +2913,7 @@ function CustomItemTable({
   usageHistory,
   rolloverValues,
   columnStorageUserId,
+  usageOnly,
   onChange,
 }: {
   billingMonth: string;
@@ -2925,6 +2932,7 @@ function CustomItemTable({
   };
   rolloverValues: Record<string, number>;
   columnStorageUserId: string;
+  usageOnly: boolean;
   onChange: (meter: MeterReadingRow, value: string) => void;
 }) {
   const contractFor = (meter: MeterReadingRow) =>
@@ -3074,19 +3082,54 @@ function CustomItemTable({
   ];
   const inputTotalDigits = orderedMeters[0]?.subItem.input_decimal_digits ?? 1;
   const aggregationTotalDigits = orderedMeters[0]?.subItem.aggregation_decimal_digits ?? 1;
+  const usageOnlyRows = Array.from(new Map(
+    billableMeters.map((meter) => [unitKey(meter), billableMeters.filter((row) => unitKey(row) === unitKey(meter))]),
+  ).values()).map((unitMeters) => {
+    const meter = unitMeters[0];
+    const unit = meter.assignments[0]?.unit;
+    const contract = contractFor(meter);
+    const tenantMeters = billableMeters.filter((row) => tenantKey(row) === tenantKey(meter));
+    const prices = Array.from(new Set(unitMeters.map((row) => unitPrice(row)).filter((value): value is number => value != null)));
+    const charge = chargeForMeters(unitMeters);
+    const previousUsage = unitMeters.reduce((sum, row) => sum + billingAdjustedUsage(row, adjustedMeterUsage(row, meters, previousUsageFor)), 0);
+    const previousYearUsage = unitMeters.reduce((sum, row) => sum + billingAdjustedUsage(row, adjustedMeterUsage(row, meters, previousYearUsageFor)), 0);
+    const tenantBillingGroups = Array.from(new Map(
+      tenantMeters.map((row) => [billingKey(row), tenantMeters.filter((item) => billingKey(item) === billingKey(row))]),
+    ).values());
+    return {
+      key: unitKey(meter),
+      tenantKey: tenantKey(meter),
+      tenantName: contract?.contract?.tenant?.tenant_name ?? "空室",
+      floor: formatFloor(unit?.floor_label),
+      unitName: meter.is_rate_source ? "大元メーター" : unit?.unit_name || unit?.unit_code || "未割当",
+      unitPrice: prices.length === 1 ? formatYen(prices[0]) : prices.length > 1 ? "複数" : "未設定",
+      usage: charge.usage,
+      amount: charge.amount,
+      tenantUsage: displayedUsageForTenant(tenantMeters),
+      tenantAmount: tenantBillingGroups.reduce((sum, group) => sum + chargeForMeters(group).amount, 0),
+      previousUsage: roundToDigits(previousUsage, meter.subItem.aggregation_decimal_digits, meter.subItem.usage_rounding_mode),
+      previousYearUsage: roundToDigits(previousYearUsage, meter.subItem.aggregation_decimal_digits, meter.subItem.usage_rounding_mode),
+      digits: meter.subItem.aggregation_decimal_digits,
+    };
+  });
   return (
-    <div className="table-wrap">
+    <>
+      {usageOnly ? <div className="table-wrap"><table className="workspace-data-table usage-only-table">
+        <thead><tr><th rowSpan={2}>テナント名</th><th rowSpan={2}>階数</th><th rowSpan={2}>区画</th><th rowSpan={2}>単価</th><th rowSpan={2}>使用量</th><th rowSpan={2}>金額</th><th colSpan={2}>テナント合計</th><th colSpan={2}>前月</th><th colSpan={2}>前年同月</th></tr><tr><th>使用量</th><th>金額</th><th>使用量</th><th>当月比</th><th>使用量</th><th>当月比</th></tr></thead>
+        <tbody>{usageOnlyRows.map((row, index) => { const firstInTenant = index === 0 || usageOnlyRows[index - 1].tenantKey !== row.tenantKey; let tenantRowCount = 1; while (index + tenantRowCount < usageOnlyRows.length && usageOnlyRows[index + tenantRowCount].tenantKey === row.tenantKey) tenantRowCount += 1; return <tr key={row.key}>{firstInTenant && <td className="tenant-cell tenant-identity" rowSpan={tenantRowCount}><strong>{row.tenantName}</strong></td>}<td>{row.floor}</td><td>{row.unitName}</td><td className="numeric">{row.unitPrice}</td><td className="numeric"><strong>{formatUsage(row.usage, row.digits)}</strong></td><td className="numeric">{formatYen(row.amount)}</td><td className="numeric">{formatUsage(row.tenantUsage, row.digits)}</td><td className="numeric">{formatYen(row.tenantAmount)}</td><td className="numeric">{formatUsage(row.previousUsage, row.digits)}</td><td className="numeric">{formatComparison(comparisonRatio(row.usage, row.previousUsage))}</td><td className="numeric">{formatUsage(row.previousYearUsage, row.digits)}</td><td className="numeric">{formatComparison(comparisonRatio(row.usage, row.previousYearUsage))}</td></tr>; })}{!usageOnlyRows.length && <tr><td colSpan={12} className="empty-cell">対象メーターがありません。</td></tr>}</tbody>
+        {!!usageOnlyRows.length && <tfoot><tr className="table-total-row"><th colSpan={4}>合計</th><th className="numeric">{formatUsage(usageOnlyRows.reduce((sum, row) => sum + row.usage, 0), aggregationTotalDigits)}</th><th className="numeric">{formatYen(usageOnlyRows.reduce((sum, row) => sum + row.amount, 0))}</th><th className="numeric">—</th><th className="numeric">—</th><th className="numeric">{formatUsage(usageOnlyRows.reduce((sum, row) => sum + row.previousUsage, 0), aggregationTotalDigits)}</th><th className="numeric">{formatComparison(comparisonRatio(usageOnlyRows.reduce((sum, row) => sum + row.usage, 0), usageOnlyRows.reduce((sum, row) => sum + row.previousUsage, 0)))}</th><th className="numeric">{formatUsage(usageOnlyRows.reduce((sum, row) => sum + row.previousYearUsage, 0), aggregationTotalDigits)}</th><th className="numeric">{formatComparison(comparisonRatio(usageOnlyRows.reduce((sum, row) => sum + row.usage, 0), usageOnlyRows.reduce((sum, row) => sum + row.previousYearUsage, 0)))}</th></tr></tfoot>}
+      </table></div> : <div className="table-wrap">
       <ResizableTable className="workspace-data-table" storageKey={`readings-${showReadings ? "reading" : "usage"}`} storageUserId={columnStorageUserId} columnGroups={[
-        "floor", "unit", "tenant", "meter", "price",
+        "tenant", "floor", "unit", "meter", "price",
         ...(showReadings ? ["reading", "reading"] : []),
         "usage", "usage", "amount", "usage", "amount",
         "usage", "comparison", "usage", "comparison",
       ]}>
         <thead>
           <tr>
+            <ColumnHeader rowSpan={2} textAlign="tenant" columnGroup="tenant">テナント名</ColumnHeader>
             <ColumnHeader rowSpan={2} columnGroup="floor">階数</ColumnHeader>
             <ColumnHeader rowSpan={2} columnGroup="unit">区画</ColumnHeader>
-            <ColumnHeader rowSpan={2} textAlign="tenant" columnGroup="tenant">テナント名</ColumnHeader>
             <ColumnHeader rowSpan={2} columnGroup="meter">メーター番号</ColumnHeader>
             <ColumnHeader rowSpan={2} textAlign="amount" columnGroup="price">単価</ColumnHeader>
             {showReadings && <ColumnHeader colSpan={2} className="usage-heading">検針値</ColumnHeader>}
@@ -3176,12 +3219,6 @@ function CustomItemTable({
             const isUnentered = (values[meter.asset_meter_id] ?? "").trim() === "";
             return (
               <tr key={meter.asset_meter_id} className={`${firstInUnit ? "unit-group-start" : ""} ${lastInUnit ? "unit-group-end" : ""} ${firstInTenant ? "tenant-group-start" : ""} ${lastInTenant ? "tenant-group-end" : ""} ${isVacant ? "vacant-meter-row" : ""}`}>
-                {firstInUnit && (
-                  <>
-                    <td className={`floor-identity ${unitEndsTenant ? "tenant-boundary" : ""}`} rowSpan={unitMeterCount}><span className="merged-value">{formatFloor(unit?.floor_label)}</span></td>
-                    <td className={`unit-identity ${unitEndsTenant ? "tenant-boundary" : ""}`} rowSpan={unitMeterCount}><span className="merged-value">{meter.is_rate_source ? "大元メーター" : unit?.unit_name || unit?.unit_code || "未割当"}</span></td>
-                  </>
-                )}
                 {firstInTenant && (
                   <td className="tenant-cell tenant-identity" rowSpan={tenantMeters.length}>
                     <span className="merged-value">
@@ -3191,6 +3228,12 @@ function CustomItemTable({
                       />
                     </span>
                   </td>
+                )}
+                {firstInUnit && (
+                  <>
+                    <td className={`floor-identity ${unitEndsTenant ? "tenant-boundary" : ""}`} rowSpan={unitMeterCount}><span className="merged-value">{formatFloor(unit?.floor_label)}</span></td>
+                    <td className={`unit-identity ${unitEndsTenant ? "tenant-boundary" : ""}`} rowSpan={unitMeterCount}><span className="merged-value">{meter.is_rate_source ? "大元メーター" : unit?.unit_name || unit?.unit_code || "未割当"}</span></td>
+                  </>
                 )}
                 <td><strong className="meter-code-with-tag">{meter.tag && <span className="meter-tag-badge" style={{ backgroundColor: meter.tag.color, color: readableTextColor(meter.tag.color) }}>{meter.tag.tag_name}</span>}{meter.parent_meter_id && <span className="child-meter-mark">↳ 子</span>}{meter.meter_code}</strong></td>
                 <td className={`numeric unit-price-cell ${meter.is_rate_source ? "" : unitPriceClass(price)}`}>{meter.is_rate_source ? "—" : formatYen(price)}</td>
@@ -3298,7 +3341,8 @@ function CustomItemTable({
           </tfoot>
         )}
       </ResizableTable>
-    </div>
+    </div>}
+    </>
   );
 }
 
