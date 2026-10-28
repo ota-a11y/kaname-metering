@@ -96,6 +96,7 @@ export type MeterReadingRow = {
   asset_meter_id: string;
   parent_meter_id: string | null;
   is_rate_source: boolean;
+  is_allocation_source: boolean;
   sort_order: number;
   meter_code: string;
   meter_label: string | null;
@@ -120,9 +121,10 @@ export type MeterReadingRow = {
     unit_id: string;
     effective_from: string;
     effective_to: string | null;
-    allocation_method: "single" | "area" | "ratio";
+    allocation_method: "single" | "area" | "ratio" | "meter_usage";
     allocation_weight: number;
     area_sqm_snapshot: number | null;
+    allocation_source_meter_id: string | null;
     unit: {
       unit_id: string;
       unit_code: string;
@@ -131,6 +133,7 @@ export type MeterReadingRow = {
       rentable_area_sqm: number | null;
     } | null;
   }>;
+  allocation_common_source_meter_ids: string[];
   entry: {
     usage_amount: number | null;
     previous_reading: number | null;
@@ -144,7 +147,7 @@ export type MeterUnitOption = {
   unit_name: string | null;
   floor_label: string | null;
   rentable_area_sqm: number | null;
-  unit_type: "office" | "warehouse" | "storage";
+  unit_type: "office" | "warehouse" | "storage" | "equipment" | "other";
   billing_unit_id?: string;
   tenant_name?: string | null;
   source_sort_order?: number;
