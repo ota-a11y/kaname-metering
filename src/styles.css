@@ -1355,6 +1355,11 @@ td ul {
 }
 .meter-settings h1 { margin: 2px 0 5px; font-size: 23px; }
 .meter-settings header p:last-child { margin: 0; color: #74827d; font-size: 12px; }
+.meter-settings-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 26px; border-bottom: 1px solid #e4ebe8; }
+.meter-settings-toolbar > div { display: flex; align-items: center; gap: 8px; }
+.meter-settings-toolbar select { min-width: 180px; padding: 7px 9px; border: 1px solid #ccd9d4; border-radius: 4px; background: #fff; }
+.meter-settings-toolbar button { padding: 7px 11px; border: 1px solid #168168; border-radius: 4px; color: #0d7058; background: #fff; font-weight: 800; cursor: pointer; }
+.meter-settings-toolbar button:disabled { opacity: .5; cursor: not-allowed; }
 .meter-add-form {
   display: grid;
   grid-template-columns: minmax(180px, 1fr) minmax(130px, .7fr) minmax(160px, .8fr) minmax(180px, 1fr) auto;
@@ -1409,11 +1414,14 @@ td ul {
 .unit-assignment-control { display: flex; align-items: center; gap: 7px; }
 .unit-assignment-control select { min-width: 170px; }
 .unit-assignment-control button { flex: 0 0 auto; padding: 6px 8px; border: 1px solid #168168; border-radius: 4px; color: #0d7058; background: #fff; font-size: 10px; font-weight: 800; white-space: nowrap; }
+.allocation-settings-cell { display: flex; align-items: center; justify-content: center; min-height: 32px; }
+.allocation-settings-cell button { padding: 6px 8px; border: 1px solid #168168; border-radius: 4px; color: #0d7058; background: #fff; font-size: 10px; font-weight: 800; white-space: nowrap; }
 .meter-tag-select { min-width: 120px; font-weight: 700; }
 .meter-tag-modal { width: min(500px, 100%); }
 .meter-tag-form { display: grid; gap: 18px; margin-top: 18px; }
 .meter-tag-form > label { display: grid; gap: 7px; color: #52645e; font-size: 12px; font-weight: 700; }
 .meter-tag-form input[type="text"],
+.meter-tag-form select,
 .meter-tag-form > label > input:not([type="color"]) { width: 100%; box-sizing: border-box; padding: 9px 10px; border: 1px solid #ccd9d4; border-radius: 4px; }
 .meter-tag-color-field { display: grid; gap: 10px; margin: 0; padding: 0; border: 0; }
 .meter-tag-color-field legend { margin-bottom: 7px; color: #52645e; font-size: 12px; font-weight: 700; }
@@ -1467,13 +1475,32 @@ td ul {
 .meter-allocation-form > label select { padding: 9px 10px; border: 1px solid #ccd9d4; border-radius: 4px; background: #fff; }
 .meter-allocation-list { max-height: 390px; overflow: auto; border: 1px solid #d9e2de; border-radius: 5px; }
 .meter-allocation-head, .meter-allocation-row { display: grid; grid-template-columns: 52px minmax(240px, 1fr) 130px; align-items: center; gap: 10px; min-height: 42px; padding: 0 12px; }
+.meter-allocation-head.with-source-meter, .meter-allocation-row.with-source-meter { grid-template-columns: 52px minmax(240px, 1fr) minmax(180px, 240px); }
 .meter-allocation-head { position: sticky; top: 0; z-index: 1; color: #52645e; background: #f1f6f4; font-size: 11px; font-weight: 800; }
 .meter-allocation-row { border-top: 1px solid #e4ebe8; font-size: 12px; }
 .meter-allocation-row > input[type="checkbox"] { justify-self: center; }
-.meter-allocation-row > input[type="number"] { width: 100%; box-sizing: border-box; padding: 7px 8px; border: 1px solid #ccd9d4; border-radius: 4px; text-align: right; }
+.meter-allocation-row > input[type="number"], .meter-allocation-row > input[type="text"] { width: 100%; box-sizing: border-box; padding: 7px 8px; border: 1px solid #ccd9d4; border-radius: 4px; }
+.meter-allocation-row > input[type="number"] { text-align: right; }
+.meter-allocation-row > select { width: 100%; box-sizing: border-box; padding: 7px 8px; border: 1px solid #ccd9d4; border-radius: 4px; background: #fff; }
 .meter-allocation-row strong { text-align: right; }
 .meter-allocation-row .allocation-missing { color: #b33f49; }
 .meter-allocation-form > p { margin: 0; color: #65756f; font-size: 11px; }
+.meter-source-head, .meter-source-row { display: grid; grid-template-columns: minmax(130px, .7fr) minmax(110px, .5fr) minmax(220px, 1.2fr) 112px; align-items: center; gap: 10px; min-height: 46px; padding: 0 12px; }
+.meter-source-head { position: sticky; top: 0; z-index: 1; color: #52645e; background: #f1f6f4; font-size: 11px; font-weight: 800; }
+.meter-source-row { border-top: 1px solid #e4ebe8; }
+.meter-source-row input, .meter-source-row select { width: 100%; box-sizing: border-box; padding: 8px 9px; border: 1px solid #ccd9d4; border-radius: 4px; background: #fff; }
+.meter-source-row button { justify-self: end; }
+.meter-source-actions { display: flex; align-items: center; justify-content: flex-end; gap: 4px; }
+.meter-source-actions button { min-width: 24px; padding: 4px 6px; border: 1px solid #ccd9d4; border-radius: 4px; color: #42534d; background: #fff; font-weight: 800; cursor: pointer; }
+.meter-source-actions button:disabled { opacity: .45; cursor: default; }
+.meter-source-actions .danger-text { border-color: transparent; color: #b33f49; }
+
+.allocation-source-settings-note {
+  color: #66756f;
+  font-size: 12px;
+  text-align: left;
+}
+.meter-source-add { justify-self: start; padding: 7px 10px; border: 1px solid #168168; border-radius: 4px; color: #0d7058; background: #fff; font-size: 11px; font-weight: 800; cursor: pointer; }
 .child-meter-mark {
   display: inline-block;
   margin-right: 6px;
@@ -1835,4 +1862,65 @@ td ul {
   .summary-cards {
     grid-template-columns: 1fr;
   }
+}
+.allocation-result-row td {
+  background: var(--surface, #fff);
+}
+
+.allocation-result-row .child-meter-mark {
+  color: #2563eb;
+}
+
+.allocation-parent-input-row td,
+.allocation-source-input-row td {
+  background: #f3f4f6;
+  color: #8a929d;
+}
+
+.allocation-parent-input-row .tenant-identity,
+.allocation-parent-input-row .floor-identity,
+.allocation-parent-input-row td:nth-child(4),
+.allocation-parent-input-row .reading-value,
+.allocation-parent-input-row .reading-entry-cell,
+.allocation-parent-input-row .allocation-source-usage,
+.allocation-source-input-row .tenant-identity,
+.allocation-source-input-row .floor-identity,
+.allocation-source-input-row .unit-identity,
+.allocation-source-input-row td:nth-child(4),
+.allocation-source-input-row .reading-value,
+.allocation-source-input-row .reading-entry-cell,
+.allocation-source-input-row .allocation-source-usage {
+  background: var(--surface, #fff);
+  color: inherit;
+}
+
+.allocation-result-row .allocation-result-label {
+  color: #2563eb;
+  font-weight: 700;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.workspace-data-table tbody tr.allocation-block-row > td:last-child {
+  border-right: 2px solid #64748b;
+}
+
+.allocation-source-meter-code {
+  color: #c2413c;
+}
+
+.workspace-data-table tbody tr.allocation-block-start > td {
+  border-top: 2px solid #64748b;
+}
+
+.workspace-data-table tbody tr.allocation-block-end > td {
+  border-bottom: 2px solid #64748b;
+}
+
+.workspace-data-table tbody td.allocation-block-spanning-end {
+  border-bottom: 2px solid #64748b;
+}
+
+.workspace-data-table tbody tr.allocation-source-input-row + tr.allocation-result-row > td {
+  border-top: 1px dashed #64748b;
 }

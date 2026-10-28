@@ -1,0 +1,2 @@
+-- This migration was applied directly to the shared database before this
+-- repository received its migration history. It is intentionally a no-op.

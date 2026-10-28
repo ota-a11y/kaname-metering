@@ -139,6 +139,20 @@ export async function createMeterTag(
   return data as MeterTag;
 }
 
+export async function updateMeterTag(
+  client: SupabaseClient,
+  tagId: string,
+  tagName: string,
+  color: string,
+): Promise<MeterTag> {
+  const { data, error } = await client.from("asset_meter_tag").update({
+    tag_name: tagName.trim(),
+    color,
+  }).eq("asset_meter_tag_id", tagId).select("asset_meter_tag_id, asset_id, tag_name, color, created_at").single();
+  fail("タグを更新できませんでした", error);
+  return data as MeterTag;
+}
+
 export async function saveMeterBillingAdjustment(
   client: SupabaseClient,
   meterId: string,
@@ -239,7 +253,7 @@ export async function loadContractUnits(
       .order("lease_contract_unit_id"),
     client
       .from("lease_contract_billing_unit")
-      .select(`lease_contract_billing_unit_id, billing_unit_name, contract:lease_contract!inner(lease_contract_id, tenant_id, contract_status, contract_start_date, contract_end_date, tenant:tenant_master(tenant_name)), members:lease_contract_billing_unit_member(contractUnit:lease_contract_unit!inner(lease_contract_unit_id, utility_amount_rounding_mode, unit:unit_master!inner(unit_id, floor_label, property_id))), prices:lease_contract_billing_unit_utility_price(asset_billing_line_item_id, unit_price, tax_mode, billing_month_prices, item:asset_billing_line_item(line_item_name)), categoryPrices:lease_contract_billing_unit_category_price(category, unit_price, tax_mode, billing_month_prices), basics:lease_contract_billing_unit_basic_charge(category, amount, tax_mode)`)
+      .select(`lease_contract_billing_unit_id, billing_unit_name, contract:lease_contract!inner(lease_contract_id, tenant_id, contract_status, contract_start_date, contract_end_date, tenant:tenant_master(tenant_name)), members:lease_contract_billing_unit_member!inner(contractUnit:lease_contract_unit!inner(lease_contract_unit_id, utility_amount_rounding_mode, unit:unit_master!inner(unit_id, floor_label, property_id))), prices:lease_contract_billing_unit_utility_price(asset_billing_line_item_id, unit_price, tax_mode, billing_month_prices, item:asset_billing_line_item(line_item_name)), categoryPrices:lease_contract_billing_unit_category_price(category, unit_price, tax_mode, billing_month_prices), basics:lease_contract_billing_unit_basic_charge(category, amount, tax_mode)`)
       .eq("members.contractUnit.unit.property_id", assetId)
       .order("sort_order"),
     client
@@ -260,7 +274,7 @@ export async function loadContractUnits(
   );
   type BillingMemberUnit = { lease_contract_unit_id: string; utility_amount_rounding_mode: ContractUnit["utility_amount_rounding_mode"]; unit: { unit_id: string; floor_label: string | null } | Array<{ unit_id: string; floor_label: string | null }> };
   const asArray = <T>(value: T | T[] | null | undefined): T[] => value == null ? [] : Array.isArray(value) ? value : [value];
-  const billingRows = (billingUnits.data ?? []) as unknown as Array<{ lease_contract_billing_unit_id: string; billing_unit_name: string; contract: ContractUnit["contract"] | ContractUnit["contract"][]; members: Array<{ contractUnit: BillingMemberUnit | BillingMemberUnit[] }>; prices: ContractUnit["prices"]; categoryPrices: ContractUnit["categoryPrices"]; basics: ContractUnit["basics"] }>;
+  const billingRows = ((billingUnits.data ?? []) as unknown as Array<{ lease_contract_billing_unit_id: string; billing_unit_name: string; contract: ContractUnit["contract"] | ContractUnit["contract"][]; members: Array<{ contractUnit: BillingMemberUnit | BillingMemberUnit[] }>; prices: ContractUnit["prices"]; categoryPrices: ContractUnit["categoryPrices"]; basics: ContractUnit["basics"] }>).filter((row) => row.members.length > 0);
   const groupedContractUnitIds = new Set(billingRows.flatMap((row) => row.members.flatMap((member) => asArray(member.contractUnit).map((unit) => unit.lease_contract_unit_id))));
   const rows = ((contracts.data ?? []) as unknown as ContractUnit[]).filter((row) => !groupedContractUnitIds.has(row.lease_contract_unit_id));
   for (const billing of billingRows) {
@@ -317,18 +331,11 @@ export async function loadMeterReadings(
   ))
     .toISOString()
     .slice(0, 10);
-  const monthEnd = new Date(Date.UTC(
-    Number(billingMonth.slice(0, 4)),
-    Number(billingMonth.slice(5, 7)),
-    0,
-  ))
-    .toISOString()
-    .slice(0, 10);
-  const [metersResult, entriesResult, previousEntriesResult, monthResult] = await Promise.all([
+  const [metersResult, entriesResult, previousEntriesResult, monthResult, allocationSourcesResult, commonSourcesResult] = await Promise.all([
     client
       .from("asset_meter")
       .select(
-        `asset_meter_id, parent_asset_meter_id, is_rate_source, sort_order, meter_code, meter_label, billing_adjustment_enabled, billing_adjustment_method, billing_adjustment_percent, billing_adjustment_numerator, billing_adjustment_denominator, billing_adjustment_note, tag:asset_meter_tag(asset_meter_tag_id, asset_id, tag_name, color), subItem:asset_meter_sub_item!inner(asset_meter_sub_item_id, category, sub_item_name, input_mode, input_decimal_digits, aggregation_decimal_digits, usage_rounding_mode), assignments:asset_meter_unit_assignment(asset_meter_unit_assignment_id, unit_id, lease_contract_billing_unit_id, effective_from, effective_to, allocation_method, allocation_weight, area_sqm_snapshot, unit:unit_master(unit_id, unit_code, unit_name, floor_label, rentable_area_sqm), billingUnit:lease_contract_billing_unit(billing_unit_name, members:lease_contract_billing_unit_member(contractUnit:lease_contract_unit(unit:unit_master(floor_label)))))`,
+        `asset_meter_id, parent_asset_meter_id, is_rate_source, sort_order, meter_code, meter_label, billing_adjustment_enabled, billing_adjustment_method, billing_adjustment_percent, billing_adjustment_numerator, billing_adjustment_denominator, billing_adjustment_note, tag:asset_meter_tag(asset_meter_tag_id, asset_id, tag_name, color), subItem:asset_meter_sub_item!inner(asset_meter_sub_item_id, category, sub_item_name, input_mode, input_decimal_digits, aggregation_decimal_digits, usage_rounding_mode), assignments:asset_meter_unit_assignment!asset_meter_unit_assignment_asset_meter_id_fkey(asset_meter_unit_assignment_id, unit_id, lease_contract_billing_unit_id, effective_from, effective_to, allocation_method, allocation_weight, area_sqm_snapshot, allocation_source_meter_id, unit:unit_master(unit_id, unit_code, unit_name, floor_label, rentable_area_sqm), billingUnit:lease_contract_billing_unit(billing_unit_name, members:lease_contract_billing_unit_member(contractUnit:lease_contract_unit(unit:unit_master(floor_label)))))`,
       )
       .eq("asset_id", assetId)
       .eq("is_active", true)
@@ -350,11 +357,22 @@ export async function loadMeterReadings(
       .eq("asset_id", assetId)
       .eq("billing_month", month)
       .maybeSingle(),
+    client
+      .from("asset_meter_unit_assignment")
+      .select("allocation_source_meter_id")
+      .not("allocation_source_meter_id", "is", null),
+    client.from("asset_meter_allocation_common_source").select("asset_meter_id, source_asset_meter_id"),
   ]);
   fail("メーターを読み込めませんでした", metersResult.error);
   fail("保存済みの検針値を読み込めませんでした", entriesResult.error);
   fail("前月の検針値を読み込めませんでした", previousEntriesResult.error);
   fail("対象月の状態を読み込めませんでした", monthResult.error);
+  fail("按分用メーターを読み込めませんでした", allocationSourcesResult.error);
+  fail("共用部の按分用メーターを読み込めませんでした", commonSourcesResult.error);
+  const allocationSourceIds = new Set([
+    ...(allocationSourcesResult.data ?? []).map((row) => row.allocation_source_meter_id),
+    ...(commonSourcesResult.data ?? []).map((row) => row.source_asset_meter_id),
+  ]);
   const entries = new Map(
     (entriesResult.data ?? []).map((entry) => [entry.asset_meter_id, entry]),
   );
@@ -368,18 +386,23 @@ export async function loadMeterReadings(
     rows: (metersResult.data ?? []).map((meter) => {
       const currentEntry = entries.get(meter.asset_meter_id);
       const previousReading = previousReadings.get(meter.asset_meter_id);
+      const normalizedAssignments = (meter.assignments ?? []).map(normalizeAssignment);
+      const latestEffectiveFrom = normalizedAssignments.reduce(
+        (latest: string, assignment: { effective_from: string }) => assignment.effective_from > latest ? assignment.effective_from : latest,
+        "",
+      );
+      // 実装検証中は適用開始日を遡って、常に最新の紐づけ・按分設定で過去月も表示・計算する。
+      // 本運用の確定月は、ここを請求月時点の設定を読むスナップショット方式へ戻す。
+      const displayAssignments = normalizedAssignments.filter(
+        (assignment: { effective_from: string }) => assignment.effective_from === latestEffectiveFrom,
+      ).sort(
+        (left: { effective_from: string }, right: { effective_from: string }) => right.effective_from.localeCompare(left.effective_from),
+      );
       return withDatabaseMeterParent({
         ...meter,
-        assignments: (meter.assignments ?? []).map(normalizeAssignment)
-          .filter(
-            (assignment: { effective_from: string; effective_to: string | null }) =>
-              assignment.effective_from <= monthEnd &&
-              (!assignment.effective_to || assignment.effective_to >= monthEnd),
-          )
-          .sort(
-            (left: { effective_from: string }, right: { effective_from: string }) =>
-              right.effective_from.localeCompare(left.effective_from),
-          ),
+        is_allocation_source: allocationSourceIds.has(meter.asset_meter_id),
+        allocation_common_source_meter_ids: (commonSourcesResult.data ?? []).filter((row) => row.asset_meter_id === meter.asset_meter_id).map((row) => row.source_asset_meter_id),
+        assignments: displayAssignments,
         entry: currentEntry
           ? {
               ...currentEntry,
@@ -436,11 +459,11 @@ export async function loadMeterManagement(
   client: SupabaseClient,
   assetId: string,
 ): Promise<{ meters: MeterReadingRow[]; units: MeterUnitOption[]; tags: MeterTag[] }> {
-  const [meters, units, billingUnits, tags] = await Promise.all([
+  const [meters, units, billingUnits, tags, allocationSources, commonSources] = await Promise.all([
     client
       .from("asset_meter")
       .select(
-        `asset_meter_id, parent_asset_meter_id, is_rate_source, sort_order, meter_code, meter_label, billing_adjustment_enabled, billing_adjustment_method, billing_adjustment_percent, billing_adjustment_numerator, billing_adjustment_denominator, billing_adjustment_note, tag:asset_meter_tag(asset_meter_tag_id, asset_id, tag_name, color), subItem:asset_meter_sub_item!inner(asset_meter_sub_item_id, category, sub_item_name, input_mode, input_decimal_digits, aggregation_decimal_digits, usage_rounding_mode), assignments:asset_meter_unit_assignment(asset_meter_unit_assignment_id, unit_id, lease_contract_billing_unit_id, effective_from, effective_to, allocation_method, allocation_weight, area_sqm_snapshot, unit:unit_master(unit_id, unit_code, unit_name, floor_label, rentable_area_sqm), billingUnit:lease_contract_billing_unit(billing_unit_name, members:lease_contract_billing_unit_member(contractUnit:lease_contract_unit(unit:unit_master(floor_label)))))`,
+        `asset_meter_id, parent_asset_meter_id, is_rate_source, sort_order, meter_code, meter_label, billing_adjustment_enabled, billing_adjustment_method, billing_adjustment_percent, billing_adjustment_numerator, billing_adjustment_denominator, billing_adjustment_note, tag:asset_meter_tag(asset_meter_tag_id, asset_id, tag_name, color), subItem:asset_meter_sub_item!inner(asset_meter_sub_item_id, category, sub_item_name, input_mode, input_decimal_digits, aggregation_decimal_digits, usage_rounding_mode), assignments:asset_meter_unit_assignment!asset_meter_unit_assignment_asset_meter_id_fkey(asset_meter_unit_assignment_id, unit_id, lease_contract_billing_unit_id, effective_from, effective_to, allocation_method, allocation_weight, area_sqm_snapshot, allocation_source_meter_id, unit:unit_master(unit_id, unit_code, unit_name, floor_label, rentable_area_sqm), billingUnit:lease_contract_billing_unit(billing_unit_name, members:lease_contract_billing_unit_member(contractUnit:lease_contract_unit(unit:unit_master(floor_label)))))`,
       )
       .eq("asset_id", assetId)
       .eq("is_active", true)
@@ -450,18 +473,26 @@ export async function loadMeterManagement(
       .select("unit_id, unit_code, unit_name, floor_label, unit_type, rentable_area_sqm")
       .eq("property_id", assetId)
       .eq("is_active", true)
-      .in("unit_type", ["office", "warehouse", "storage"])
+      .in("unit_type", ["office", "warehouse", "storage", "equipment", "other"])
       .order("floor_label")
       .order("unit_code"),
-    client.from("lease_contract_billing_unit").select("lease_contract_billing_unit_id, billing_unit_name, sort_order, contract:lease_contract!inner(tenant:tenant_master(tenant_name)), members:lease_contract_billing_unit_member(contractUnit:lease_contract_unit!inner(unit_id, unit:unit_master!inner(unit_id, unit_code, unit_name, floor_label, rentable_area_sqm, property_id)))").eq("members.contractUnit.unit.property_id", assetId).order("sort_order"),
+    client.from("lease_contract_billing_unit").select("lease_contract_billing_unit_id, billing_unit_name, sort_order, contract:lease_contract!inner(tenant:tenant_master(tenant_name)), members:lease_contract_billing_unit_member!inner(contractUnit:lease_contract_unit!inner(unit_id, unit:unit_master!inner(unit_id, unit_code, unit_name, floor_label, rentable_area_sqm, property_id)))").eq("members.contractUnit.unit.property_id", assetId).order("sort_order"),
     client.from("asset_meter_tag").select("asset_meter_tag_id, asset_id, tag_name, color, created_at").eq("asset_id", assetId).order("created_at").order("asset_meter_tag_id"),
+    client.from("asset_meter_unit_assignment").select("allocation_source_meter_id").not("allocation_source_meter_id", "is", null),
+    client.from("asset_meter_allocation_common_source").select("asset_meter_id, source_asset_meter_id"),
   ]);
   fail("メーター設定を読み込めませんでした", meters.error);
   fail("区画を読み込めませんでした", units.error);
   fail("請求区画を読み込めませんでした", billingUnits.error);
   fail("メータータグを読み込めませんでした", tags.error);
+  fail("按分用メーターを読み込めませんでした", allocationSources.error);
+  fail("共用部の按分用メーターを読み込めませんでした", commonSources.error);
+  const allocationSourceIds = new Set([
+    ...(allocationSources.data ?? []).map((row) => row.allocation_source_meter_id),
+    ...(commonSources.data ?? []).map((row) => row.source_asset_meter_id),
+  ]);
   type BillingPhysicalUnit = { unit_id: string; unit: { unit_id: string; unit_code: string; unit_name: string | null; floor_label: string | null; rentable_area_sqm: number | null } | Array<{ unit_id: string; unit_code: string; unit_name: string | null; floor_label: string | null; rentable_area_sqm: number | null }> };
-  const billingRows = (billingUnits.data ?? []) as unknown as Array<{ lease_contract_billing_unit_id: string; billing_unit_name: string; sort_order: number; contract: { tenant: { tenant_name: string } | Array<{ tenant_name: string }> | null } | Array<{ tenant: { tenant_name: string } | Array<{ tenant_name: string }> | null }>; members: Array<{ contractUnit: BillingPhysicalUnit | BillingPhysicalUnit[] }> }>;
+  const billingRows = ((billingUnits.data ?? []) as unknown as Array<{ lease_contract_billing_unit_id: string; billing_unit_name: string; sort_order: number; contract: { tenant: { tenant_name: string } | Array<{ tenant_name: string }> | null } | Array<{ tenant: { tenant_name: string } | Array<{ tenant_name: string }> | null }>; members: Array<{ contractUnit: BillingPhysicalUnit | BillingPhysicalUnit[] }> }>).filter((row) => row.members.length > 0);
   const asArray = <T>(value: T | T[] | null | undefined): T[] => value == null ? [] : Array.isArray(value) ? value : [value];
   const physicalUnits = (units.data ?? []) as MeterUnitOption[];
   const groupedPhysicalUnitIds = new Set(billingRows.flatMap((row) => row.members.flatMap((member) => asArray(member.contractUnit).map((unit) => unit.unit_id))));
@@ -475,7 +506,7 @@ export async function loadMeterManagement(
     return { unit_id: billingUnitValue(row.lease_contract_billing_unit_id), billing_unit_id: row.lease_contract_billing_unit_id, unit_code: firstUnit?.unit_code ?? row.billing_unit_name, unit_name: row.billing_unit_name, floor_label: firstUnit?.floor_label ?? null, rentable_area_sqm: area, unit_type: "office" as const, tenant_name: tenant?.tenant_name ?? null, source_sort_order: baseOrder * 1000 + row.sort_order };
   });
   return {
-    meters: (meters.data ?? []).map((meter) => withDatabaseMeterParent({ ...meter, assignments: (meter.assignments ?? []).map(normalizeAssignment) })) as unknown as MeterReadingRow[],
+    meters: (meters.data ?? []).map((meter) => withDatabaseMeterParent({ ...meter, is_allocation_source: allocationSourceIds.has(meter.asset_meter_id), allocation_common_source_meter_ids: (commonSources.data ?? []).filter((row) => row.asset_meter_id === meter.asset_meter_id).map((row) => row.source_asset_meter_id), assignments: (meter.assignments ?? []).map(normalizeAssignment) })) as unknown as MeterReadingRow[],
     units: [
       ...physicalUnits.map((row, index) => ({ ...row, source_sort_order: index * 1000 })).filter((row) => !groupedPhysicalUnitIds.has(row.unit_id)),
       ...billingOptions,
@@ -522,14 +553,14 @@ export async function assignMeterUnit(
 export async function assignMeterUnits(
   client: SupabaseClient,
   meterId: string,
-  method: "area" | "ratio",
-  allocations: Array<{ unitId: string; weight: number }>,
+  method: "area" | "ratio" | "meter_usage",
+  allocations: Array<{ unitId: string; weight: number; sourceMeterId?: string | null; sourceMeterName?: string | null; sourceMeterLabel?: string | null; sourceMeterTagId?: string | null }>,
   effectiveFrom: string,
 ) {
-  const { error } = await client.rpc("assign_kanameter_meter_units_from", {
+  const { error } = await client.rpc("assign_kanameter_meter_units_with_sources_from", {
     p_asset_meter_id: meterId,
     p_method: method,
-    p_allocations: allocations.map((row) => ({ unit_id: billingUnitIdOf(row.unitId) ? null : row.unitId, billing_unit_id: billingUnitIdOf(row.unitId), weight: row.weight })),
+    p_allocations: allocations.map((row) => ({ unit_id: billingUnitIdOf(row.unitId) || row.unitId === "__common__" ? null : row.unitId, billing_unit_id: billingUnitIdOf(row.unitId), common_area: row.unitId === "__common__", weight: row.weight, source_meter_id: row.sourceMeterId ?? null, source_meter_name: row.sourceMeterName?.trim() || null, source_meter_label: row.sourceMeterLabel?.trim() || null, source_meter_tag_id: row.sourceMeterTagId ?? null })),
     p_effective_from: effectiveFrom,
   });
   fail("複数区画の按分設定を保存できませんでした", error);
@@ -554,6 +585,28 @@ export async function reorderMeters(
     p_asset_meter_ids: meterIds,
   });
   fail("メーターの並び順を保存できませんでした", error);
+}
+
+export async function loadAllocationSourceMeterIds(
+  client: SupabaseClient,
+  meterId: string,
+) {
+  const [assignments, commonSources] = await Promise.all([
+    client
+      .from("asset_meter_unit_assignment")
+      .select("allocation_source_meter_id")
+      .eq("asset_meter_id", meterId)
+      .not("allocation_source_meter_id", "is", null),
+    client
+      .from("asset_meter_allocation_common_source")
+      .select("source_asset_meter_id")
+      .eq("asset_meter_id", meterId),
+  ]);
+  fail("按分用メーターを読み込めませんでした", assignments.error ?? commonSources.error);
+  return [
+    ...(assignments.data ?? []).flatMap((row) => row.allocation_source_meter_id ? [row.allocation_source_meter_id] : []),
+    ...(commonSources.data ?? []).map((row) => row.source_asset_meter_id),
+  ];
 }
 
 export async function updateMeterSubItemDisplaySettings(

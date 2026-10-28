@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactNode, type ThHTMLAttributes } from "react";
+import { Fragment, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactNode, type ThHTMLAttributes } from "react";
 import {
   assignMeterUnit,
   assignMeterUnits,
@@ -21,6 +21,7 @@ import {
   loadMeterUsageHistory,
   loadMeterReadingPeriod,
   loadAvailableMeterReadingMonths,
+  loadAllocationSourceMeterIds,
   reorderMeters,
   releaseMeterReadingMonth,
   saveMeterParent,
@@ -36,6 +37,7 @@ import {
   saveAssetUtilitySettings,
   saveMeteringSettings,
   updateMeterSubItemDisplaySettings,
+  updateMeterTag,
 } from "../lib/meteringRepository";
 import { supabase } from "../lib/supabase";
 import type {
@@ -282,12 +284,13 @@ function buildConfirmedMeterAmounts({
         );
         const chargeRows = meters.flatMap((meter) => {
           if (meter.subItem.asset_meter_sub_item_id !== item.asset_meter_sub_item_id) return [];
+          if (meter.is_allocation_source) return [];
           const totalUsage = billingAdjustedUsage(meter, adjustedMeterUsage(meter, meters, storedMeterUsage));
           return meter.assignments.flatMap((assignment) => {
             const contract = contractByUnitId.get(assignment.unit_id);
             if (!contract) return [];
             const price = priceFor(contract, item);
-            return [{ meterId: `${meter.asset_meter_id}:${assignment.unit_id}`, usage: totalUsage * meterAllocationShare(meter, assignment.unit_id), ...price }];
+            return [{ meterId: `${meter.asset_meter_id}:${assignment.unit_id}`, usage: totalUsage * meterAllocationShare(meter, assignment.unit_id, meters), ...price }];
           });
         });
         const calculation = calculateUsageCharge(
@@ -420,10 +423,55 @@ function storedMeterUsage(meter: MeterReadingRow) {
   return current < previous ? savedUsage : current - previous;
 }
 
-function meterAllocationShare(meter: MeterReadingRow, unitId: string) {
-  const total = meter.assignments.reduce((sum, row) => sum + Number(row.allocation_weight ?? 1), 0);
+function meterAllocationShare(meter: MeterReadingRow, unitId: string, meters: MeterReadingRow[]) {
+  const weightFor = (assignment: MeterReadingRow["assignments"][number]) => {
+    if (assignment.allocation_method !== "meter_usage") return Number(assignment.allocation_weight ?? 1);
+    const source = meters.find((candidate) => candidate.asset_meter_id === assignment.allocation_source_meter_id);
+    return source ? Math.max(0, billingAdjustedUsage(source, adjustedMeterUsage(source, meters, storedMeterUsage))) : 0;
+  };
+  const commonWeight = meter.allocation_common_source_meter_ids.reduce((sum, sourceId) => {
+    const source = meters.find((candidate) => candidate.asset_meter_id === sourceId);
+    return sum + (source ? Math.max(0, billingAdjustedUsage(source, adjustedMeterUsage(source, meters, storedMeterUsage))) : 0);
+  }, 0);
+  const total = meter.assignments.reduce((sum, row) => sum + weightFor(row), commonWeight);
   const assignment = meter.assignments.find((row) => row.unit_id === unitId);
-  return assignment && total > 0 ? Number(assignment.allocation_weight ?? 1) / total : 0;
+  return assignment && total > 0 ? weightFor(assignment) / total : 0;
+}
+
+function isMeterUsageAllocationParent(meter: MeterReadingRow) {
+  return meter.assignments.length > 1 && meter.assignments.some((row) => row.allocation_method === "meter_usage");
+}
+
+function orderAllocationMeterBlocks(meters: MeterReadingRow[]) {
+  const byId = new Map(meters.map((meter) => [meter.asset_meter_id, meter]));
+  const sourceIds = new Set(meters.flatMap((meter) => [
+    ...meter.assignments.flatMap((row) => row.allocation_source_meter_id ? [row.allocation_source_meter_id] : []),
+    ...meter.allocation_common_source_meter_ids,
+  ]));
+  const result: MeterReadingRow[] = [];
+  const appended = new Set<string>();
+  const append = (meter: MeterReadingRow | undefined) => {
+    if (!meter || appended.has(meter.asset_meter_id)) return;
+    result.push(meter);
+    appended.add(meter.asset_meter_id);
+  };
+  for (const meter of meters) {
+    if (sourceIds.has(meter.asset_meter_id)) continue;
+    append(meter);
+    if (!isMeterUsageAllocationParent(meter)) continue;
+    const parentSourceIds = [
+      ...meter.assignments.flatMap((assignment) => assignment.allocation_source_meter_id ? [assignment.allocation_source_meter_id] : []),
+      ...meter.allocation_common_source_meter_ids,
+    ];
+    for (const source of parentSourceIds
+      .map((sourceId) => byId.get(sourceId))
+      .filter((source): source is MeterReadingRow => Boolean(source))
+      .sort((left, right) => left.sort_order - right.sort_order)) {
+      append(source);
+    }
+  }
+  for (const meter of meters) append(meter);
+  return result;
 }
 
 function currentMeterUsage(
@@ -1038,7 +1086,7 @@ export function KanameterWorkspacePage({
           const unitIds = meter.assignments.map((assignment) => assignment.unit_id);
           return meter.subItem.asset_meter_sub_item_id === selectedSubItem.asset_meter_sub_item_id &&
             (!meterTagFilter || (meterTagFilter === "__untagged__" ? !meter.tag : meter.tag?.asset_meter_tag_id === meterTagFilter)) &&
-            (meter.is_rate_source || unitIds.some((unitId) => !occupiedUnitIds.has(unitId) || billableCategoryUnitIds.has(unitId)));
+            (meter.is_rate_source || meter.is_allocation_source || unitIds.some((unitId) => !occupiedUnitIds.has(unitId) || billableCategoryUnitIds.has(unitId)));
         },
       )
     : [];
@@ -1242,7 +1290,7 @@ export function KanameterWorkspacePage({
                 ))}
               </select>
             </label>
-            <label className="month-picker">
+            {!meterSettingsItemId && <label className="month-picker">
               請求月
               <span className="month-control">
                 <button type="button" className="month-arrow" aria-label="前月へ" onClick={() => moveBillingMonth(-1)}>◀</button>
@@ -1253,8 +1301,8 @@ export function KanameterWorkspacePage({
                 />
                 <button type="button" className="month-arrow" aria-label="翌月へ" onClick={() => moveBillingMonth(1)}>▶</button>
               </span>
-            </label>
-            <label className="meter-date-picker">
+            </label>}
+            {!meterSettingsItemId && <label className="meter-date-picker">
               検針日
               <input
                 type="date"
@@ -1269,7 +1317,7 @@ export function KanameterWorkspacePage({
                     .catch((reason: Error) => setError(reason.message));
                 }}
               />
-            </label>
+            </label>}
           </div>
           <div className="confirm-area">
             <span className={`month-status ${status ?? "empty"}`}>
@@ -1931,13 +1979,14 @@ function SummaryView({
     );
     const chargeRows = meters.flatMap((meter) => {
       if (meter.subItem.asset_meter_sub_item_id !== item.asset_meter_sub_item_id) return [];
+      if (meter.is_allocation_source) return [];
       const totalUsage = billingAdjustedUsage(meter, adjustedMeterUsage(meter, meters, storedMeterUsage));
       return meter.assignments.flatMap((assignment) => {
         const contract = contractByUnitId.get(assignment.unit_id);
         if (!contract) return [];
         return [{
           meterId: `${meter.asset_meter_id}:${assignment.unit_id}`,
-          usage: totalUsage * meterAllocationShare(meter, assignment.unit_id),
+          usage: totalUsage * meterAllocationShare(meter, assignment.unit_id, meters),
           price: priceForContractItem(contract, item),
         }];
       });
@@ -2107,14 +2156,20 @@ function SettingsView({
   const [aggregationDecimalDigits, setAggregationDecimalDigits] = useState(activeSubItem?.aggregation_decimal_digits ?? 1);
   const [usageRoundingMode, setUsageRoundingMode] = useState<"floor" | "round" | "ceil">(activeSubItem?.usage_rounding_mode ?? "round");
   const [orderedMeters, setOrderedMeters] = useState(meters);
+  const commonAllocationSourceIds = new Set(orderedMeters.flatMap((meter) => meter.allocation_common_source_meter_ids));
+  const settingsVisibleMeters = orderedMeters.filter((meter) => !commonAllocationSourceIds.has(meter.asset_meter_id));
   const [meterNameDrafts, setMeterNameDrafts] = useState<Record<string, string>>({});
   const [tagMeterId, setTagMeterId] = useState<string | null>(null);
+  const [editingTagId, setEditingTagId] = useState<string | null>(null);
   const [tagDraft, setTagDraft] = useState({ name: "", color: "#8eaadb" });
   const allowsRateSource = activeSubItem?.price_mode === "master_meter";
   const [adjustmentMeterId, setAdjustmentMeterId] = useState<string | null>(null);
   const [allocationMeterId, setAllocationMeterId] = useState<string | null>(null);
-  const [allocationMethod, setAllocationMethod] = useState<"area" | "ratio">("area");
+  const [allocationMethod, setAllocationMethod] = useState<"area" | "ratio" | "meter_usage">("area");
   const [allocationWeights, setAllocationWeights] = useState<Record<string, string>>({});
+  const emptyAllocationSourceRow = () => ({ key: crypto.randomUUID(), sourceMeterId: "", name: "", tagId: "", unitId: "" });
+  const [allocationSourceRows, setAllocationSourceRows] = useState<Array<{ key: string; sourceMeterId: string; name: string; tagId: string; unitId: string }>>([]);
+  const [removedAllocationSourceMeterIds, setRemovedAllocationSourceMeterIds] = useState<string[]>([]);
   const [adjustmentDraft, setAdjustmentDraft] = useState({
     method: "ratio" as "ratio" | "percent",
     percent: "",
@@ -2144,13 +2199,14 @@ function SettingsView({
     if (!uniqueUnitsByKey.has(key) || unit.unit_id === activeUnitId) uniqueUnitsByKey.set(key, unit);
   }
   const sortedUnits = Array.from(uniqueUnitsByKey.values()).sort((left, right) =>
-    (left.source_sort_order ?? Number.MAX_SAFE_INTEGER) - (right.source_sort_order ?? Number.MAX_SAFE_INTEGER)
-    || floorSortOrder(left.floor_label) - floorSortOrder(right.floor_label)
+    floorSortOrder(left.floor_label) - floorSortOrder(right.floor_label)
+    || (left.source_sort_order ?? Number.MAX_SAFE_INTEGER) - (right.source_sort_order ?? Number.MAX_SAFE_INTEGER)
     || left.unit_code.localeCompare(right.unit_code, "ja-JP", { numeric: true }),
   );
   const unitOptionLabel = (unit: MeterUnitOption) => {
     const tenantName = unit.tenant_name ?? activeContractByUnitKey.get(logicalUnitKey(unit))?.contract?.tenant?.tenant_name;
-    return `${formatFloor(unit.floor_label)} / ${unit.unit_name || unit.unit_code} / ${tenantName || "空室"}`;
+    const occupant = unit.unit_type === "equipment" || unit.unit_type === "other" ? "共用部" : tenantName || "空室";
+    return `${formatFloor(unit.floor_label)} / ${unit.unit_name || unit.unit_code} / ${occupant}`;
   };
   const [draggingMeterId, setDraggingMeterId] = useState<string | null>(null);
   useEffect(() => {
@@ -2169,12 +2225,19 @@ function SettingsView({
     if (lockedSubItemId) setSubItemId(lockedSubItemId);
     else if (!subItems.some((item) => item.asset_meter_sub_item_id === subItemId))
       setSubItemId(subItems[0]?.asset_meter_sub_item_id ?? "");
-    if ((unitId === rateSourceUnitValue && !allowsRateSource) || (unitId !== rateSourceUnitValue && !units.some((unit) => unit.unit_id === unitId)))
+    if ((unitId === rateSourceUnitValue && !allowsRateSource) || (unitId !== rateSourceUnitValue && unitId !== "__multiple__" && !units.some((unit) => unit.unit_id === unitId)))
       setUnitId(sortedUnits[0]?.unit_id ?? "");
   }, [subItems, units, subItemId, unitId, lockedSubItemId, allowsRateSource]);
 
   const add = async () => {
     if (!subItemId || !unitId || !meterCode.trim()) return;
+    if (unitId === "__multiple__") {
+      setAllocationMeterId("__new_meter__");
+      setAllocationMethod("area");
+      setAllocationWeights({});
+      setAllocationSourceRows([emptyAllocationSourceRow(), emptyAllocationSourceRow()]);
+      return;
+    }
     setSaving(true);
     onError("");
     try {
@@ -2231,8 +2294,19 @@ function SettingsView({
       const meter = orderedMeters.find((row) => row.asset_meter_id === meterId);
       const currentAssignments = meter ? activeAssignments(meter) : [];
       setAllocationMeterId(meterId);
-      setAllocationMethod(currentAssignments[0]?.allocation_method === "ratio" ? "ratio" : "area");
+      const method = currentAssignments[0]?.allocation_method;
+      setAllocationMethod(method === "ratio" || method === "meter_usage" ? method : "area");
       setAllocationWeights(Object.fromEntries(currentAssignments.map((row) => [row.unit_id, String(row.allocation_weight ?? 1)])));
+      setRemovedAllocationSourceMeterIds([]);
+      setAllocationSourceRows(currentAssignments[0]?.allocation_method === "meter_usage"
+        ? [...currentAssignments.map((row) => {
+            const source = orderedMeters.find((meter) => meter.asset_meter_id === row.allocation_source_meter_id);
+            return { key: row.asset_meter_unit_assignment_id, sourceMeterId: row.allocation_source_meter_id ?? "", name: source?.meter_label ?? source?.meter_code ?? "", tagId: source?.tag?.asset_meter_tag_id ?? "", unitId: row.unit_id };
+          }), ...(meter?.allocation_common_source_meter_ids.map((sourceId) => {
+            const source = orderedMeters.find((candidate) => candidate.asset_meter_id === sourceId);
+            return { key: `common:${sourceId}`, sourceMeterId: sourceId, name: source?.meter_label ?? source?.meter_code ?? "", tagId: "", unitId: "__common__" };
+          }) ?? [])]
+        : [emptyAllocationSourceRow(), emptyAllocationSourceRow()]);
       return;
     }
     if (nextUnitId === rateSourceUnitValue && !allowsRateSource) return;
@@ -2308,20 +2382,36 @@ function SettingsView({
     }
     setNewMeterTagId(value);
   };
-  const addTag = async () => {
-    if (!tagMeterId || !tagDraft.name.trim()) {
+  const openTagEditor = (tagId = tags[0]?.asset_meter_tag_id) => {
+    const tag = tags.find((candidate) => candidate.asset_meter_tag_id === tagId);
+    if (!tag) return;
+    setEditingTagId(tagId);
+    setTagDraft({ name: tag.tag_name, color: tag.color });
+  };
+  const closeTagModal = () => {
+    if (saving) return;
+    setTagMeterId(null);
+    setEditingTagId(null);
+  };
+  const saveTagDraft = async () => {
+    if ((!tagMeterId && !editingTagId) || !tagDraft.name.trim()) {
       onError("タグ名を入力してください。");
       return;
     }
     setSaving(true);
     onError("");
     try {
-      const tag = await createMeterTag(supabase!, assetId, tagDraft.name, tagDraft.color);
-      if (tagMeterId === "__new_meter__") setNewMeterTagId(tag.asset_meter_tag_id);
-      else await saveMeterTag(supabase!, tagMeterId, tag.asset_meter_tag_id);
+      const tag = editingTagId
+        ? await updateMeterTag(supabase!, editingTagId, tagDraft.name, tagDraft.color)
+        : await createMeterTag(supabase!, assetId, tagDraft.name, tagDraft.color);
+      if (!editingTagId) {
+        if (tagMeterId === "__new_meter__") setNewMeterTagId(tag.asset_meter_tag_id);
+        else if (tagMeterId) await saveMeterTag(supabase!, tagMeterId, tag.asset_meter_tag_id);
+      }
       await onChanged();
       setTagMeterId(null);
-      onNotice(`タグ「${tag.tag_name}」を追加しました。`);
+      setEditingTagId(null);
+      onNotice(editingTagId ? `タグ「${tag.tag_name}」を更新しました。` : `タグ「${tag.tag_name}」を追加しました。`);
     } catch (reason) {
       onError((reason as Error).message);
     } finally {
@@ -2350,18 +2440,28 @@ function SettingsView({
     }
   };
   const remove = async (meter: MeterReadingRow) => {
-    if (!window.confirm(`メーター「${meter.meter_code}」を削除しますか？`)) return;
+    const isAllocationParent = isMeterUsageAllocationParent(meter);
+    if (!window.confirm(`メーター「${meter.meter_code}」${isAllocationParent ? "と紐づく按分用メーターを削除しますか？" : "を削除しますか？"}`)) return;
+    setSaving(true);
     onError("");
     try {
+      const sourceMeterIds = isAllocationParent
+        ? await loadAllocationSourceMeterIds(supabase!, meter.asset_meter_id)
+        : [];
       await deleteMeter(supabase!, meter.asset_meter_id);
+      await Promise.all(sourceMeterIds.map((sourceMeterId) => deleteMeter(supabase!, sourceMeterId)));
       await onChanged();
-      onNotice("メーターを削除しました。");
+      onNotice(isAllocationParent ? "メーターと紐づく按分用メーターを削除しました。" : "メーターを削除しました。");
     } catch (reason) {
       onError((reason as Error).message);
+    } finally {
+      setSaving(false);
     }
   };
   const moveMeter = async (targetMeterId: string) => {
     if (!draggingMeterId || draggingMeterId === targetMeterId || !lockedSubItemId) return;
+    const draggedMeter = orderedMeters.find((meter) => meter.asset_meter_id === draggingMeterId);
+    const targetMeter = orderedMeters.find((meter) => meter.asset_meter_id === targetMeterId);
     const next = [...orderedMeters];
     const sourceIndex = next.findIndex((meter) => meter.asset_meter_id === draggingMeterId);
     const targetIndex = next.findIndex((meter) => meter.asset_meter_id === targetMeterId);
@@ -2395,7 +2495,9 @@ function SettingsView({
   const saveAllocations = async () => {
     if (!allocationMeterId) return;
     const selected = sortedUnits.filter((unit) => allocationWeights[unit.unit_id] !== undefined);
-    if (selected.length < 2) {
+    const sourceRows = allocationSourceRows.filter((row) => row.name.trim() || row.unitId);
+    const allocationCount = allocationMethod === "meter_usage" ? sourceRows.length : selected.length;
+    if (allocationCount < 2) {
       onError("複数区画を2区画以上選択してください。");
       return;
     }
@@ -2407,16 +2509,69 @@ function SettingsView({
       onError("比率は1以上の自然数で入力してください。");
       return;
     }
+    if (allocationMethod === "meter_usage" && sourceRows.some((row) => !row.name.trim() || !row.unitId)) {
+      onError("すべての按分用メーターに按分名・紐づけ先を設定してください。");
+      return;
+    }
+    if (allocationMethod === "meter_usage" && new Set(sourceRows.map((row) => row.name.trim())).size !== sourceRows.length) {
+      onError("同じ按分用メーター名を複数の区画には指定できません。");
+      return;
+    }
+    if (allocationMethod === "meter_usage" && new Set(sourceRows.map((row) => row.unitId)).size !== sourceRows.length) {
+      onError("同じ紐づけ先を複数の按分用メーターには指定できません。");
+      return;
+    }
+    const allocations = allocationMethod === "meter_usage"
+      ? sourceRows.map((row) => ({ unitId: row.unitId, weight: 1, sourceMeterId: row.sourceMeterId || null, sourceMeterName: row.name, sourceMeterLabel: row.name, sourceMeterTagId: row.unitId === "__common__" ? null : row.tagId || null }))
+      : selected.map((unit) => ({
+          unitId: unit.unit_id,
+          weight: allocationMethod === "area" ? Number(unit.rentable_area_sqm) : Number(allocationWeights[unit.unit_id]),
+          sourceMeterId: null,
+          sourceMeterName: null,
+        }));
     setSaving(true);
     onError("");
     try {
-      await assignMeterUnits(supabase!, allocationMeterId, allocationMethod, selected.map((unit) => ({
-        unitId: unit.unit_id,
-        weight: allocationMethod === "area" ? Number(unit.rentable_area_sqm) : Number(allocationWeights[unit.unit_id]),
-      })), monthStart);
+      let targetMeterId = allocationMeterId;
+      if (allocationMeterId === "__new_meter__") {
+        targetMeterId = await createMeter(supabase!, assetId, subItemId, meterCode, allocations[0].unitId);
+        if (newMeterTagId) await saveMeterTag(supabase!, targetMeterId, newMeterTagId);
+      }
+      await assignMeterUnits(supabase!, targetMeterId, allocationMethod, allocations, monthStart);
+      await Promise.all(removedAllocationSourceMeterIds.map((sourceMeterId) => deleteMeter(supabase!, sourceMeterId)));
+      setRemovedAllocationSourceMeterIds([]);
+      if (allocationMeterId !== "__new_meter__" && allocationMethod === "meter_usage") {
+        const linkedSourceIds = await loadAllocationSourceMeterIds(supabase!, targetMeterId);
+        const sourceOrder = [
+          ...sourceRows.map((row) => row.sourceMeterId).filter((sourceMeterId) => linkedSourceIds.includes(sourceMeterId)),
+          ...linkedSourceIds.filter((sourceMeterId) => !sourceRows.some((row) => row.sourceMeterId === sourceMeterId)),
+        ];
+        const meterIds = orderedMeters
+          .filter((meter) => meter.subItem.asset_meter_sub_item_id === subItemId)
+          .map((meter) => meter.asset_meter_id);
+        const sourcePositions = meterIds
+          .map((meterId, index) => sourceOrder.includes(meterId) ? index : -1)
+          .filter((index) => index >= 0);
+        if (sourcePositions.length > 1) {
+          const reorderedMeterIds = [...meterIds];
+          sourcePositions.forEach((position, index) => { reorderedMeterIds[position] = sourceOrder[index]; });
+          await reorderMeters(supabase!, assetId, subItemId, reorderedMeterIds);
+        }
+      }
+      if (allocationMeterId === "__new_meter__") {
+        const sourceMeterIds = allocationMethod === "meter_usage"
+          ? await loadAllocationSourceMeterIds(supabase!, targetMeterId)
+          : [];
+        const existingMeterIds = orderedMeters
+          .filter((meter) => meter.subItem.asset_meter_sub_item_id === subItemId)
+          .map((meter) => meter.asset_meter_id);
+        await reorderMeters(supabase!, assetId, subItemId, [...existingMeterIds, targetMeterId, ...sourceMeterIds]);
+        setMeterCode("");
+        setNewMeterTagId("");
+      }
       await onChanged();
       setAllocationMeterId(null);
-      onNotice("複数区画と按分方法を保存しました。");
+      onNotice(allocationMeterId === "__new_meter__" ? "複数区画を設定してメーターを追加しました。" : "複数区画と按分方法を保存しました。");
     } catch (reason) {
       onError((reason as Error).message);
     } finally {
@@ -2503,6 +2658,10 @@ function SettingsView({
   return (
     <>
     <section className="meter-settings">
+      <div className="meter-settings-toolbar">
+        <strong>メーター設定</strong>
+        <button type="button" disabled={saving || tags.length === 0} onClick={() => openTagEditor()}>タグ編集</button>
+      </div>
       <div className="meter-display-settings">
         <label>データ入力方法<select value={inputMode} onChange={(event) => setInputMode(event.target.value as "usage" | "reading")}><option value="reading">読取値を入力</option><option value="usage">使用量を入力</option></select></label>
         <label className={inputMode === "usage" ? "disabled-setting" : ""}>検針値入力表示桁数<input type="number" min={0} max={3} step={1} value={readingDecimalDigits} disabled={inputMode === "usage"} onChange={(event) => setReadingDecimalDigits(Math.min(3, Math.max(0, Number(event.target.value))))} /></label>
@@ -2515,8 +2674,14 @@ function SettingsView({
         <ResizableTable className="workspace-data-table meter-settings-table" storageKey="meter-settings-common" columnGroups={["drag", "category", "sub-item", "tag", "meter", "unit", "parent-meter", "adjustment", "action"]}>
           <thead><tr><ColumnHeader columnGroup="drag" /><ColumnHeader columnGroup="category">分類</ColumnHeader><ColumnHeader columnGroup="sub-item">小分類</ColumnHeader><ColumnHeader columnGroup="tag">タグ</ColumnHeader><ColumnHeader columnGroup="meter">メーター名</ColumnHeader><ColumnHeader columnGroup="unit">設置区画</ColumnHeader><ColumnHeader columnGroup="parent-meter">親メーター</ColumnHeader><ColumnHeader columnGroup="adjustment">補正設定</ColumnHeader><ColumnHeader columnGroup="action" /></tr></thead>
           <tbody>
-            {orderedMeters.map((meter) => {
+            {settingsVisibleMeters.map((meter) => {
               const assignment = activeAssignment(meter);
+              const allocationParentMeter = meter.is_allocation_source
+                ? orderedMeters.find((candidate) =>
+                    candidate.assignments.some((row) => row.allocation_source_meter_id === meter.asset_meter_id) ||
+                    candidate.allocation_common_source_meter_ids.includes(meter.asset_meter_id),
+                  )
+                : undefined;
               return (
                 <tr
                   key={meter.asset_meter_id}
@@ -2536,12 +2701,22 @@ function SettingsView({
                   <td><span className={`utility-label utility-${meter.subItem.category}`}>{labels[meter.subItem.category]}</span></td>
                   <td>{meter.subItem.sub_item_name}</td>
                   <td>
-                    <select className="meter-tag-select" value={meter.tag?.asset_meter_tag_id ?? ""} style={meter.tag ? { backgroundColor: meter.tag.color, color: readableTextColor(meter.tag.color) } : undefined} disabled={saving} onChange={(event) => void changeTag(meter, event.target.value)}>
+                    <select className="meter-tag-select" value={meter.tag?.asset_meter_tag_id ?? ""} style={meter.tag ? { backgroundColor: meter.tag.color, color: readableTextColor(meter.tag.color) } : undefined} disabled={saving || meter.is_allocation_source} title={meter.is_allocation_source ? "按分用メーターでは編集できません" : undefined} onChange={(event) => void changeTag(meter, event.target.value)}>
                       <option value="">—</option>
                       {tags.map((tag) => <option key={tag.asset_meter_tag_id} value={tag.asset_meter_tag_id}>{tag.tag_name}</option>)}
                       <option value="__new__">＋ 新規タグを追加</option>
                     </select>
                   </td>
+                  {meter.is_allocation_source ? (
+                    <>
+                      <td>
+                        <div className="meter-name-editor">
+                          <input aria-label={`${meter.meter_label ?? meter.meter_code}の按分名`} value={meter.meter_label ?? meter.meter_code} disabled />
+                        </div>
+                      </td>
+                      <td colSpan={3} className="allocation-source-settings-note">（メーター「{allocationParentMeter?.meter_code ?? "未設定"}」の使用量から按分）</td>
+                    </>
+                  ) : <>
                   <td>
                     <div className="meter-name-editor">
                       {meter.parent_meter_id && <span className="child-meter-mark">↳ 子</span>}
@@ -2563,7 +2738,7 @@ function SettingsView({
                   </td>
                   <td>
                     <div className="unit-assignment-control">
-                      <select value={meter.is_rate_source && allowsRateSource ? rateSourceUnitValue : activeAssignments(meter).length > 1 ? "__multiple__" : assignment?.unit_id ?? ""} onChange={(event) => void changeUnit(meter.asset_meter_id, event.target.value)}>
+                      <select disabled={meter.is_allocation_source} title={meter.is_allocation_source ? "按分設定から変更してください" : undefined} value={meter.is_rate_source && allowsRateSource ? rateSourceUnitValue : activeAssignments(meter).length > 1 ? "__multiple__" : assignment?.unit_id ?? ""} onChange={(event) => void changeUnit(meter.asset_meter_id, event.target.value)}>
                         {allowsRateSource && <option value={rateSourceUnitValue}>大元メーター</option>}
                         <option value="__multiple__">複数区画を選択</option>
                         <option value="" disabled>区画を選択</option>
@@ -2573,12 +2748,13 @@ function SettingsView({
                           </option>
                         ))}
                       </select>
-                      {activeAssignments(meter).length > 1 && <button type="button" onClick={() => void changeUnit(meter.asset_meter_id, "__multiple__")}>按分設定</button>}
                     </div>
                   </td>
                   <td>
-                    {inputMode === "reading" && !meter.is_rate_source && activeAssignments(meter).length <= 1 ? (
-                      <select value={meter.parent_meter_id ?? ""} onChange={(event) => void changeParent(meter.asset_meter_id, event.target.value)}>
+                    {activeAssignments(meter).length > 1 && !meter.is_allocation_source ? (
+                      <div className="allocation-settings-cell"><button type="button" onClick={() => void changeUnit(meter.asset_meter_id, "__multiple__")}>按分設定</button></div>
+                    ) : inputMode === "reading" && !meter.is_rate_source && activeAssignments(meter).length <= 1 ? (
+                      <select disabled={meter.is_allocation_source} title={meter.is_allocation_source ? "按分用メーターでは編集できません" : undefined} value={meter.parent_meter_id ?? ""} onChange={(event) => void changeParent(meter.asset_meter_id, event.target.value)}>
                         <option value="">なし（親として集計）</option>
                         {orderedMeters
                           .filter((candidate) =>
@@ -2594,9 +2770,7 @@ function SettingsView({
                             </option>
                           ))}
                       </select>
-                    ) : (
-                      <span className="muted-setting">検針値入力時のみ</span>
-                    )}
+                    ) : null}
                   </td>
                   <td>
                     <div className="meter-adjustment-control">
@@ -2604,15 +2778,17 @@ function SettingsView({
                         type="checkbox"
                         aria-label={`${meter.meter_code}の使用量補正`}
                         checked={meter.billing_adjustment_enabled}
-                        disabled={saving}
+                        disabled={saving || meter.is_allocation_source}
+                        title={meter.is_allocation_source ? "按分用メーターでは編集できません" : undefined}
                         onChange={(event) => event.target.checked ? openAdjustment(meter) : void disableAdjustment(meter)}
                       />
                       {meter.billing_adjustment_enabled && (
-                        <button type="button" className="meter-adjustment-status" onClick={() => openAdjustment(meter)}>設定済み</button>
+                        <button type="button" className="meter-adjustment-status" disabled={meter.is_allocation_source} onClick={() => openAdjustment(meter)}>設定済み</button>
                       )}
                     </div>
                   </td>
-                  <td><button className="danger-text" onClick={() => void remove(meter)}>削除</button></td>
+                  </>}
+                  <td>{!meter.is_allocation_source && <button className="danger-text" onClick={() => void remove(meter)}>削除</button>}</td>
                 </tr>
               );
             })}
@@ -2632,23 +2808,24 @@ function SettingsView({
         </label>}
         <label>タグ<select value={newMeterTagId} disabled={saving} onChange={(event) => changeNewMeterTag(event.target.value)}><option value="">—</option>{tags.map((tag) => <option key={tag.asset_meter_tag_id} value={tag.asset_meter_tag_id}>{tag.tag_name}</option>)}<option value="__new__">＋ 新規タグを追加</option></select></label>
         <label>メーター番号<input value={meterCode} onChange={(event) => setMeterCode(event.target.value)} /></label>
-        <label>区画<select value={unitId} onChange={(event) => setUnitId(event.target.value)}>{allowsRateSource && <option value={rateSourceUnitValue}>大元メーター</option>}{sortedUnits.map((unit) => <option key={unit.unit_id} value={unit.unit_id}>{unitOptionLabel(unit)}</option>)}</select></label>
+        <label>区画<select value={unitId} onChange={(event) => setUnitId(event.target.value)}>{allowsRateSource && <option value={rateSourceUnitValue}>大元メーター</option>}<option value="__multiple__">複数区画を選択</option>{sortedUnits.map((unit) => <option key={unit.unit_id} value={unit.unit_id}>{unitOptionLabel(unit)}</option>)}</select></label>
         <button className="primary compact" disabled={saving || !subItemId || !unitId || !meterCode.trim()} onClick={() => void add()}>{saving ? "追加中…" : "追加"}</button>
       </div>
     </section>
-    {tagMeterId && (
-      <div className="rollover-modal-backdrop" role="presentation" onMouseDown={() => !saving && setTagMeterId(null)}>
+    {(tagMeterId || editingTagId) && (
+      <div className="rollover-modal-backdrop" role="presentation" onMouseDown={closeTagModal}>
         <section className="rollover-modal meter-tag-modal" role="dialog" aria-modal="true" aria-labelledby="meter-tag-title" onMouseDown={(event) => event.stopPropagation()}>
           <header>
-            <div><span>メーター設定</span><h2 id="meter-tag-title">新規タグを追加</h2></div>
-            <button type="button" className="rollover-modal-close" aria-label="閉じる" disabled={saving} onClick={() => setTagMeterId(null)}>×</button>
+            <div><span>メーター設定</span><h2 id="meter-tag-title">{editingTagId ? "タグを編集" : "新規タグを追加"}</h2></div>
+            <button type="button" className="rollover-modal-close" aria-label="閉じる" disabled={saving} onClick={closeTagModal}>×</button>
           </header>
           <div className="meter-tag-form">
+            {editingTagId && <label>編集するタグ<select value={editingTagId} onChange={(event) => openTagEditor(event.target.value)}>{tags.map((tag) => <option key={tag.asset_meter_tag_id} value={tag.asset_meter_tag_id}>{tag.tag_name}</option>)}</select></label>}
             <label>タグ名<input autoFocus maxLength={40} value={tagDraft.name} placeholder="例：動力" onChange={(event) => setTagDraft((current) => ({ ...current, name: event.target.value }))} /></label>
             <fieldset className="meter-tag-color-field"><legend>色</legend><div className="meter-tag-palette" role="radiogroup" aria-label="タグの色">{meterTagPalette.map((color, index) => <button key={`${color}-${index}`} type="button" role="radio" aria-checked={tagDraft.color === color} aria-label={`色 ${color}`} className={tagDraft.color === color ? "selected" : ""} style={{ backgroundColor: color }} onClick={() => setTagDraft((current) => ({ ...current, color }))} />)}</div><span className="meter-tag-preview" style={{ backgroundColor: tagDraft.color, color: readableTextColor(tagDraft.color) }}>{tagDraft.name.trim() || "タグ"}</span></fieldset>
           </div>
           <footer>
-            <button type="button" className="primary" disabled={saving || !tagDraft.name.trim()} onClick={() => void addTag()}>{saving ? "保存中…" : "追加して選択"}</button>
+            <button type="button" className="primary" disabled={saving || !tagDraft.name.trim()} onClick={() => void saveTagDraft()}>{saving ? "保存中…" : editingTagId ? "変更を保存" : "追加して選択"}</button>
           </footer>
         </section>
       </div>
@@ -2661,8 +2838,26 @@ function SettingsView({
             <button type="button" className="rollover-modal-close" aria-label="閉じる" disabled={saving} onClick={() => setAllocationMeterId(null)}>×</button>
           </header>
           <div className="meter-allocation-form">
-            <label>按分方法<select value={allocationMethod} onChange={(event) => setAllocationMethod(event.target.value as "area" | "ratio")}><option value="area">面積（㎡）で按分</option><option value="ratio">任意の比率で按分</option></select></label>
-            <div className="meter-allocation-list">
+            <label>按分方法<select value={allocationMethod} onChange={(event) => { const method = event.target.value as "area" | "ratio" | "meter_usage"; setAllocationMethod(method); if (method === "meter_usage" && allocationSourceRows.length < 2) setAllocationSourceRows([emptyAllocationSourceRow(), emptyAllocationSourceRow()]); }}><option value="area">面積（㎡）で按分</option><option value="ratio">任意の比率で按分</option><option value="meter_usage">按分用メーターの使用量で按分</option></select></label>
+            {allocationMethod === "meter_usage" ? <>
+              <div className="meter-allocation-list meter-source-list">
+                <div className="meter-source-head"><span>按分名</span><span>タグ</span><span>紐づけ先（区画・共用部）</span><span /></div>
+                {allocationSourceRows.map((row, rowIndex) => <div className="meter-source-row" key={row.key}>
+                  <input type="text" maxLength={80} value={row.name} placeholder="例：按分用①" onChange={(event) => setAllocationSourceRows((current) => current.map((candidate) => candidate.key === row.key ? { ...candidate, name: event.target.value } : candidate))} />
+                  <select disabled={row.unitId === "__common__"} value={row.tagId} onChange={(event) => setAllocationSourceRows((current) => current.map((candidate) => candidate.key === row.key ? { ...candidate, tagId: event.target.value } : candidate))}><option value="">—</option>{tags.map((tag) => <option key={tag.asset_meter_tag_id} value={tag.asset_meter_tag_id}>{tag.tag_name}</option>)}</select>
+                  <select value={row.unitId} onChange={(event) => setAllocationSourceRows((current) => current.map((candidate) => candidate.key === row.key ? { ...candidate, unitId: event.target.value, ...(event.target.value === "__common__" ? { tagId: "" } : {}) } : candidate))}><option value="">選択してください</option><option value="__common__">共用部</option>{sortedUnits.map((unit) => <option key={unit.unit_id} value={unit.unit_id}>{unitOptionLabel(unit)}</option>)}</select>
+                  <span className="meter-source-actions">
+                    <button type="button" disabled={rowIndex === 0} aria-label={`${row.name || "按分用メーター"}を上へ移動`} onClick={() => setAllocationSourceRows((current) => { const next = [...current]; [next[rowIndex - 1], next[rowIndex]] = [next[rowIndex], next[rowIndex - 1]]; return next; })}>↑</button>
+                    <button type="button" disabled={rowIndex === allocationSourceRows.length - 1} aria-label={`${row.name || "按分用メーター"}を下へ移動`} onClick={() => setAllocationSourceRows((current) => { const next = [...current]; [next[rowIndex], next[rowIndex + 1]] = [next[rowIndex + 1], next[rowIndex]]; return next; })}>↓</button>
+                    <button type="button" className="danger-text" disabled={allocationSourceRows.length <= 2} onClick={() => {
+                      if (row.sourceMeterId) setRemovedAllocationSourceMeterIds((current) => [...current, row.sourceMeterId]);
+                      setAllocationSourceRows((current) => current.filter((candidate) => candidate.key !== row.key));
+                    }}>削除</button>
+                  </span>
+                </div>)}
+              </div>
+              <button type="button" className="meter-source-add" onClick={() => setAllocationSourceRows((current) => [...current, emptyAllocationSourceRow()])}>＋ メーターを追加</button>
+            </> : <div className="meter-allocation-list">
               <div className="meter-allocation-head"><span>選択</span><span>区画</span><span>{allocationMethod === "area" ? "面積（㎡）" : "比率"}</span></div>
               {sortedUnits.map((unit) => {
                 const selected = allocationWeights[unit.unit_id] !== undefined;
@@ -2672,8 +2867,8 @@ function SettingsView({
                   {allocationMethod === "area" ? <strong className={Number(unit.rentable_area_sqm) > 0 ? "" : "allocation-missing"}>{unit.rentable_area_sqm == null ? "未登録" : Number(unit.rentable_area_sqm).toLocaleString("ja-JP")}</strong> : <input type="number" min="1" step="1" disabled={!selected} value={selected ? allocationWeights[unit.unit_id] : ""} onChange={(event) => setAllocationWeights((current) => ({ ...current, [unit.unit_id]: event.target.value }))} />}
                 </div>;
               })}
-            </div>
-            <p>選択した区画の{allocationMethod === "area" ? "面積合計" : "比率合計"}を100%として使用量と金額を按分します。端数は最後の区画へ加算します。</p>
+            </div>}
+            <p>{allocationMethod === "meter_usage" ? "各区画に対応する按分用メーターの当月使用量合計を100%として、対象メーターの使用量と金額を按分します。" : `選択した区画の${allocationMethod === "area" ? "面積合計" : "比率合計"}を100%として使用量と金額を按分します。端数は最後の区画へ加算します。`}</p>
           </div>
           <footer><button type="button" className="primary" disabled={saving} onClick={() => void saveAllocations()}>{saving ? "保存中…" : "按分設定を保存"}</button></footer>
         </section>
@@ -2941,15 +3136,25 @@ function CustomItemTable({
         contract.unit?.unit_id === meter.assignments[0]?.unit_id,
     );
   const unitKey = (meter: MeterReadingRow) => {
+    if (isMeterUsageAllocationParent(meter)) return `allocation-parent-${meter.asset_meter_id}`;
+    if (meter.is_allocation_source) return `allocation-source-${meter.asset_meter_id}`;
     if (!meter.is_rate_source && !contractFor(meter)) return `vacant-${meter.asset_meter_id}`;
     return meter.assignments[0]?.unit_id ?? `unassigned-${meter.asset_meter_id}`;
   };
   const billingKey = (meter: MeterReadingRow) =>
-    contractFor(meter)
+    isMeterUsageAllocationParent(meter)
+      ? `allocation-parent-${meter.asset_meter_id}`
+      : meter.is_allocation_source
+      ? `allocation-source-${meter.asset_meter_id}`
+      : contractFor(meter)
       ? billingGroupKey(contractFor(meter))
       : `unassigned-${meter.asset_meter_id}`;
   const tenantKey = (meter: MeterReadingRow) =>
-    contractFor(meter)?.contract?.tenant_id ?? `unassigned-${meter.asset_meter_id}`;
+    isMeterUsageAllocationParent(meter)
+      ? `allocation-parent-${meter.asset_meter_id}`
+      : meter.is_allocation_source
+      ? `allocation-source-${meter.asset_meter_id}`
+      : contractFor(meter)?.contract?.tenant_id ?? `unassigned-${meter.asset_meter_id}`;
   const rawMeterUsage = (meter: MeterReadingRow) => {
     const raw = values[meter.asset_meter_id];
     if (raw !== undefined && raw.trim() === "") return 0;
@@ -2985,6 +3190,28 @@ function CustomItemTable({
       null
     );
   };
+  const allocationResults = meters.flatMap((parent) => {
+    if (!isMeterUsageAllocationParent(parent)) return [];
+    return parent.assignments.flatMap((assignment) => {
+      if (!assignment.allocation_source_meter_id) return [];
+      const source = meters.find((candidate) => candidate.asset_meter_id === assignment.allocation_source_meter_id);
+      const contract = contracts.find((candidate) => candidate.unit?.unit_id === assignment.unit_id);
+      if (!source || !contract) return [];
+      const share = meterAllocationShare(parent, assignment.unit_id, meters);
+      const digits = parent.subItem.aggregation_decimal_digits;
+      const roundingMode = parent.subItem.usage_rounding_mode;
+      const usage = roundToDigits(meterUsage(parent) * share, digits, roundingMode);
+      const previous = usageHistory.previous[parent.asset_meter_id] == null
+        ? undefined
+        : roundToDigits(billingAdjustedUsage(parent, adjustedMeterUsage(parent, meters, (candidate) => usageHistory.previous[candidate.asset_meter_id] ?? 0)) * share, digits, roundingMode);
+      const previousYear = usageHistory.previousYear[parent.asset_meter_id] == null
+        ? undefined
+        : roundToDigits(billingAdjustedUsage(parent, adjustedMeterUsage(parent, meters, (candidate) => usageHistory.previousYear[candidate.asset_meter_id] ?? 0)) * share, digits, roundingMode);
+      const price = unitPrice(source);
+      const amount = price == null ? null : roundUtilityAmount(usage * Number(price), contract.utility_amount_rounding_mode);
+      return [{ parent, source, assignment, contract, usage, previous, previousYear, price, amount, digits }];
+    });
+  });
   const displayGroupKey = (meter: MeterReadingRow) => {
     if (meter.is_rate_source) return `rate-source-${meter.asset_meter_id}`;
     const tenantId = contractFor(meter)?.contract?.tenant_id;
@@ -2996,18 +3223,20 @@ function CustomItemTable({
     const current = displayGroupOrder.get(key);
     if (current == null || meter.sort_order < current) displayGroupOrder.set(key, meter.sort_order);
   }
-  const orderedMeters = [...meters].sort((left, right) => {
-    const leftGroup = displayGroupKey(left);
-    const rightGroup = displayGroupKey(right);
-    return (
-      Number(right.is_rate_source) - Number(left.is_rate_source) ||
-      (displayGroupOrder.get(leftGroup) ?? Number.MAX_SAFE_INTEGER) -
-        (displayGroupOrder.get(rightGroup) ?? Number.MAX_SAFE_INTEGER) ||
-      left.sort_order - right.sort_order ||
-      left.meter_code.localeCompare(right.meter_code, "ja-JP", { numeric: true })
-    );
-  });
-  const billableMeters = orderedMeters.filter((meter) => !meter.is_rate_source);
+  const orderedMeters = orderAllocationMeterBlocks([...meters].sort((left, right) =>
+    Number(right.is_rate_source) - Number(left.is_rate_source) ||
+    left.sort_order - right.sort_order ||
+    left.meter_code.localeCompare(right.meter_code, "ja-JP", { numeric: true }),
+  ));
+  const allocationOwnerFor = (meter: MeterReadingRow) => isMeterUsageAllocationParent(meter)
+    ? meter
+    : meter.is_allocation_source
+      ? meters.find((candidate) =>
+          candidate.assignments.some((row) => row.allocation_source_meter_id === meter.asset_meter_id) ||
+          candidate.allocation_common_source_meter_ids.includes(meter.asset_meter_id),
+        )
+      : undefined;
+  const billableMeters = orderedMeters.filter((meter) => !meter.is_rate_source && !meter.is_allocation_source && !isMeterUsageAllocationParent(meter));
   const rankedUnitPrices = Array.from(new Set(
     orderedMeters.map((meter) => unitPrice(meter)).filter((price): price is number => price != null),
   )).sort((left, right) => right - left);
@@ -3075,11 +3304,36 @@ function CustomItemTable({
       ), 0),
     };
   };
-  const totalRows = [
-    { label: "総合計", totals: totalsFor(billableMeters) },
-    { label: "空室合計", totals: totalsFor(billableMeters.filter((meter) => !contractFor(meter))) },
-    { label: "テナント合計", totals: totalsFor(billableMeters.filter((meter) => Boolean(contractFor(meter)))) },
-  ];
+  const allocationTotals = {
+    // 共用部の按分用メーターは分母だけに使い、請求先へ配賦しない。
+    // 合計も親メーターの実測値ではなく、区画へ配賦した使用量を基準にして
+    // 「メーターごと」と「区画ごと」を一致させる。
+    meterUsage: allocationResults.reduce((sum, result) => sum + result.usage, 0),
+    unitUsage: allocationResults.reduce((sum, result) => sum + result.usage, 0),
+    amount: allocationResults.reduce((sum, result) => sum + (result.amount ?? 0), 0),
+    tenantUsage: allocationResults.reduce((sum, result) => sum + result.usage, 0),
+    previousUsage: allocationResults.reduce((sum, result) => sum + (result.previous ?? 0), 0),
+    previousYearUsage: allocationResults.reduce((sum, result) => sum + (result.previousYear ?? 0), 0),
+  };
+  const addTotals = (base: ReturnType<typeof totalsFor>, extra: typeof allocationTotals) => ({
+    meterUsage: base.meterUsage + extra.meterUsage,
+    unitUsage: base.unitUsage + extra.unitUsage,
+    amount: base.amount + extra.amount,
+    tenantUsage: base.tenantUsage + extra.tenantUsage,
+    previousUsage: base.previousUsage + extra.previousUsage,
+    previousYearUsage: base.previousYearUsage + extra.previousYearUsage,
+  });
+  // 按分用メーターは計算根拠の表示専用で、合計には入れない。請求先への按分結果のみ加算する。
+  const vacantMeters = billableMeters.filter((meter) => !contractFor(meter));
+  const totalRows = vacantMeters.length
+    ? [
+        { label: "総合計", totals: addTotals(totalsFor(billableMeters), allocationTotals) },
+        { label: "空室合計", totals: totalsFor(vacantMeters) },
+        { label: "テナント合計", totals: addTotals(totalsFor(billableMeters.filter((meter) => Boolean(contractFor(meter)))), allocationTotals) },
+      ]
+    : [
+        { label: "テナント合計", totals: addTotals(totalsFor(billableMeters), allocationTotals) },
+      ];
   const inputTotalDigits = orderedMeters[0]?.subItem.input_decimal_digits ?? 1;
   const aggregationTotalDigits = orderedMeters[0]?.subItem.aggregation_decimal_digits ?? 1;
   const usageOnlyRows = Array.from(new Map(
@@ -3091,8 +3345,16 @@ function CustomItemTable({
     const tenantMeters = billableMeters.filter((row) => tenantKey(row) === tenantKey(meter));
     const prices = Array.from(new Set(unitMeters.map((row) => unitPrice(row)).filter((value): value is number => value != null)));
     const charge = chargeForMeters(unitMeters);
-    const previousUsage = unitMeters.reduce((sum, row) => sum + billingAdjustedUsage(row, adjustedMeterUsage(row, meters, previousUsageFor)), 0);
-    const previousYearUsage = unitMeters.reduce((sum, row) => sum + billingAdjustedUsage(row, adjustedMeterUsage(row, meters, previousYearUsageFor)), 0);
+    const allocationResultsForUnit = unit?.unit_id
+      ? allocationResults.filter((result) => result.assignment.unit_id === unit.unit_id)
+      : [];
+    const allocationResultsForTenant = contract?.contract?.tenant_id
+      ? allocationResults.filter((result) => result.contract.contract?.tenant_id === contract.contract?.tenant_id)
+      : [];
+    const previousUsage = unitMeters.reduce((sum, row) => sum + billingAdjustedUsage(row, adjustedMeterUsage(row, meters, previousUsageFor)), 0)
+      + allocationResultsForUnit.reduce((sum, result) => sum + (result.previous ?? 0), 0);
+    const previousYearUsage = unitMeters.reduce((sum, row) => sum + billingAdjustedUsage(row, adjustedMeterUsage(row, meters, previousYearUsageFor)), 0)
+      + allocationResultsForUnit.reduce((sum, result) => sum + (result.previousYear ?? 0), 0);
     const tenantBillingGroups = Array.from(new Map(
       tenantMeters.map((row) => [billingKey(row), tenantMeters.filter((item) => billingKey(item) === billingKey(row))]),
     ).values());
@@ -3103,10 +3365,10 @@ function CustomItemTable({
       floor: formatFloor(unit?.floor_label),
       unitName: meter.is_rate_source ? "大元メーター" : unit?.unit_name || unit?.unit_code || "未割当",
       unitPrice: prices.length === 1 ? formatYen(prices[0]) : prices.length > 1 ? "複数" : "未設定",
-      usage: charge.usage,
-      amount: charge.amount,
-      tenantUsage: displayedUsageForTenant(tenantMeters),
-      tenantAmount: tenantBillingGroups.reduce((sum, group) => sum + chargeForMeters(group).amount, 0),
+      usage: charge.usage + allocationResultsForUnit.reduce((sum, result) => sum + result.usage, 0),
+      amount: charge.amount + allocationResultsForUnit.reduce((sum, result) => sum + (result.amount ?? 0), 0),
+      tenantUsage: displayedUsageForTenant(tenantMeters) + allocationResultsForTenant.reduce((sum, result) => sum + result.usage, 0),
+      tenantAmount: tenantBillingGroups.reduce((sum, group) => sum + chargeForMeters(group).amount, 0) + allocationResultsForTenant.reduce((sum, result) => sum + (result.amount ?? 0), 0),
       previousUsage: roundToDigits(previousUsage, meter.subItem.aggregation_decimal_digits, meter.subItem.usage_rounding_mode),
       previousYearUsage: roundToDigits(previousYearUsage, meter.subItem.aggregation_decimal_digits, meter.subItem.usage_rounding_mode),
       digits: meter.subItem.aggregation_decimal_digits,
@@ -3155,18 +3417,24 @@ function CustomItemTable({
           {orderedMeters.map((meter, index) => {
             const unit = meter.assignments[0]?.unit;
             const isVacant = !meter.is_rate_source && !contractFor(meter);
-            const currentUnitKey = unitKey(meter);
-            const firstInUnit = index === 0 || unitKey(orderedMeters[index - 1]) !== currentUnitKey;
-            const lastInUnit = index === orderedMeters.length - 1 || unitKey(orderedMeters[index + 1]) !== currentUnitKey;
+            const allocationOwner = allocationOwnerFor(meter);
+            const displayUnitKey = (candidate: MeterReadingRow) => {
+              const owner = allocationOwnerFor(candidate);
+              return owner ? `allocation-block-${owner.asset_meter_id}` : unitKey(candidate);
+            };
+            const displayTenantKey = displayUnitKey;
+            const currentUnitKey = displayUnitKey(meter);
+            const firstInUnit = index === 0 || displayUnitKey(orderedMeters[index - 1]) !== currentUnitKey;
+            const lastInUnit = index === orderedMeters.length - 1 || displayUnitKey(orderedMeters[index + 1]) !== currentUnitKey;
             let unitMeterCount = 1;
-            while (index + unitMeterCount < orderedMeters.length && unitKey(orderedMeters[index + unitMeterCount]) === currentUnitKey) unitMeterCount += 1;
-            const currentTenantKey = tenantKey(meter);
-            const firstInTenant = index === 0 || tenantKey(orderedMeters[index - 1]) !== currentTenantKey;
-            const lastInTenant = index === orderedMeters.length - 1 || tenantKey(orderedMeters[index + 1]) !== currentTenantKey;
+            while (index + unitMeterCount < orderedMeters.length && displayUnitKey(orderedMeters[index + unitMeterCount]) === currentUnitKey) unitMeterCount += 1;
+            const currentTenantKey = displayTenantKey(meter);
+            const firstInTenant = index === 0 || displayTenantKey(orderedMeters[index - 1]) !== currentTenantKey;
+            const lastInTenant = index === orderedMeters.length - 1 || displayTenantKey(orderedMeters[index + 1]) !== currentTenantKey;
             let tenantStartIndex = index;
-            while (tenantStartIndex > 0 && tenantKey(orderedMeters[tenantStartIndex - 1]) === currentTenantKey) tenantStartIndex -= 1;
+            while (tenantStartIndex > 0 && displayTenantKey(orderedMeters[tenantStartIndex - 1]) === currentTenantKey) tenantStartIndex -= 1;
             let tenantEndIndex = index;
-            while (tenantEndIndex + 1 < orderedMeters.length && tenantKey(orderedMeters[tenantEndIndex + 1]) === currentTenantKey) tenantEndIndex += 1;
+            while (tenantEndIndex + 1 < orderedMeters.length && displayTenantKey(orderedMeters[tenantEndIndex + 1]) === currentTenantKey) tenantEndIndex += 1;
             const tenantMeters = orderedMeters.slice(tenantStartIndex, tenantEndIndex + 1);
             const currentBillingKey = billingKey(meter);
             const firstInBillingGroup = index === 0 || billingKey(orderedMeters[index - 1]) !== currentBillingKey;
@@ -3190,11 +3458,18 @@ function CustomItemTable({
               (meter.entry ? "saved" : "idle");
             const aggregationDigits = meter.subItem.aggregation_decimal_digits ?? 1;
             const usageRoundingMode = meter.subItem.usage_rounding_mode ?? "round";
+            const allocationResultsForUnit = unit?.unit_id
+              ? allocationResults.filter((result) => result.assignment.unit_id === unit.unit_id)
+              : [];
+            const allocationResultsForBilling = allocationResults.filter((result) => billingGroupKey(result.contract) === currentBillingKey);
+            const allocationResultsForTenant = contract?.contract?.tenant_id
+              ? allocationResults.filter((result) => result.contract.contract?.tenant_id === contract.contract?.tenant_id)
+              : [];
             const unitUsageRaw = orderedMeters
               .filter((row) => unitKey(row) === currentUnitKey)
               .reduce((sum, row) => {
                 return sum + meterUsage(row);
-              }, 0);
+              }, 0) + allocationResultsForUnit.reduce((sum, result) => sum + result.usage, 0);
             const unitUsage = roundToDigits(unitUsageRaw, aggregationDigits, usageRoundingMode);
             const unitAmount =
               contract && price != null
@@ -3203,12 +3478,12 @@ function CustomItemTable({
                     contract.utility_amount_rounding_mode,
                   )
                 : null;
-            const tenantUsage = displayedUsageForTenant(tenantMeters);
-            const billingUsage = chargeForMeters(billingMeters).usage;
-            const billingAmount = chargeForMeters(billingMeters).amount;
+            const tenantUsage = displayedUsageForTenant(tenantMeters) + allocationResultsForTenant.reduce((sum, result) => sum + result.usage, 0);
+            const billingUsage = chargeForMeters(billingMeters).usage + allocationResultsForBilling.reduce((sum, result) => sum + result.usage, 0);
+            const billingAmount = chargeForMeters(billingMeters).amount + allocationResultsForBilling.reduce((sum, result) => sum + (result.amount ?? 0), 0);
             const tenantAmount = Array.from(new Map(
               tenantMeters.map((tenantMeter) => [billingKey(tenantMeter), tenantMeters.filter((row) => billingKey(row) === billingKey(tenantMeter))]),
-            ).values()).reduce((sum, group) => sum + chargeForMeters(group).amount, 0);
+            ).values()).reduce((sum, group) => sum + chargeForMeters(group).amount, 0) + allocationResultsForTenant.reduce((sum, result) => sum + (result.amount ?? 0), 0);
             const previousUsage = usageHistory.previous[meter.asset_meter_id] == null
               ? undefined
               : billingAdjustedUsage(meter, adjustedMeterUsage(meter, meters, previousUsageFor));
@@ -3217,32 +3492,53 @@ function CustomItemTable({
               : billingAdjustedUsage(meter, adjustedMeterUsage(meter, meters, previousYearUsageFor));
             const currentUsage = meterUsage(meter);
             const isUnentered = (values[meter.asset_meter_id] ?? "").trim() === "";
+            const allocationParent = isMeterUsageAllocationParent(meter);
+            const allocationOwnerId = allocationOwner?.asset_meter_id;
+            const lastAllocationSource = allocationOwnerId != null && (
+              index === orderedMeters.length - 1 ||
+              allocationOwnerFor(orderedMeters[index + 1])?.asset_meter_id !== allocationOwnerId
+            );
+            const calculationOnly = meter.is_rate_source || meter.is_allocation_source || allocationParent;
+            const currentTenantId = contract?.contract?.tenant_id;
+            const lastRegularMeterForTenant = Boolean(currentTenantId) && !orderedMeters.slice(index + 1).some((candidate) =>
+              !candidate.is_allocation_source && !isMeterUsageAllocationParent(candidate) && contractFor(candidate)?.contract?.tenant_id === currentTenantId,
+            );
+            const tenantAllocationResults = lastRegularMeterForTenant
+              ? allocationResults.filter((result) => result.contract.contract?.tenant_id === currentTenantId)
+              : [];
+            const tenantAllocationResultCount = firstInTenant && currentTenantId && !meter.is_allocation_source && !allocationParent
+              ? allocationResults.filter((result) => result.contract.contract?.tenant_id === currentTenantId).length
+              : 0;
+            const unitAllocationResultCount = firstInUnit && unit?.unit_id && !meter.is_allocation_source && !allocationParent
+              ? allocationResults.filter((result) => result.assignment.unit_id === unit.unit_id).length
+              : 0;
             return (
-              <tr key={meter.asset_meter_id} className={`${firstInUnit ? "unit-group-start" : ""} ${lastInUnit ? "unit-group-end" : ""} ${firstInTenant ? "tenant-group-start" : ""} ${lastInTenant ? "tenant-group-end" : ""} ${isVacant ? "vacant-meter-row" : ""}`}>
+              <Fragment key={meter.asset_meter_id}>
+              <tr className={`${firstInUnit ? "unit-group-start" : ""} ${lastInUnit && !tenantAllocationResults.length ? "unit-group-end" : ""} ${firstInTenant ? "tenant-group-start" : ""} ${lastInTenant && !tenantAllocationResults.length ? "tenant-group-end" : ""} ${isVacant ? "vacant-meter-row" : ""} ${meter.is_allocation_source ? "allocation-source-input-row" : ""} ${allocationParent ? "allocation-parent-input-row allocation-block-start" : ""} ${allocationParent || allocationOwner ? "allocation-block-row" : ""} ${lastAllocationSource ? "allocation-block-end" : ""}`}>
                 {firstInTenant && (
-                  <td className="tenant-cell tenant-identity" rowSpan={tenantMeters.length}>
+                  <td className="tenant-cell tenant-identity" rowSpan={tenantMeters.length + tenantAllocationResultCount}>
                     <span className="merged-value">
-                      <TenantNameWithRounding
+                      {allocationOwner ? allocationOwner.meter_code : <TenantNameWithRounding
                         name={contract?.contract?.tenant?.tenant_name ?? "空室"}
                         contracts={tenantMeters.map((tenantMeter) => contractFor(tenantMeter)).filter((item): item is ContractUnit => Boolean(item))}
-                      />
+                      />}
                     </span>
                   </td>
                 )}
                 {firstInUnit && (
                   <>
-                    <td className={`floor-identity ${unitEndsTenant ? "tenant-boundary" : ""}`} rowSpan={unitMeterCount}><span className="merged-value">{formatFloor(unit?.floor_label)}</span></td>
-                    <td className={`unit-identity ${unitEndsTenant ? "tenant-boundary" : ""}`} rowSpan={unitMeterCount}><span className="merged-value">{meter.is_rate_source ? "大元メーター" : unit?.unit_name || unit?.unit_code || "未割当"}</span></td>
+                    <td className={`floor-identity ${unitEndsTenant ? "tenant-boundary" : ""}`} rowSpan={unitMeterCount + unitAllocationResultCount}><span className="merged-value">{formatFloor(allocationOwner?.assignments[0]?.unit?.floor_label ?? unit?.floor_label)}</span></td>
+                    <td className={`unit-identity ${unitEndsTenant ? "tenant-boundary" : ""}`} rowSpan={unitMeterCount + unitAllocationResultCount}><span className="merged-value">{allocationOwner ? "—" : meter.is_rate_source ? "大元メーター" : unit?.unit_name || unit?.unit_code || "未割当"}</span></td>
                   </>
                 )}
-                <td><strong className="meter-code-with-tag">{meter.tag && <span className="meter-tag-badge" style={{ backgroundColor: meter.tag.color, color: readableTextColor(meter.tag.color) }}>{meter.tag.tag_name}</span>}{meter.parent_meter_id && <span className="child-meter-mark">↳ 子</span>}{meter.meter_code}</strong></td>
-                <td className={`numeric unit-price-cell ${meter.is_rate_source ? "" : unitPriceClass(price)}`}>{meter.is_rate_source ? "—" : formatYen(price)}</td>
+                <td><strong className="meter-code-with-tag">{allocationParent ? <>{meter.tag && <span className="meter-tag-badge" style={{ backgroundColor: meter.tag.color, color: readableTextColor(meter.tag.color) }}>{meter.tag.tag_name}</span>}按分用親メーター</> : meter.is_allocation_source ? <span className="allocation-source-meter-code">{meter.meter_label ?? meter.meter_code}</span> : <>{meter.tag && <span className="meter-tag-badge" style={{ backgroundColor: meter.tag.color, color: readableTextColor(meter.tag.color) }}>{meter.tag.tag_name}</span>}{meter.parent_meter_id && <span className="child-meter-mark">↳ 子</span>}{meter.meter_code}</>}</strong></td>
+                <td className={`numeric unit-price-cell ${calculationOnly ? "" : unitPriceClass(price)}`}>{calculationOnly ? "—" : formatYen(price)}</td>
                 {showReadings && (
                   <td className="numeric reading-value">
                     {meter.entry?.previous_reading == null ? "—" : formatUsage(Number(meter.entry.previous_reading), getReadingDecimalDigits(meter.subItem.asset_meter_sub_item_id, meter.subItem.input_decimal_digits))}
                   </td>
                 )}
-                <td>
+                <td className="reading-entry-cell">
                   <div className="input-with-state">
                     <div className="reading-input-actions">
                       <input
@@ -3271,45 +3567,58 @@ function CustomItemTable({
                   </div>
                 </td>
                 {showReadings && (
-                  <td className="numeric meter-usage">
-                    <strong>{isUnentered ? "—" : formatUsage(currentUsage, aggregationDigits)}</strong>
+                  <td className={`numeric meter-usage ${meter.is_allocation_source || allocationParent ? "allocation-source-usage" : ""}`}>
+                    <strong>{meter.is_rate_source || isUnentered ? "—" : formatUsage(currentUsage, aggregationDigits)}</strong>
                   </td>
                 )}
-                {meter.is_rate_source ? (
+                {calculationOnly ? (
                   <td className="numeric">—</td>
                 ) : aggregateBilling && firstInBillingGroup ? (
-                  <td className="numeric unit-total tenant-boundary" rowSpan={billingMeterCount}>
+                  <td className="numeric unit-total tenant-boundary" rowSpan={billingMeterCount + allocationResultsForBilling.length}>
                     <span className="merged-value">{formatUsage(billingUsage, aggregationDigits)}</span>
                   </td>
                 ) : !aggregateBilling && firstInUnit ? (
-                  <td className={`numeric unit-total ${unitEndsTenant ? "tenant-boundary" : ""}`} rowSpan={unitMeterCount}>
+                  <td className={`numeric unit-total ${unitEndsTenant ? "tenant-boundary" : ""}`} rowSpan={unitMeterCount + allocationResultsForUnit.length}>
                     <span className="merged-value">{unit ? formatUsage(unitUsage, aggregationDigits) : "—"}</span>
                   </td>
                 ) : null}
-                {meter.is_rate_source ? (
+                {calculationOnly ? (
                   <td className="numeric">—</td>
                 ) : aggregateBilling && firstInBillingGroup ? (
-                  <td className="numeric unit-amount tenant-boundary" rowSpan={billingMeterCount}>
+                  <td className="numeric unit-amount tenant-boundary" rowSpan={billingMeterCount + allocationResultsForBilling.length}>
                     <span className="merged-value">{formatYen(billingAmount)}</span>
                   </td>
                 ) : !aggregateBilling && firstInUnit ? (
-                  <td className={`numeric unit-amount ${unitEndsTenant ? "tenant-boundary" : ""}`} rowSpan={unitMeterCount}>
+                  <td className={`numeric unit-amount ${unitEndsTenant ? "tenant-boundary" : ""}`} rowSpan={unitMeterCount + allocationResultsForUnit.length}>
                     <span className="merged-value">{unitAmount == null ? "未設定" : formatYen(unitAmount)}</span>
                   </td>
                 ) : null}
-                {meter.is_rate_source ? (
+                {calculationOnly ? (
                   <><td className="numeric">—</td><td className="numeric">—</td></>
                 ) : firstInTenant && (
                   <>
-                    <td className="numeric tenant-total" rowSpan={tenantMeters.length}><span className="merged-value">{formatUsage(tenantUsage, aggregationDigits)}</span></td>
-                    <td className="numeric tenant-total" rowSpan={tenantMeters.length}><span className="merged-value">{formatYen(tenantAmount)}</span></td>
+                    <td className="numeric tenant-total" rowSpan={tenantMeters.length + allocationResultsForTenant.length}><span className="merged-value">{formatUsage(tenantUsage, aggregationDigits)}</span></td>
+                    <td className="numeric tenant-total" rowSpan={tenantMeters.length + allocationResultsForTenant.length}><span className="merged-value">{formatYen(tenantAmount)}</span></td>
                   </>
                 )}
-                <td className="numeric">{previousUsage == null ? "—" : formatUsage(previousUsage, aggregationDigits)}</td>
-                <td className="numeric">{formatComparison(comparisonRatio(currentUsage, previousUsage))}</td>
-                <td className="numeric">{previousYearUsage == null ? "—" : formatUsage(previousYearUsage, aggregationDigits)}</td>
-                <td className="numeric">{formatComparison(comparisonRatio(currentUsage, previousYearUsage))}</td>
+                <td className="numeric">{calculationOnly || previousUsage == null ? "—" : formatUsage(previousUsage, aggregationDigits)}</td>
+                <td className="numeric">{calculationOnly ? "—" : formatComparison(comparisonRatio(currentUsage, previousUsage))}</td>
+                <td className="numeric">{calculationOnly || previousYearUsage == null ? "—" : formatUsage(previousYearUsage, aggregationDigits)}</td>
+                <td className="numeric">{calculationOnly ? "—" : formatComparison(comparisonRatio(currentUsage, previousYearUsage))}</td>
               </tr>
+              {tenantAllocationResults.map((result) => (
+                <tr className="allocation-result-row tenant-allocation-result-row unit-group-end tenant-group-end" key={`allocation-result:${result.parent.asset_meter_id}:${result.assignment.unit_id}`}>
+                  <td className="allocation-result-label"><strong className="meter-code-with-tag">{result.source.tag && <span className="meter-tag-badge" style={{ backgroundColor: result.source.tag.color, color: readableTextColor(result.source.tag.color) }}>{result.source.tag.tag_name}</span>}<span>↳ {result.parent.meter_code} 按分</span></strong></td>
+                  <td className={`numeric unit-price-cell ${unitPriceClass(result.price)}`}>{formatYen(result.price)}</td>
+                  {showReadings && <><td className="numeric reading-value">—</td><td className="numeric reading-value">—</td></>}
+                  <td className="numeric meter-usage"><strong>{formatUsage(result.usage, result.digits)}</strong></td>
+                  <td className="numeric">{result.previous == null ? "—" : formatUsage(result.previous, result.digits)}</td>
+                  <td className="numeric">{formatComparison(comparisonRatio(result.usage, result.previous))}</td>
+                  <td className="numeric">{result.previousYear == null ? "—" : formatUsage(result.previousYear, result.digits)}</td>
+                  <td className="numeric">{formatComparison(comparisonRatio(result.usage, result.previousYear))}</td>
+                </tr>
+              ))}
+              </Fragment>
             );
           })}
           {!meters.length && (
