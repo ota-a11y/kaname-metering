@@ -230,6 +230,7 @@ export type MeterSurcharge = {
   billing_period_pattern_id: string | null;
   asset_billing_line_item_id: string | null;
   calculation_scope: "tenant" | "unit";
+  recovery_inclusive_mode?: "from_exclusive" | "use_calculated_inclusive";
 };
 
 export type BillingPeriodPattern = {

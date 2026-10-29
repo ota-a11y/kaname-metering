@@ -828,9 +828,21 @@ export async function saveSurchargeEvidence(
   fail("増額分の仕入データを保存できませんでした", error);
 }
 
-export async function saveSurchargeCalculationScope(client: SupabaseClient, surchargeId: string, calculationScope: "tenant" | "unit") {
+export async function saveSurchargeCalculationSettings(
+  client: SupabaseClient,
+  surchargeId: string,
+  calculationScope: "tenant" | "unit",
+  recoveryInclusiveMode: "from_exclusive" | "use_calculated_inclusive",
+) {
   const { error } = await client.from("asset_meter_surcharge").update({ calculation_scope: calculationScope }).eq("asset_meter_surcharge_id", surchargeId);
-  fail("増額分の計算単位を保存できませんでした", error);
+  fail("増額分の計算設定を保存できませんでした", error);
+  const recoveryModeResult = await client.from("asset_meter_surcharge").update({
+    recovery_inclusive_mode: recoveryInclusiveMode,
+  }).eq("asset_meter_surcharge_id", surchargeId);
+  // DBマイグレーション適用前はブラウザー保存を利用する。列追加後は自動的にDB保存へ切り替わる。
+  if (recoveryModeResult.error && !["42703", "PGRST204"].includes(recoveryModeResult.error.code ?? "")) {
+    fail("回収税込金額の算出方法を保存できませんでした", recoveryModeResult.error);
+  }
 }
 
 export async function loadMeteringConfiguration(
@@ -931,10 +943,21 @@ export async function loadMeteringConfiguration(
   fail("小分類を読み込めませんでした", subItems.error);
   fail("増額分設定を読み込めませんでした", surcharges.error);
   fail("請求期間パターンを読み込めませんでした", periodPatterns.error);
+  const recoveryModes = await client
+    .from("asset_meter_surcharge")
+    .select("asset_meter_surcharge_id, recovery_inclusive_mode")
+    .eq("asset_id", assetId);
+  if (recoveryModes.error && !["42703", "PGRST204"].includes(recoveryModes.error.code ?? "")) {
+    fail("回収税込金額の算出方法を読み込めませんでした", recoveryModes.error);
+  }
+  const recoveryModeById = new Map((recoveryModes.data ?? []).map((row) => [row.asset_meter_surcharge_id, row.recovery_inclusive_mode]));
   return {
     categories: (categories.data ?? []) as MeterCategorySetting[],
     subItems: (subItems.data ?? []) as MeterSubItem[],
-    surcharges: (surcharges.data ?? []) as MeterSurcharge[],
+    surcharges: (surcharges.data ?? []).map((row) => {
+      const recoveryInclusiveMode = recoveryModeById.get(row.asset_meter_surcharge_id);
+      return recoveryInclusiveMode ? { ...row, recovery_inclusive_mode: recoveryInclusiveMode } : row;
+    }) as MeterSurcharge[],
     periodPatterns: (periodPatterns.data ?? []) as BillingPeriodPattern[],
   };
 }
@@ -1028,6 +1051,7 @@ export async function saveMeteringSettings(
       is_billable: row.is_billable,
       billing_period_pattern_id: row.billing_period_pattern_id,
       calculation_scope: row.calculation_scope,
+      recovery_inclusive_mode: row.recovery_inclusive_mode,
     })),
   );
   fail("増額分設定を保存できませんでした", surchargeResult.error);
