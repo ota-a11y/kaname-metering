@@ -16,6 +16,7 @@ export type Asset = {
   short_name: string | null;
 };
 export type UtilityCategory = "electric" | "water" | "gas";
+export type MeterInputMode = "usage" | "reading" | "mixed";
 export type TaxMode = "exclusive" | "inclusive";
 export type AssetUtilitySetting = {
   category: UtilityCategory;
@@ -23,7 +24,9 @@ export type AssetUtilitySetting = {
   default_unit_price: number | null;
   default_tax_mode: TaxMode;
   show_in_rent_roll: boolean;
+  billing_frequency: "monthly" | "odd" | "even";
 };
+export type AssetMeterBuildingSetting = { meter_date_mode: "shared" | "category" };
 export type MeterTag = {
   asset_meter_tag_id: string;
   asset_id: string;
@@ -94,6 +97,7 @@ export type ContractUnit = {
 
 export type MeterReadingRow = {
   asset_meter_id: string;
+  use_reading_input: boolean;
   parent_meter_id: string | null;
   is_rate_source: boolean;
   is_allocation_source: boolean;
@@ -111,7 +115,7 @@ export type MeterReadingRow = {
     asset_meter_sub_item_id: string;
     category: UtilityCategory;
     sub_item_name: string;
-    input_mode: "usage" | "reading";
+    input_mode: MeterInputMode;
     input_decimal_digits: number;
     aggregation_decimal_digits: number;
     usage_rounding_mode: "floor" | "round" | "ceil";
@@ -170,7 +174,7 @@ export type MeterSubItem = {
   sub_item_kind: "basic" | "custom";
   asset_billing_line_item_id: string | null;
   sort_order: number;
-  input_mode: "usage" | "reading";
+  input_mode: MeterInputMode;
   input_decimal_digits: number;
   aggregation_decimal_digits: number;
   usage_rounding_mode: "floor" | "round" | "ceil";
@@ -196,6 +200,8 @@ export type MeterUnitPriceCalculation = {
   sewer_inclusive: number | null;
   unit_price_rounding_digits: number;
   unit_price_rounding_mode: "floor" | "round" | "ceil";
+  unit_price_adjustment_enabled: boolean;
+  unit_price_adjustment_factor: number;
 };
 
 export type UtilityTariffTier = {
@@ -223,6 +229,7 @@ export type MeterSurcharge = {
   is_billable: boolean;
   billing_period_pattern_id: string | null;
   asset_billing_line_item_id: string | null;
+  calculation_scope: "tenant" | "unit";
 };
 
 export type BillingPeriodPattern = {
