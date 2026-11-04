@@ -1380,18 +1380,37 @@ td ul {
   background: #fff;
 }
 .meter-display-settings {
+  position: relative;
   display: grid;
-  grid-template-columns: 160px 140px 120px 120px 170px auto;
+  grid-template-columns: 160px 140px 120px 120px 170px minmax(250px, auto);
   align-items: end;
   gap: 12px;
-  max-width: 990px;
-  padding: 14px 26px 18px;
+  padding: 14px 150px 18px 26px;
   border-bottom: 1px solid #e4ebe8;
   background: #f7faf8;
 }
 .meter-display-settings label { margin: 0; color: #65756f; font-size: 11px; font-weight: 700; }
 .meter-display-settings label.disabled-setting { color: #9aa49f; }
 .meter-display-settings button { white-space: nowrap; }
+.meter-display-settings .variable-price-checkbox {
+  display: inline-flex;
+  align-items: center;
+  align-self: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+.meter-display-settings .variable-price-checkbox input {
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  padding: 0;
+}
+.meter-display-settings .meter-display-save {
+  position: absolute;
+  top: 14px;
+  right: 26px;
+}
 .meter-display-settings input,
 .meter-display-settings select {
   width: 100%;
@@ -1447,6 +1466,12 @@ td ul {
 .drag-handle:hover { color: #0d7058; background: #e9f5f0; }
 .drag-handle:active { cursor: grabbing; }
 .meter-settings-table tr.is-dragging { opacity: .42; }
+.combined-allocation-output-row { background: #f4f9f7; }
+.combined-allocation-output-row td { color: #536a62; font-size: 11px; }
+.combined-output-label { color: #0d7058; font-weight: 800; white-space: nowrap; }
+.combined-allocation-add { display: flex; justify-content: flex-end; padding: 14px 26px 18px; border-top: 1px solid #e4ebe8; background: #f7faf8; }
+.combined-allocation-add button { padding: 9px 14px; border: 1px solid #168168; border-radius: 4px; color: #0d7058; background: #fff; font-weight: 800; cursor: pointer; }
+.combined-allocation-add button:disabled { opacity: .5; cursor: not-allowed; }
 .muted-setting { color: #89958f; font-size: 11px; white-space: nowrap; }
 .meter-adjustment-control { display: flex; align-items: center; justify-content: center; gap: 8px; white-space: nowrap; }
 .meter-adjustment-control input { margin: 0; }
@@ -1472,9 +1497,23 @@ td ul {
 .meter-allocation-modal { width: min(720px, 100%); }
 .meter-allocation-form { display: grid; gap: 16px; margin-top: 18px; }
 .meter-allocation-form > label { display: grid; gap: 6px; color: #52645e; font-size: 12px; font-weight: 700; }
-.meter-allocation-form > label select { padding: 9px 10px; border: 1px solid #ccd9d4; border-radius: 4px; background: #fff; }
+.meter-allocation-form > label select,
+.meter-allocation-form > label input { width: 100%; box-sizing: border-box; padding: 9px 10px; border: 1px solid #ccd9d4; border-radius: 4px; background: #fff; }
+.meter-source-row select { width: 100%; box-sizing: border-box; padding: 8px 10px; border: 1px solid #ccd9d4; border-radius: 4px; background: #fff; }
 .meter-allocation-list { max-height: 390px; overflow: auto; border: 1px solid #d9e2de; border-radius: 5px; }
 .meter-allocation-head, .meter-allocation-row { display: grid; grid-template-columns: 52px minmax(240px, 1fr) 130px; align-items: center; gap: 10px; min-height: 42px; padding: 0 12px; }
+.meter-allocation-row.combined-allocation-unit-row { grid-template-columns: 52px minmax(240px, 1fr) 130px 70px; }
+.combined-unit-order-actions { display: inline-flex; justify-content: flex-end; gap: 4px; }
+.combined-unit-order-actions button { width: 28px; height: 28px; padding: 0; border: 1px solid #b9cbc4; border-radius: 4px; color: #0d7058; background: #fff; }
+.combined-unit-order-actions button:disabled { opacity: .35; }
+.combined-position-head,
+.combined-position-row { display: grid; grid-template-columns: minmax(150px, 1fr) minmax(220px, 1.35fr) 100px 150px; align-items: center; gap: 8px; min-height: 44px; padding: 0 10px; }
+.combined-position-head { color: #52645e; background: #f1f6f4; font-size: 11px; font-weight: 800; }
+.combined-position-row { border-top: 1px solid #e4ebe8; }
+.combined-position-row input,
+.combined-position-row select { width: 100%; box-sizing: border-box; padding: 8px 9px; border: 1px solid #ccd9d4; border-radius: 4px; background: #fff; }
+.combined-position-row > strong { text-align: right; }
+.combined-position-row .combined-unit-order-actions { align-items: center; }
 .meter-allocation-head.with-source-meter, .meter-allocation-row.with-source-meter { grid-template-columns: 52px minmax(240px, 1fr) minmax(180px, 240px); }
 .meter-allocation-head { position: sticky; top: 0; z-index: 1; color: #52645e; background: #f1f6f4; font-size: 11px; font-weight: 800; }
 .meter-allocation-row { border-top: 1px solid #e4ebe8; font-size: 12px; }

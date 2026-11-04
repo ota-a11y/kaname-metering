@@ -154,6 +154,14 @@ export async function updateMeterTag(
   return data as MeterTag;
 }
 
+export async function deleteMeterTag(client: SupabaseClient, tagId: string) {
+  const { error } = await client
+    .from("asset_meter_tag")
+    .delete()
+    .eq("asset_meter_tag_id", tagId);
+  fail("タグを削除できませんでした", error);
+}
+
 export async function saveMeterBillingAdjustment(
   client: SupabaseClient,
   meterId: string,
@@ -190,6 +198,20 @@ function withDatabaseMeterParent<T extends { asset_meter_id: string; parent_asse
 
 function fail(context: string, error: { message: string } | null) {
   if (error) throw new Error(`${context}: ${error.message}`);
+}
+
+function isMissingRecoveryInclusiveModeColumn(error: { code?: string; message: string } | null) {
+  if (!error) return false;
+  return ["42703", "PGRST204"].includes(error.code ?? "")
+    || (error.message.includes("recovery_inclusive_mode") && error.message.includes("schema cache"));
+}
+
+function isMissingVariablePriceForUnpricedOnlyColumn(error: { code?: string; message: string } | null) {
+  if (!error) return false;
+  return ["42703", "PGRST204"].includes(error.code ?? "")
+    || (error.message.includes("variable_price_for_unpriced_only") && (
+      error.message.includes("schema cache") || error.message.includes("does not exist")
+    ));
 }
 
 const billingUnitValue = (id: string) => `billing:${id}`;
@@ -520,7 +542,7 @@ export async function loadMeterManagement(
     return { unit_id: billingUnitValue(row.lease_contract_billing_unit_id), billing_unit_id: row.lease_contract_billing_unit_id, unit_code: firstUnit?.unit_code ?? row.billing_unit_name, unit_name: row.billing_unit_name, floor_label: firstUnit?.floor_label ?? null, rentable_area_sqm: area, unit_type: "office" as const, tenant_name: tenant?.tenant_name ?? null, source_sort_order: baseOrder * 1000 + row.sort_order };
   });
   return {
-    meters: (meters.data ?? []).map((meter) => withDatabaseMeterParent({ ...meter, is_allocation_source: allocationSourceIds.has(meter.asset_meter_id), allocation_common_source_meter_ids: (commonSources.data ?? []).filter((row) => row.asset_meter_id === meter.asset_meter_id).map((row) => row.source_asset_meter_id), assignments: (meter.assignments ?? []).map(normalizeAssignment) })) as unknown as MeterReadingRow[],
+    meters: (meters.data ?? []).map((meter) => withDatabaseMeterParent({ ...meter, is_allocation_source: allocationSourceIds.has(meter.asset_meter_id), allocation_common_source_meter_ids: (commonSources.data ?? []).filter((row) => row.asset_meter_id === meter.asset_meter_id).map((row) => row.source_asset_meter_id), assignments: (meter.assignments ?? []).map(normalizeAssignment).sort((left, right) => right.effective_from.localeCompare(left.effective_from)) })) as unknown as MeterReadingRow[],
     units: [
       ...physicalUnits.map((row, index) => ({ ...row, source_sort_order: index * 1000 })).filter((row) => !groupedPhysicalUnitIds.has(row.unit_id)),
       ...billingOptions,
@@ -542,6 +564,35 @@ export async function createMeter(
     : await client.rpc("create_kanameter_meter", { p_asset_id: assetId, p_asset_meter_sub_item_id: subItemId, p_meter_code: meterCode, p_unit_id: unitId });
   fail("メーターを追加できませんでした", error);
   return data as string;
+}
+
+export async function createOrReuseMeter(
+  client: SupabaseClient,
+  assetId: string,
+  subItemId: string,
+  meterCode: string,
+  unitId: string,
+  effectiveFrom: string,
+) {
+  const normalizedCode = meterCode.trim();
+  const { data: existing, error: loadError } = await client
+    .from("asset_meter")
+    .select("asset_meter_id, asset_meter_sub_item_id")
+    .eq("asset_id", assetId)
+    .eq("meter_code", normalizedCode)
+    .maybeSingle();
+  fail("同名メーターを確認できませんでした", loadError);
+  if (!existing) return createMeter(client, assetId, subItemId, normalizedCode, unitId);
+  if (existing.asset_meter_sub_item_id !== subItemId) {
+    throw new Error(`メーター名「${normalizedCode}」は別の小分類で使用されています。`);
+  }
+  const { error: restoreError } = await client
+    .from("asset_meter")
+    .update({ is_active: true, meter_label: null })
+    .eq("asset_meter_id", existing.asset_meter_id);
+  fail("同名メーターを再利用できませんでした", restoreError);
+  await assignMeterUnit(client, existing.asset_meter_id, unitId, effectiveFrom);
+  return existing.asset_meter_id as string;
 }
 
 export async function assignMeterUnit(
@@ -623,6 +674,38 @@ export async function loadAllocationSourceMeterIds(
   ];
 }
 
+export async function saveCombinedAllocationSourceMeters(
+  client: SupabaseClient,
+  meterId: string,
+  sourceMeterIds: string[],
+) {
+  const { error: deleteError } = await client
+    .from("asset_meter_allocation_common_source")
+    .delete()
+    .eq("asset_meter_id", meterId);
+  fail("合算メーター設定を保存できませんでした", deleteError);
+  if (!sourceMeterIds.length) return;
+  const { error } = await client.from("asset_meter_allocation_common_source").insert(
+    sourceMeterIds.map((sourceMeterId) => ({
+      asset_meter_id: meterId,
+      source_asset_meter_id: sourceMeterId,
+    })),
+  );
+  fail("合算メーター設定を保存できませんでした", error);
+}
+
+export async function saveMeterLabel(
+  client: SupabaseClient,
+  meterId: string,
+  label: string | null,
+) {
+  const { error } = await client
+    .from("asset_meter")
+    .update({ meter_label: label?.trim() || null })
+    .eq("asset_meter_id", meterId);
+  fail("合算名を保存できませんでした", error);
+}
+
 export async function updateMeterSubItemDisplaySettings(
   client: SupabaseClient,
   subItemId: string,
@@ -631,6 +714,7 @@ export async function updateMeterSubItemDisplaySettings(
     inputDecimalDigits: number;
     aggregationDecimalDigits: number;
     usageRoundingMode: "floor" | "round" | "ceil";
+    variablePriceForUnpricedOnly: boolean;
   },
 ) {
   const { error } = await client
@@ -644,6 +728,13 @@ export async function updateMeterSubItemDisplaySettings(
     })
     .eq("asset_meter_sub_item_id", subItemId);
   fail("メーターの桁数設定を保存できませんでした", error);
+  const variablePriceResult = await client
+    .from("asset_meter_sub_item")
+    .update({ variable_price_for_unpriced_only: settings.variablePriceForUnpricedOnly })
+    .eq("asset_meter_sub_item_id", subItemId);
+  if (variablePriceResult.error && !isMissingVariablePriceForUnpricedOnlyColumn(variablePriceResult.error)) {
+    fail("変動単価の適用設定を保存できませんでした", variablePriceResult.error);
+  }
 }
 
 export async function loadMeterReadingPeriod(
@@ -840,7 +931,7 @@ export async function saveSurchargeCalculationSettings(
     recovery_inclusive_mode: recoveryInclusiveMode,
   }).eq("asset_meter_surcharge_id", surchargeId);
   // DBマイグレーション適用前はブラウザー保存を利用する。列追加後は自動的にDB保存へ切り替わる。
-  if (recoveryModeResult.error && !["42703", "PGRST204"].includes(recoveryModeResult.error.code ?? "")) {
+  if (recoveryModeResult.error && !isMissingRecoveryInclusiveModeColumn(recoveryModeResult.error)) {
     fail("回収税込金額の算出方法を保存できませんでした", recoveryModeResult.error);
   }
 }
@@ -947,13 +1038,25 @@ export async function loadMeteringConfiguration(
     .from("asset_meter_surcharge")
     .select("asset_meter_surcharge_id, recovery_inclusive_mode")
     .eq("asset_id", assetId);
-  if (recoveryModes.error && !["42703", "PGRST204"].includes(recoveryModes.error.code ?? "")) {
+  if (recoveryModes.error && !isMissingRecoveryInclusiveModeColumn(recoveryModes.error)) {
     fail("回収税込金額の算出方法を読み込めませんでした", recoveryModes.error);
   }
+  const variablePriceModes = await client
+    .from("asset_meter_sub_item")
+    .select("asset_meter_sub_item_id, variable_price_for_unpriced_only")
+    .eq("asset_id", assetId);
+  const missingVariablePriceColumn = isMissingVariablePriceForUnpricedOnlyColumn(variablePriceModes.error);
+  if (variablePriceModes.error && !missingVariablePriceColumn) {
+    fail("変動単価の適用設定を読み込めませんでした", variablePriceModes.error);
+  }
   const recoveryModeById = new Map((recoveryModes.data ?? []).map((row) => [row.asset_meter_surcharge_id, row.recovery_inclusive_mode]));
+  const variablePriceModeById = new Map((variablePriceModes.data ?? []).map((row) => [row.asset_meter_sub_item_id, Boolean(row.variable_price_for_unpriced_only)]));
   return {
     categories: (categories.data ?? []) as MeterCategorySetting[],
-    subItems: (subItems.data ?? []) as MeterSubItem[],
+    subItems: (subItems.data ?? []).map((row) => ({
+      ...row,
+      variable_price_for_unpriced_only: variablePriceModeById.get(row.asset_meter_sub_item_id) ?? false,
+    })) as MeterSubItem[],
     surcharges: (surcharges.data ?? []).map((row) => {
       const recoveryInclusiveMode = recoveryModeById.get(row.asset_meter_surcharge_id);
       return recoveryInclusiveMode ? { ...row, recovery_inclusive_mode: recoveryInclusiveMode } : row;
@@ -1018,8 +1121,24 @@ export async function saveMeteringSettings(
     const removed = await client.from("asset_meter_sub_item").delete().in("asset_meter_sub_item_id", removedSubItemIds);
     fail("削除した小分類を保存できませんでした", removed.error);
   }
+  const existingSubItems = await client
+    .from("asset_meter_sub_item")
+    .select("asset_meter_sub_item_id, category, sub_item_name")
+    .eq("asset_id", assetId);
+  fail("既存の小分類を確認できませんでした", existingSubItems.error);
+  const submittedIds = new Set(subItems.map((row) => row.asset_meter_sub_item_id));
+  const existingByName = new Map((existingSubItems.data ?? []).map((row) => [
+    `${row.category}\u0000${row.sub_item_name.trim().toLocaleLowerCase("ja-JP")}`,
+    row.asset_meter_sub_item_id,
+  ]));
+  const normalizedSubItems = subItems.map((row) => {
+    const existingId = existingByName.get(`${row.category}\u0000${row.sub_item_name.trim().toLocaleLowerCase("ja-JP")}`);
+    return existingId && existingId !== row.asset_meter_sub_item_id && !submittedIds.has(existingId)
+      ? { ...row, asset_meter_sub_item_id: existingId }
+      : row;
+  });
   const subItemResult = await client.from("asset_meter_sub_item").upsert(
-    subItems.map((row) => ({
+    normalizedSubItems.map((row) => ({
       asset_meter_sub_item_id: row.asset_meter_sub_item_id,
       asset_id: assetId,
       category: row.category,
@@ -1039,10 +1158,9 @@ export async function saveMeteringSettings(
       show_unit_price_on_invoice: row.show_unit_price_on_invoice,
       is_monthly_fixed: row.sub_item_kind === "custom" && row.is_monthly_fixed,
     })),
-  );
+  ).select("asset_meter_sub_item_id, category, sub_item_name, sub_item_kind, asset_billing_line_item_id, sort_order, input_mode, input_decimal_digits, aggregation_decimal_digits, usage_rounding_mode, billing_period_pattern_id, price_mode, default_unit_price, tax_mode, tax_rounding_mode, show_unit_price_on_invoice, is_monthly_fixed");
   fail("小分類設定を保存できませんでした", subItemResult.error);
-  const surchargeResult = await client.from("asset_meter_surcharge").upsert(
-    surcharges.map((row) => ({
+  const surchargeRows = surcharges.map((row) => ({
       asset_meter_surcharge_id: row.asset_meter_surcharge_id,
       asset_id: assetId,
       category: row.category,
@@ -1052,9 +1170,18 @@ export async function saveMeteringSettings(
       billing_period_pattern_id: row.billing_period_pattern_id,
       calculation_scope: row.calculation_scope,
       recovery_inclusive_mode: row.recovery_inclusive_mode,
-    })),
-  );
+    }));
+  let surchargeResult = await client.from("asset_meter_surcharge").upsert(surchargeRows);
+  if (isMissingRecoveryInclusiveModeColumn(surchargeResult.error)) {
+    surchargeResult = await client.from("asset_meter_surcharge").upsert(
+      surchargeRows.map(({ recovery_inclusive_mode: _recoveryInclusiveMode, ...row }) => row),
+    );
+  }
   fail("増額分設定を保存できませんでした", surchargeResult.error);
+  return (subItemResult.data ?? []).map((row) => ({
+    ...row,
+    variable_price_for_unpriced_only: normalizedSubItems.find((item) => item.asset_meter_sub_item_id === row.asset_meter_sub_item_id)?.variable_price_for_unpriced_only ?? false,
+  })) as MeterSubItem[];
 }
 
 export async function saveMeterReading(
