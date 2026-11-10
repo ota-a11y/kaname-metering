@@ -12,11 +12,16 @@ globalThis.localStorage = { getItem: () => null };
 const source = await readFile('src/pages/KanameterWorkspacePage.tsx', 'utf8');
 const outfile = resolve('.tmp-runtime/verify-combined-allocation-component.mjs');
 await build({
-  stdin: { contents: `${source}\nexport { BasicChargeTable, CustomItemTable, SurchargeWorkspace, adjustedMeterUsage, billableContractsForSubItem, VariableUnitPriceCalculator };`, loader: 'tsx', resolveDir: resolve('src/pages') },
+  stdin: { contents: `${source}\nexport { BasicChargeTable, CustomItemTable, SurchargeWorkspace, adjustedMeterUsage, billableContractsForSubItem, calculateMonthAllocation, calculateUsageCharge, VariableUnitPriceCalculator };`, loader: 'tsx', resolveDir: resolve('src/pages') },
   bundle: true, packages: 'external', platform: 'node', format: 'esm', jsx: 'automatic',
   define: { 'import.meta.env': '{}' }, outfile,
 });
-const { BasicChargeTable, CustomItemTable, SurchargeWorkspace, adjustedMeterUsage, billableContractsForSubItem, VariableUnitPriceCalculator } = await import(pathToFileURL(outfile).href);
+const { BasicChargeTable, CustomItemTable, SurchargeWorkspace, adjustedMeterUsage, billableContractsForSubItem, calculateMonthAllocation, calculateUsageCharge, VariableUnitPriceCalculator } = await import(pathToFileURL(outfile).href);
+const exclusiveRounding = calculateUsageCharge([{ meterId: 'exclusive', usage: 0.1, price: 10.01, taxMode: 'exclusive' }], 1, 'round', 'meter', 'floor');
+assert.equal(exclusiveRounding.amount, 2, 'exclusive unit-price charges always round fractional yen up');
+const inclusiveRounding = calculateUsageCharge([{ meterId: 'inclusive', usage: 10, price: 10, taxMode: 'inclusive' }], 1, 'round', 'meter', 'floor');
+assert.equal(inclusiveRounding.amount, 91, 'inclusive unit price is divided by 1.1 and rounded up at the third decimal before multiplication');
+assert.equal(calculateMonthAllocation('100.1', [{ id: 'tenant', ratio: { mode: 'multiplier', value: '0.5' } }]).rows[0].amount, 51, 'allocated net amounts always round fractional yen up');
 const unit = (id) => ({ unit_id: id, unit_code: id, unit_name: id, floor_label: '2', unit_type: 'office' });
 const assignment = (id, weight = 1, method = 'single') => ({ unit_id: id, unit: unit(id), allocation_method: method, allocation_weight: weight });
 const meter = (id, name, order, assignments) => ({
@@ -129,7 +134,7 @@ html = render({ meters: [...meters, regular] });
 assert.ok(html.indexOf('通常メーター') < html.indexOf('└2F按分用 按分'), 'allocation result follows the configured position within the tenant');
 assert.equal((html.match(/└2F按分用 按分/g) ?? []).length, 2, 'result is not duplicated after a regular meter');
 verifyGrid(html, 14);
-verifyGrid(render({ meters: [...meters, regular], taxMode: 'inclusive' }), 15);
+verifyGrid(render({ meters: [...meters, regular], taxMode: 'inclusive' }), 16);
 const meterScope = render({ meters: [...meters, regular], amountCalculationScope: 'meter' });
 verifyGrid(meterScope, 13);
 assert.ok(!meterScope.includes('区画ごと</th>'), 'meter scope hides unit usage');
@@ -137,7 +142,7 @@ const tenantScope = render({ meters: [...meters, regular], amountCalculationScop
 verifyGrid(tenantScope, 12);
 assert.ok(!tenantScope.includes('区画ごと</th>'), 'tenant scope hides unit usage');
 const inclusiveTenantScope = render({ meters: [...meters, regular], amountCalculationScope: 'tenant', taxMode: 'inclusive', subItemTaxMode: 'inclusive' });
-verifyGrid(inclusiveTenantScope, 13);
+verifyGrid(inclusiveTenantScope, 14);
 assert.ok(inclusiveTenantScope.includes('金額（税込）') && inclusiveTenantScope.includes('金額（税抜）'), 'tenant scope shows both tax amounts');
 
 // The existing meter-usage allocation (e.g. Sakaisuji-Hommachi) still appends
@@ -153,6 +158,9 @@ verifyGrid(html, 14);
 
 html = render({ usageOnly: true });
 assert.ok(html.includes('160.0') && html.includes('240.0'), 'usage-only view includes tenants with allocation meters only');
+const inclusiveUsageOnly = render({ usageOnly: true, taxMode: 'inclusive', subItemTaxMode: 'inclusive' });
+verifyGrid(inclusiveUsageOnly, 13);
+assert.match(inclusiveUsageOnly, /<th colSpan="2">単価<\/th>.*?<tr><th>税込<\/th><th>税抜<\/th>/s, 'usage-only view also splits inclusive and exclusive unit prices');
 const mixedContracts = contracts.map((row) => ({ ...row,
   prices: [{ asset_billing_line_item_id: null, unit_price: 12, tax_mode: 'exclusive', billing_month_prices: [] }],
   meterTerms: [{ asset_meter_sub_item_id: 'electric', price_mode: row.unit.unit_id === '202' ? 'fixed' : 'amount', tax_mode: row.unit.unit_id === '202' ? 'exclusive' : 'inclusive' }],
@@ -160,10 +168,22 @@ const mixedContracts = contracts.map((row) => ({ ...row,
 html = render({ contracts: mixedContracts, unitPriceOverride: 20, taxMode: 'inclusive' });
 assert.ok(bodyRows(html).find((row) => row.includes('Tenant 202')).includes('>12 円<'), 'fixed tenant keeps its contract price');
 assert.ok(bodyRows(html).find((row) => row.includes('Tenant 201')).includes('>20 円<'), 'variable tenant receives the calculated price');
-verifyGrid(html, 15);
+assert.ok(bodyRows(html).find((row) => row.includes('Tenant 202')).includes('>13.2 円<'), 'exclusive contract also displays its tax-inclusive unit price');
+assert.ok(bodyRows(html).find((row) => row.includes('Tenant 201')).includes('>18.19 円<'), 'inclusive contract displays its rounded tax-exclusive unit price');
+assert.match(html, /<th colSpan="2"[^>]*>単価.*?<\/tr><tr><th[^>]*>税込.*?<\/th><th[^>]*>税抜/s, 'inclusive billing uses a two-row, two-column unit-price header');
+verifyGrid(html, 16);
+const categoryInclusiveContracts = contracts.map((row, index) => ({
+  ...row,
+  prices: [],
+  categoryPrices: [{ category: 'electric', unit_price: index === 0 ? 33 : 30, tax_mode: 'inclusive', billing_month_prices: [] }],
+  meterTerms: [],
+}));
+const categoryInclusive = render({ contracts: categoryInclusiveContracts, taxMode: 'inclusive', subItemTaxMode: 'exclusive' });
+assert.ok(bodyRows(categoryInclusive).find((row) => row.includes('Tenant 202')).includes('>33 円<') && bodyRows(categoryInclusive).find((row) => row.includes('Tenant 202')).includes('>30 円<'), 'registered 33-yen gross price is displayed as 33 yen gross and 30 yen net');
+assert.ok(bodyRows(categoryInclusive).find((row) => row.includes('Tenant 201')).includes('>30 円<') && bodyRows(categoryInclusive).find((row) => row.includes('Tenant 201')).includes('>27.28 円<'), 'registered 30-yen gross price is converted back to 27.28 yen net');
 assert.ok(html.includes('税込<span') && html.includes('税抜<span'), 'unit scope displays gross and net columns when an inclusive contract exists');
 assert.ok(bodyRows(html).find((row) => row.includes('Tenant 201')).includes('>4,800 円</span>'), 'inclusive unit amount is displayed before tax conversion');
-assert.ok(html.match(/<tfoot>.*?<\/tfoot>/s)[0].includes('>6,284 円</th>'), 'tenant totals add converted net amounts');
+assert.ok(html.match(/<tfoot>.*?<\/tfoot>/s)[0].includes('>6,286 円</th>'), 'inclusive prices are converted by rounding up at the third decimal, then net amounts are rounded up');
 const calculatorProps = { itemName: '電気代', category: 'electric', priceMode: 'amount', billingMonth: '2026-11', tariffDefinition: null, rateSourceMeters: [], initialCalculation: {
   billed_inclusive: 110000, billed_tax: 10000, billed_exclusive: 100000, billed_usage: 1000,
   unit_price_adjustment_enabled: true, unit_price_adjustment_factor: 1.2,

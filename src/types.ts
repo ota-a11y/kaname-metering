@@ -45,7 +45,6 @@ export type ContractUnit = {
   lease_contract_unit_id: string;
   lease_contract_billing_unit_id?: string;
   member_unit_ids?: string[];
-  utility_amount_rounding_mode: "floor" | "round" | "ceil";
   unit: {
     unit_id: string;
     unit_code: string;
@@ -92,7 +91,6 @@ export type ContractUnit = {
     electric_sum_mode: "aggregate" | "perMeter";
     water_sum_mode: "aggregate" | "perMeter";
     gas_sum_mode: "aggregate" | "perMeter";
-    amount_rounding_mode: "floor" | "round" | "ceil";
     units: Array<{ unit_id: string }>;
     items: Array<{
       asset_meter_sub_item_id: string;

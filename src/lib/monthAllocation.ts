@@ -1,7 +1,6 @@
 export type MonthAllocationTarget = {
   id: string;
   ratio: MonthAllocationRatio;
-  roundingMode: "floor" | "round" | "ceil";
 };
 
 export type MonthAllocationRatio =
@@ -99,8 +98,7 @@ export function calculateMonthAllocation(amountInput: string, targets: MonthAllo
   const rows = targets.map((target) => {
     const ratio = allocationRatioValue(target.ratio);
     const raw = billedAmount * ratio;
-    const amount = target.roundingMode === "ceil" ? Math.ceil(raw)
-      : target.roundingMode === "round" ? Math.round(raw) : Math.floor(raw);
+    const amount = Math.ceil(raw);
     return { id: target.id, ratio, amount };
   });
   return { billedAmount, rows };

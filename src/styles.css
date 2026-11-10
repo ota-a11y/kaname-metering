@@ -813,16 +813,6 @@ td ul {
   min-width: 0;
   padding: 0 clamp(36px, 5vw, 80px) 70px;
 }
-.workspace-legend {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 28px;
-  padding-top: 14px;
-  border-top: 1px solid #d9e2de;
-  color: #62736d;
-  font-size: 12px;
-}
 .meter-configuration-panel { display: grid; gap: 14px; }
 .configuration-category { padding: 14px; border: 1px solid #d6e1dd; border-radius: 8px; background: #fff; }
 .configuration-category.utility-electric { border-color: #d9b84a; background: #fff9df; }
@@ -1030,29 +1020,6 @@ td ul {
 .workspace-data-table td.unit-price-unset {
   color: #7b8581;
   background: #eef1f0;
-}
-.tenant-name-with-rounding {
-  display: inline-flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-.rounding-badge {
-  display: inline-flex;
-  align-items: center;
-  min-height: 18px;
-  padding: 1px 5px;
-  border: 1px solid;
-  border-radius: 999px;
-  font-size: 9px;
-  font-weight: 800;
-  line-height: 1.2;
-  white-space: nowrap;
-}
-.rounding-floor {
-  color: #a31e59;
-  border-color: #f0a9c8;
-  background: #ffe3ef;
 }
 .column-resizer {
   position: absolute;
