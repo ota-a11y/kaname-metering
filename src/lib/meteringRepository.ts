@@ -1124,16 +1124,16 @@ export async function saveMeteringSettings(
   }
   const existingSubItems = await client
     .from("asset_meter_sub_item")
-    .select("asset_meter_sub_item_id, category, sub_item_name")
+    .select("asset_meter_sub_item_id, category, sub_item_name, sub_item_kind")
     .eq("asset_id", assetId);
   fail("既存の小分類を確認できませんでした", existingSubItems.error);
   const submittedIds = new Set(subItems.map((row) => row.asset_meter_sub_item_id));
   const existingByName = new Map((existingSubItems.data ?? []).map((row) => [
-    `${row.category}\u0000${row.sub_item_name.trim().toLocaleLowerCase("ja-JP")}`,
+    `${row.category}\u0000${row.sub_item_kind}\u0000${row.sub_item_name.trim().toLocaleLowerCase("ja-JP")}`,
     row.asset_meter_sub_item_id,
   ]));
   const normalizedSubItems = subItems.map((row) => {
-    const existingId = existingByName.get(`${row.category}\u0000${row.sub_item_name.trim().toLocaleLowerCase("ja-JP")}`);
+    const existingId = existingByName.get(`${row.category}\u0000${row.sub_item_kind}\u0000${row.sub_item_name.trim().toLocaleLowerCase("ja-JP")}`);
     return existingId && existingId !== row.asset_meter_sub_item_id && !submittedIds.has(existingId)
       ? { ...row, asset_meter_sub_item_id: existingId }
       : row;
