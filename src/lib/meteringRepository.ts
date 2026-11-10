@@ -77,7 +77,7 @@ export async function loadMeterUnitPriceCalculations(
 ): Promise<MeterUnitPriceCalculation[]> {
   const { data, error } = await client
     .from("meter_reading_month_sub_item")
-    .select("asset_meter_sub_item_id, unit_price, billed_inclusive, billed_tax, billed_exclusive, billed_usage, rate_source_meter_id, tariff_code, water_inclusive, sewer_inclusive, unit_price_rounding_digits, unit_price_rounding_mode, unit_price_adjustment_enabled, unit_price_adjustment_factor")
+    .select("asset_meter_sub_item_id, unit_price, billed_inclusive, billed_basic_charge, billed_tax, billed_exclusive, billed_usage, rate_source_meter_id, tariff_code, water_inclusive, sewer_inclusive, unit_price_rounding_digits, unit_price_rounding_mode, unit_price_adjustment_enabled, unit_price_adjustment_factor")
     .eq("asset_id", assetId)
     .eq("billing_month", `${billingMonth}-01`);
   fail("月次単価計算を読み込めませんでした", error);
@@ -281,13 +281,13 @@ export async function loadContractUnits(
     client
       .from("lease_contract_unit")
       .select(
-        `lease_contract_unit_id, utility_amount_rounding_mode, unit:unit_master!inner(unit_id, unit_code, unit_name, floor_label, unit_type, property_id), contract:lease_contract!inner(lease_contract_id, tenant_id, contract_status, contract_start_date, contract_end_date, tenant:tenant_master(tenant_name)), prices:lease_contract_unit_utility_price(asset_billing_line_item_id, unit_price, tax_mode, billing_month_prices, item:asset_billing_line_item(line_item_name)), categoryPrices:lease_contract_unit_category_price(category, unit_price, tax_mode, billing_month_prices), basics:lease_contract_unit_basic_charge(category, amount, tax_mode)`,
+        `lease_contract_unit_id, utility_amount_rounding_mode, unit:unit_master!inner(unit_id, unit_code, unit_name, floor_label, unit_type, property_id), contract:lease_contract!inner(lease_contract_id, tenant_id, contract_status, contract_start_date, contract_end_date, tenant:tenant_master(tenant_name)), prices:lease_contract_unit_utility_price(asset_billing_line_item_id, unit_price, tax_mode, billing_month_prices, item:asset_billing_line_item(line_item_name)), categoryPrices:lease_contract_unit_category_price(category, unit_price, tax_mode, billing_month_prices), basics:lease_contract_unit_basic_charge(category, amount, tax_mode), meterTerms:lease_contract_unit_meter_term(asset_meter_sub_item_id, price_mode, tax_mode, show_unit_price_on_invoice, show_usage_on_invoice)`,
       )
       .eq("unit.property_id", assetId)
       .order("lease_contract_unit_id"),
     client
       .from("lease_contract_billing_unit")
-      .select(`lease_contract_billing_unit_id, billing_unit_name, contract:lease_contract!inner(lease_contract_id, tenant_id, contract_status, contract_start_date, contract_end_date, tenant:tenant_master(tenant_name)), members:lease_contract_billing_unit_member!inner(contractUnit:lease_contract_unit!inner(lease_contract_unit_id, utility_amount_rounding_mode, unit:unit_master!inner(unit_id, floor_label, property_id))), prices:lease_contract_billing_unit_utility_price(asset_billing_line_item_id, unit_price, tax_mode, billing_month_prices, item:asset_billing_line_item(line_item_name)), categoryPrices:lease_contract_billing_unit_category_price(category, unit_price, tax_mode, billing_month_prices), basics:lease_contract_billing_unit_basic_charge(category, amount, tax_mode)`)
+      .select(`lease_contract_billing_unit_id, billing_unit_name, contract:lease_contract!inner(lease_contract_id, tenant_id, contract_status, contract_start_date, contract_end_date, tenant:tenant_master(tenant_name)), members:lease_contract_billing_unit_member!inner(contractUnit:lease_contract_unit!inner(lease_contract_unit_id, utility_amount_rounding_mode, unit:unit_master!inner(unit_id, floor_label, property_id))), prices:lease_contract_billing_unit_utility_price(asset_billing_line_item_id, unit_price, tax_mode, billing_month_prices, item:asset_billing_line_item(line_item_name)), categoryPrices:lease_contract_billing_unit_category_price(category, unit_price, tax_mode, billing_month_prices), basics:lease_contract_billing_unit_basic_charge(category, amount, tax_mode), meterTerms:lease_contract_billing_unit_meter_term(asset_meter_sub_item_id, price_mode, tax_mode, show_unit_price_on_invoice, show_usage_on_invoice)`)
       .eq("members.contractUnit.unit.property_id", assetId)
       .order("sort_order"),
     client
@@ -308,7 +308,7 @@ export async function loadContractUnits(
   );
   type BillingMemberUnit = { lease_contract_unit_id: string; utility_amount_rounding_mode: ContractUnit["utility_amount_rounding_mode"]; unit: { unit_id: string; floor_label: string | null } | Array<{ unit_id: string; floor_label: string | null }> };
   const asArray = <T>(value: T | T[] | null | undefined): T[] => value == null ? [] : Array.isArray(value) ? value : [value];
-  const billingRows = ((billingUnits.data ?? []) as unknown as Array<{ lease_contract_billing_unit_id: string; billing_unit_name: string; contract: ContractUnit["contract"] | ContractUnit["contract"][]; members: Array<{ contractUnit: BillingMemberUnit | BillingMemberUnit[] }>; prices: ContractUnit["prices"]; categoryPrices: ContractUnit["categoryPrices"]; basics: ContractUnit["basics"] }>).filter((row) => row.members.length > 0);
+  const billingRows = ((billingUnits.data ?? []) as unknown as Array<{ lease_contract_billing_unit_id: string; billing_unit_name: string; contract: ContractUnit["contract"] | ContractUnit["contract"][]; members: Array<{ contractUnit: BillingMemberUnit | BillingMemberUnit[] }>; prices: ContractUnit["prices"]; categoryPrices: ContractUnit["categoryPrices"]; basics: ContractUnit["basics"]; meterTerms: ContractUnit["meterTerms"] }>).filter((row) => row.members.length > 0);
   const groupedContractUnitIds = new Set(billingRows.flatMap((row) => row.members.flatMap((member) => asArray(member.contractUnit).map((unit) => unit.lease_contract_unit_id))));
   const rows = ((contracts.data ?? []) as unknown as ContractUnit[]).filter((row) => !groupedContractUnitIds.has(row.lease_contract_unit_id));
   for (const billing of billingRows) {
@@ -321,7 +321,7 @@ export async function loadContractUnits(
       utility_amount_rounding_mode: members[0]?.utility_amount_rounding_mode ?? "floor",
       unit: { unit_id: billingUnitValue(billing.lease_contract_billing_unit_id), unit_code: billing.billing_unit_name, unit_name: billing.billing_unit_name, floor_label: asArray(members[0]?.unit)[0]?.floor_label ?? null, unit_type: "office" },
       contract: contract ?? null,
-      prices: billing.prices ?? [], categoryPrices: billing.categoryPrices ?? [], basics: billing.basics ?? [], meterBilling: [],
+      prices: billing.prices ?? [], categoryPrices: billing.categoryPrices ?? [], basics: billing.basics ?? [], meterTerms: billing.meterTerms ?? [], meterBilling: [],
     });
   }
   for (const row of rows) {
@@ -356,12 +356,13 @@ export async function loadMeterReadings(
   assetId: string,
   billingMonth: string,
   category: UtilityCategory,
-  comparisonMonthOffset = 1,
+  _comparisonMonthOffset = 1,
 ): Promise<{ rows: MeterReadingRow[]; status: "draft" | "confirmed" | null }> {
   const month = `${billingMonth}-01`;
-  const previousMonth = new Date(Date.UTC(
+  // 検針値は請求・比較月のずれに関係なく、直前の暦月から引き継ぐ。
+  const previousReadingMonth = new Date(Date.UTC(
     Number(billingMonth.slice(0, 4)),
-    Number(billingMonth.slice(5, 7)) - 1 - comparisonMonthOffset,
+    Number(billingMonth.slice(5, 7)) - 2,
     1,
   ))
     .toISOString()
@@ -385,7 +386,7 @@ export async function loadMeterReadings(
       .from("meter_reading_entry")
       .select("asset_meter_id, current_reading")
       .eq("asset_id", assetId)
-      .eq("billing_month", previousMonth),
+      .eq("billing_month", previousReadingMonth),
     client
       .from("meter_reading_month")
       .select("status")
@@ -1016,7 +1017,7 @@ export async function loadMeteringConfiguration(
     client
       .from("asset_meter_sub_item")
       .select(
-        "asset_meter_sub_item_id, category, sub_item_name, sub_item_kind, asset_billing_line_item_id, sort_order, input_mode, input_decimal_digits, aggregation_decimal_digits, usage_rounding_mode, billing_period_pattern_id, price_mode, default_unit_price, tax_mode, tax_rounding_mode, show_unit_price_on_invoice, is_monthly_fixed",
+        "asset_meter_sub_item_id, category, sub_item_name, sub_item_kind, asset_billing_line_item_id, sort_order, input_mode, input_decimal_digits, aggregation_decimal_digits, usage_rounding_mode, billing_period_pattern_id, price_mode, default_unit_price, tax_mode, tax_rounding_mode, show_unit_price_on_invoice, show_usage_on_invoice, is_monthly_fixed, calculation_mode, amount_calculation_scope",
       )
       .eq("asset_id", assetId)
       .order("sort_order"),
@@ -1156,9 +1157,12 @@ export async function saveMeteringSettings(
       tax_mode: row.tax_mode,
       tax_rounding_mode: row.tax_rounding_mode,
       show_unit_price_on_invoice: row.show_unit_price_on_invoice,
-      is_monthly_fixed: row.sub_item_kind === "custom" && row.is_monthly_fixed,
+      show_usage_on_invoice: row.show_usage_on_invoice,
+      is_monthly_fixed: row.sub_item_kind === "custom" && row.calculation_mode !== "meter",
+      calculation_mode: row.calculation_mode,
+      amount_calculation_scope: row.amount_calculation_scope,
     })),
-  ).select("asset_meter_sub_item_id, category, sub_item_name, sub_item_kind, asset_billing_line_item_id, sort_order, input_mode, input_decimal_digits, aggregation_decimal_digits, usage_rounding_mode, billing_period_pattern_id, price_mode, default_unit_price, tax_mode, tax_rounding_mode, show_unit_price_on_invoice, is_monthly_fixed");
+  ).select("asset_meter_sub_item_id, category, sub_item_name, sub_item_kind, asset_billing_line_item_id, sort_order, input_mode, input_decimal_digits, aggregation_decimal_digits, usage_rounding_mode, billing_period_pattern_id, price_mode, default_unit_price, tax_mode, tax_rounding_mode, show_unit_price_on_invoice, show_usage_on_invoice, is_monthly_fixed, calculation_mode, amount_calculation_scope");
   fail("小分類設定を保存できませんでした", subItemResult.error);
   const surchargeRows = surcharges.map((row) => ({
       asset_meter_surcharge_id: row.asset_meter_surcharge_id,

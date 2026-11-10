@@ -35,6 +35,13 @@ export type MeterTag = {
   created_at?: string;
 };
 export type ContractUnit = {
+  meterTerms: Array<{
+    asset_meter_sub_item_id: string;
+    price_mode: "fixed" | "amount" | "master_meter";
+    tax_mode: TaxMode;
+    show_unit_price_on_invoice: boolean;
+    show_usage_on_invoice: boolean;
+  }>;
   lease_contract_unit_id: string;
   lease_contract_billing_unit_id?: string;
   member_unit_ids?: string[];
@@ -182,9 +189,12 @@ export type MeterSubItem = {
   price_mode: "fixed" | "amount" | "master_meter";
   default_unit_price: number | null;
   tax_mode: TaxMode;
-  tax_rounding_mode: "floor" | "round" | "ceil";
+  tax_rounding_mode: "none" | "floor" | "round" | "ceil";
   show_unit_price_on_invoice: boolean;
+  show_usage_on_invoice: boolean;
   is_monthly_fixed: boolean;
+  calculation_mode: "meter" | "fixed" | "allocated_amount";
+  amount_calculation_scope: "meter" | "unit" | "tenant";
   variable_price_for_unpriced_only?: boolean;
 };
 
@@ -192,6 +202,7 @@ export type MeterUnitPriceCalculation = {
   asset_meter_sub_item_id: string;
   unit_price: number | null;
   billed_inclusive: number | null;
+  billed_basic_charge: number | null;
   billed_tax: number | null;
   billed_exclusive: number | null;
   billed_usage: number | null;

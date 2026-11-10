@@ -1013,6 +1013,7 @@ td ul {
 }
 .workspace-data-table td.unit-price-cell {
   font-weight: 700;
+  text-align: center;
 }
 .workspace-data-table td.unit-price-rank-1 {
   color: #9b1c1c;
@@ -1958,6 +1959,30 @@ td ul {
 
 .allocation-source-meter-code {
   color: #c2413c;
+}
+
+.workspace-data-table tbody tr.combined-allocation-input-row .meter-code-with-tag {
+  color: #c2413c;
+}
+
+/* Paint above the row borders crossing this rowspan cell. */
+.workspace-data-table tbody td.combined-allocation-total {
+  position: relative;
+  z-index: 2;
+  background: #f3f4f6;
+  isolation: isolate;
+}
+.workspace-data-table tbody td.combined-allocation-total .merged-value {
+  position: relative;
+  z-index: 1;
+}
+.workspace-data-table tbody td.combined-allocation-total::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 1px;
+  z-index: 0;
+  background: #f3f4f6;
+  pointer-events: none;
 }
 
 .workspace-data-table tbody tr.allocation-block-start > td {

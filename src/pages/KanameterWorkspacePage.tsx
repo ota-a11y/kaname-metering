@@ -81,6 +81,10 @@ import {
 const categories: UtilityCategory[] = ["electric", "water", "gas"];
 const rateSourceUnitValue = "__rate_source__";
 const combinedPositionLabelPrefix = "__kanameter_combined_position__:";
+const meterTermFor = (contract: ContractUnit, item: MeterSubItem) =>
+  contract.meterTerms?.find((term) => term.asset_meter_sub_item_id === item.asset_meter_sub_item_id);
+const usesVariablePrice = (contract: ContractUnit, item: MeterSubItem) =>
+  (meterTermFor(contract, item)?.price_mode ?? item.price_mode) !== "fixed";
 // KANAMEに適用税率設定を追加するまでは標準税率10%を使用する。
 // 将来は契約・請求設定から取得した税率をexclusiveAmountFromInclusiveへ渡す。
 const DEFAULT_CONSUMPTION_TAX_RATE = 0.1;
@@ -108,12 +112,7 @@ const meterTagPalette = [
 const currentMonth = new Date().toISOString().slice(0, 7);
 type MainTab = "summary" | UtilityCategory | "buildingSettings";
 type SaveState = "idle" | "saving" | "saved" | "error";
-type SumMode = "aggregate" | "perMeter";
-
-function sumModeFor(contract: ContractUnit | undefined, category: UtilityCategory): SumMode {
-  const key = `${category}_sum_mode` as "electric_sum_mode" | "water_sum_mode" | "gas_sum_mode";
-  return contract?.meterBilling[0]?.[key] ?? "aggregate";
-}
+type AmountCalculationScope = MeterSubItem["amount_calculation_scope"];
 
 function amountRoundingFor(contract: ContractUnit | undefined) {
   // 契約区画で設定された端数処理を正とする。検針設定の値は旧データとの
@@ -175,34 +174,34 @@ function contractUnitPriceForBillingMonth(
 }
 
 function calculateUsageCharge(
-  rows: Array<{ meterId: string; usage: number; price: number | null; amountRoundingMode?: "floor" | "round" | "ceil" }>,
+  rows: Array<{ meterId: string; unitId?: string; usage: number; price: number | null; taxMode?: TaxMode; amountRoundingMode?: "floor" | "round" | "ceil" }>,
   digits: number,
   usageRoundingMode: "floor" | "round" | "ceil",
-  sumMode: SumMode,
+  scope: AmountCalculationScope,
   amountRoundingMode: "floor" | "round" | "ceil",
 ) {
   const buckets = new Map<string, typeof rows>();
   const priceCount = new Set(
     rows.flatMap((row) => row.price == null ? [] : [row.price]),
   ).size;
-  const hasMixedPrices = sumMode === "aggregate" && priceCount > 1;
+  const hasMixedPrices = scope !== "meter" && priceCount > 1;
   for (const row of rows) {
-    const key = sumMode === "aggregate"
-      ? `${String(row.price)}:${row.amountRoundingMode ?? amountRoundingMode}`
-      : row.meterId;
+    const groupingKey = scope === "meter" ? row.meterId : scope === "unit" ? row.unitId ?? row.meterId : "tenant";
+    const key = `${groupingKey}:${String(row.price)}:${row.taxMode ?? ""}:${row.amountRoundingMode ?? amountRoundingMode}`;
     buckets.set(key, [...(buckets.get(key) ?? []), row]);
   }
-  const amount = Array.from(buckets.values()).reduce((sum, group) => {
+  const groups = Array.from(buckets.values()).map((group) => {
     const price = group[0]?.price;
-    if (price == null) return sum;
+    if (price == null) return { amount: 0, taxMode: group[0]?.taxMode };
     const rawUsage = group.reduce((groupSum, row) => groupSum + row.usage, 0);
     // Excel運用に合わせ、単価が混在するときは単価別の使用量を丸めずに金額計算する。
     // 単価が1種類のときとメーターごと計算では、従来どおり集計桁数を適用する。
     const usage = hasMixedPrices
       ? rawUsage
       : roundToDigits(rawUsage, digits, usageRoundingMode);
-    return sum + roundUtilityAmount(usage * price, group[0]?.amountRoundingMode ?? amountRoundingMode);
-  }, 0);
+    return { amount: roundUtilityAmount(usage * price, group[0]?.amountRoundingMode ?? amountRoundingMode), taxMode: group[0]?.taxMode };
+  });
+  const amount = groups.reduce((sum, group) => sum + group.amount, 0);
   return {
     // 区画・テナント・全体の使用量は、画面に表示するメーター別の丸め済み値を合計する。
     // 未丸め値を合計してから再度丸めると、表示行の合計と0.1ずれることがある。
@@ -211,6 +210,7 @@ function calculateUsageCharge(
       0,
     ),
     amount,
+    groups,
   };
 }
 
@@ -253,14 +253,10 @@ function buildConfirmedMeterAmounts({
     const contractPrice = contractUnitPriceForBillingMonth(itemPrice, billingMonth)
       ?? contractUnitPriceForBillingMonth(categoryPrice, billingMonth);
     const defaultPrice = utilitySetting?.price_scope === "category" ? utilitySetting.default_unit_price : item.default_unit_price;
-    const price = item.variable_price_for_unpriced_only
-      ? contractPrice ?? calculatedPrice ?? defaultPrice
-      : calculatedPrice ?? contractPrice ?? defaultPrice;
+    const price = usesVariablePrice(contract, item) ? calculatedPrice : contractPrice ?? defaultPrice;
     return {
       price: price == null ? null : Number(price),
-      taxMode: utilitySetting?.price_scope === "category"
-        ? utilitySetting.default_tax_mode
-        : itemPrice?.tax_mode ?? item.tax_mode,
+      taxMode: meterTermFor(contract, item)?.tax_mode ?? itemPrice?.tax_mode ?? categoryPrice?.tax_mode ?? (utilitySetting?.price_scope === "category" ? utilitySetting.default_tax_mode : item.tax_mode),
     };
   };
   const rows: ConfirmedMeterAmount[] = [];
@@ -364,7 +360,7 @@ function buildConfirmedMeterAmounts({
           chargeRows,
           item.aggregation_decimal_digits,
           item.usage_rounding_mode,
-          sumModeFor(representative, category),
+          item.amount_calculation_scope,
           amountRoundingFor(representative),
         );
         categoryUsage += calculation.usage;
@@ -378,22 +374,10 @@ function buildConfirmedMeterAmounts({
         const prices = Array.from(new Set(chargeRows.map((row) => row.price).filter((price): price is number => price != null)));
         const taxModes = Array.from(new Set(chargeRows.map((row) => row.taxMode)));
         const confirmedTaxMode = taxModes.length === 1 ? taxModes[0] : item.tax_mode;
-        const confirmedAmount = Array.from(new Map(
-          chargeRows.map((row) => [row.unitId, chargeRows.filter((candidate) => candidate.unitId === row.unitId)]),
-        ).values()).reduce((sum, unitRows) => {
-          const unitCalculation = calculateUsageCharge(
-            unitRows,
-            item.aggregation_decimal_digits,
-            item.usage_rounding_mode,
-            sumModeFor(representative, category),
-            unitRows[0]?.amountRoundingMode ?? amountRoundingFor(representative),
-          );
-          const unitTaxModes = Array.from(new Set(unitRows.map((row) => row.taxMode)));
-          const unitTaxMode = unitTaxModes.length === 1 ? unitTaxModes[0] : confirmedTaxMode;
-          return sum + (unitTaxMode === "inclusive"
-            ? exclusiveAmountFromInclusive(unitCalculation.amount, item.tax_rounding_mode)
-            : unitCalculation.amount);
-        }, 0);
+        const confirmedAmount = calculation.groups.reduce((sum, group) =>
+          sum + (group.taxMode === "inclusive"
+            ? exclusiveAmountFromInclusive(group.amount, item.tax_rounding_mode)
+            : group.amount), 0);
         rows.push({
           ...shared,
           category,
@@ -464,9 +448,12 @@ function ensureBasicSubItems(categoriesToCheck: MeterCategorySetting[], current:
       price_mode: "fixed",
       default_unit_price: null,
       tax_mode: "exclusive",
-      tax_rounding_mode: "floor",
+      tax_rounding_mode: "none",
       show_unit_price_on_invoice: false,
+      show_usage_on_invoice: true,
       is_monthly_fixed: false,
+      calculation_mode: "meter",
+      amount_calculation_scope: "tenant",
     };
     const firstCategoryIndex = next.findIndex((item) => item.category === setting.category);
     next = firstCategoryIndex < 0
@@ -482,9 +469,8 @@ function adjustedMeterUsage(
   usageFor: (row: MeterReadingRow) => number,
 ) {
   const ownUsage = usageFor(meter);
-  if (effectiveInputMode(meter) !== "reading") return ownUsage;
   const unitId = meter.assignments[0]?.unit_id;
-  const childUsage = meters
+  const childUsage = effectiveInputMode(meter) !== "reading" ? 0 : meters
     .filter((row) =>
       row.parent_meter_id === meter.asset_meter_id &&
       unitId != null &&
@@ -580,7 +566,7 @@ function orderAllocationMeterBlocks(meters: MeterReadingRow[]) {
   const sourceIds = new Set(meters.flatMap((meter) => [
     ...meter.assignments.flatMap((row) => row.allocation_source_meter_id ? [row.allocation_source_meter_id] : []),
     ...meter.allocation_common_source_meter_ids,
-  ]));
+  ]).filter((id) => !byId.get(id) || !isCombinedPositionSource(byId.get(id)!)));
   const parents = meters.filter(isAllocationDisplayParent).sort((left, right) => left.sort_order - right.sort_order);
   const regularMeters = meters.filter((meter) => !sourceIds.has(meter.asset_meter_id) && !isAllocationDisplayParent(meter));
   const result = [...regularMeters];
@@ -591,7 +577,7 @@ function orderAllocationMeterBlocks(meters: MeterReadingRow[]) {
     ];
     const block = [meter, ...parentSourceIds
       .map((sourceId) => byId.get(sourceId))
-      .filter((source): source is MeterReadingRow => Boolean(source))
+      .filter((source): source is MeterReadingRow => Boolean(source) && !isCombinedPositionSource(source!))
       .sort((left, right) => left.sort_order - right.sort_order)];
     const precedingRegularCount = regularMeters.filter((candidate) => candidate.sort_order < meter.sort_order).length;
     let seenRegular = 0;
@@ -728,6 +714,8 @@ export function KanameterWorkspacePage({
   const [utilityTariff, setUtilityTariff] = useState<UtilityTariffVersion | null>(null);
   const [values, setValues] = useState<Record<string, string>>({});
   const [monthlyFixedCharges, setMonthlyFixedCharges] = useState<Record<string, number>>({});
+  const [allocationDraft, setAllocationDraft] = useState<{ amount: string; ratios: Record<string, string> } | null>(null);
+  const [allocationSaving, setAllocationSaving] = useState(false);
   const [rolloverValues, setRolloverValues] = useState<Record<string, number>>({});
   const [rolloverConfirmationOpen, setRolloverConfirmationOpen] = useState(false);
   const [usageHistory, setUsageHistory] = useState<{
@@ -1189,12 +1177,13 @@ export function KanameterWorkspacePage({
   const selectedSubItem = categoryTabItems.find(
     (item) => item.asset_meter_sub_item_id === selectedItemId,
   );
+  const hasVariablePriceContract = Boolean(selectedSubItem && contracts.some((contract) => usesVariablePrice(contract, selectedSubItem)));
   const selectedSurcharge = categorySurcharges.find(
     (item) => item.asset_meter_surcharge_id === selectedItemId,
   );
   useEffect(() => {
-    if (!selectedSubItem || selectedSubItem.is_monthly_fixed || (selectedSubItem.price_mode === "fixed" && !selectedSubItem.variable_price_for_unpriced_only)) setUnitPriceCalculatorOpen(false);
-  }, [selectedSubItem?.asset_meter_sub_item_id, selectedSubItem?.is_monthly_fixed, selectedSubItem?.price_mode, selectedSubItem?.variable_price_for_unpriced_only]);
+    if (!selectedSubItem || selectedSubItem.is_monthly_fixed || !hasVariablePriceContract) setUnitPriceCalculatorOpen(false);
+  }, [selectedSubItem?.asset_meter_sub_item_id, selectedSubItem?.is_monthly_fixed, hasVariablePriceContract]);
   const selectedPeriodPatternId = selectedSubItem?.billing_period_pattern_id ?? selectedSurcharge?.billing_period_pattern_id;
   const selectedPeriodPattern = periodPatterns.find((pattern) => pattern.billing_period_pattern_id === selectedPeriodPatternId);
   const billingPeriods = Array.from(
@@ -1222,16 +1211,54 @@ export function KanameterWorkspacePage({
   const billableCategoryContracts = activeCategory
     ? periodContracts.filter((contract) => isContractCategoryBillable(contract, activeCategory))
     : periodContracts;
+  const allocationContracts = selectedSubItem
+    ? billableCategoryContracts.filter((contract) => isContractSubItemBillable(contract, selectedSubItem.asset_meter_sub_item_id) && contract.contract?.tenant_id && contract.unit?.unit_id)
+    : [];
+  const openAmountAllocation = async () => {
+    if (!selectedSubItem) return;
+    const { data, error: loadError } = await supabase!.from("meter_reading_month_allocation")
+      .select("billed_amount, allocation_ratios")
+      .eq("asset_id", assetId).eq("billing_month", `${billingMonth}-01`)
+      .eq("asset_meter_sub_item_id", selectedSubItem.asset_meter_sub_item_id).maybeSingle();
+    if (loadError) { setError(loadError.message); return; }
+    const savedRatios = (data?.allocation_ratios ?? {}) as Record<string, number>;
+    setAllocationDraft({ amount: data ? String(data.billed_amount) : "", ratios: Object.fromEntries(allocationContracts.map((contract) => [contract.lease_contract_unit_id, String(savedRatios[contract.lease_contract_unit_id] ?? "")])) });
+  };
+  const saveAmountAllocation = async () => {
+    if (!selectedSubItem || !allocationDraft) return;
+    const amount = Number(allocationDraft.amount);
+    const ratios = allocationContracts.map((contract) => Number(allocationDraft.ratios[contract.lease_contract_unit_id]));
+    if (allocationDraft.amount.trim() === "" || !Number.isFinite(amount) || amount < 0 || ratios.some((rate, index) => allocationDraft.ratios[allocationContracts[index].lease_contract_unit_id]?.trim() === "" || !Number.isFinite(rate) || rate < 0) || Math.abs(ratios.reduce((sum, rate) => sum + rate, 0) - 1) > 1e-8) {
+      setError("請求額と各区画の配賦率を入力し、配賦率の合計を1にしてください。"); return;
+    }
+    setAllocationSaving(true); setError("");
+    try {
+      const { error: saveError } = await supabase!.from("meter_reading_month_allocation").upsert({ asset_id: assetId, billing_month: `${billingMonth}-01`, asset_meter_sub_item_id: selectedSubItem.asset_meter_sub_item_id, billed_amount: amount, allocation_ratios: Object.fromEntries(allocationContracts.map((contract, index) => [contract.lease_contract_unit_id, ratios[index]])) }, { onConflict: "asset_id,billing_month,asset_meter_sub_item_id" });
+      if (saveError) throw saveError;
+      for (const [index, contract] of allocationContracts.entries()) {
+        const allocatedAmount = roundUtilityAmount(amount * ratios[index], contract.utility_amount_rounding_mode);
+        await saveMonthlyFixedCharge(supabase!, assetId, billingMonth, contract.meterBilling[0]?.meter_reading_contract_id ?? null, contract.contract!.tenant_id, contract.lease_contract_unit_id, selectedSubItem.asset_meter_sub_item_id, allocatedAmount);
+        setMonthlyFixedCharges((current) => ({ ...current, [`${contract.lease_contract_unit_id}|${selectedSubItem.asset_meter_sub_item_id}`]: allocatedAmount }));
+      }
+      setAllocationDraft(null); setStatus((current) => current ?? "draft"); setNotice("按分額を保存しました。");
+    } catch (reason) { setError((reason as Error).message); }
+    finally { setAllocationSaving(false); }
+  };
   const selectedUtilitySetting = selectedSubItem
     ? utilitySettings.find((setting) => setting.category === selectedSubItem.category)
     : undefined;
   const selectedUnitPriceTaxMode: TaxMode = selectedSubItem
-    ? selectedUtilitySetting?.price_scope === "category"
+    ? billableCategoryContracts.some((contract) => usesVariablePrice(contract, selectedSubItem) && meterTermFor(contract, selectedSubItem)?.tax_mode === "inclusive")
+      ? "inclusive"
+      : selectedUtilitySetting?.price_scope === "category"
       ? selectedUtilitySetting.default_tax_mode
       : billableCategoryContracts.flatMap((contract) => contract.prices.filter(
           (price) => price.asset_billing_line_item_id === selectedSubItem.asset_billing_line_item_id,
         ))[0]?.tax_mode ?? selectedSubItem.tax_mode
     : "exclusive";
+  const selectedTableTaxMode: TaxMode = selectedSubItem && billableCategoryContracts.some(
+    (contract) => meterTermFor(contract, selectedSubItem)?.tax_mode === "inclusive",
+  ) ? "inclusive" : selectedUnitPriceTaxMode;
   const billableCategoryUnitIds = new Set(billableCategoryContracts.map((contract) => contract.unit?.unit_id).filter(Boolean));
   const occupiedUnitIds = new Set(periodContracts.map((contract) => contract.unit?.unit_id).filter(Boolean));
   const displayedReadingMeters = selectedSubItem
@@ -1614,9 +1641,10 @@ export function KanameterWorkspacePage({
                   </div>
                 )}
               </div>
-              {selectedSubItem?.sub_item_kind === "custom" && !selectedSubItem.is_monthly_fixed && (
+              {selectedSubItem?.sub_item_kind === "custom" && (
                 <div className="sub-navigation-actions">
-                  {!meterSettingsItemId && (selectedSubItem.price_mode !== "fixed" || selectedSubItem.variable_price_for_unpriced_only) && (
+                  {!meterSettingsItemId && selectedSubItem.calculation_mode === "allocated_amount" && <button type="button" className="unit-price-calculator-link" onClick={() => void openAmountAllocation()}>按分額計算</button>}
+                  {!meterSettingsItemId && !selectedSubItem.is_monthly_fixed && hasVariablePriceContract && (
                     <button type="button" className="unit-price-calculator-link" onClick={() => setUnitPriceCalculatorOpen(true)}>
                       単価計算
                     </button>
@@ -1703,7 +1731,9 @@ export function KanameterWorkspacePage({
                     unitPriceOverride={calculatedUnitPrices[selectedSubItem.asset_meter_sub_item_id]}
                     defaultUnitPrice={selectedSubItem.default_unit_price}
                     variablePriceForUnpricedOnly={selectedSubItem.variable_price_for_unpriced_only ?? false}
-                    taxMode={selectedUnitPriceTaxMode}
+                    taxMode={selectedTableTaxMode}
+                    subItemTaxMode={selectedSubItem.tax_mode}
+                    amountCalculationScope={selectedSubItem.amount_calculation_scope}
                     taxRoundingMode={selectedSubItem.tax_rounding_mode}
                     values={values}
                     saveStates={saveStates}
@@ -1762,12 +1792,12 @@ export function KanameterWorkspacePage({
           </section>
         </div>
       )}
-      {unitPriceCalculatorOpen && selectedSubItem && !selectedSubItem.is_monthly_fixed && (selectedSubItem.price_mode !== "fixed" || selectedSubItem.variable_price_for_unpriced_only) && (
+      {unitPriceCalculatorOpen && selectedSubItem && !selectedSubItem.is_monthly_fixed && hasVariablePriceContract && (
         <VariableUnitPriceCalculator
           itemName={selectedSubItem.sub_item_name}
           category={selectedSubItem.category}
           taxMode={selectedUnitPriceTaxMode}
-          priceMode={selectedSubItem.price_mode === "master_meter" ? "master_meter" : "amount"}
+          priceMode={billableCategoryContracts.some((contract) => meterTermFor(contract, selectedSubItem)?.price_mode === "master_meter") || selectedSubItem.price_mode === "master_meter" ? "master_meter" : "amount"}
           initialCalculation={unitPriceCalculations[selectedSubItem.asset_meter_sub_item_id]}
           tariffDefinition={utilityTariff}
           billingMonth={billingMonth}
@@ -1793,6 +1823,18 @@ export function KanameterWorkspacePage({
           onClose={() => setUnitPriceCalculatorOpen(false)}
         />
       )}
+      {allocationDraft && selectedSubItem?.calculation_mode === "allocated_amount" && <div className="calculator-modal-backdrop" role="presentation" onMouseDown={() => setAllocationDraft(null)}>
+        <section className="calculator-modal" role="dialog" aria-modal="true" aria-label="按分額計算" onMouseDown={(event) => event.stopPropagation()}>
+          <header><h2>{selectedSubItem.sub_item_name}の按分額計算</h2><button type="button" className="calculator-modal-close" aria-label="閉じる" onClick={() => setAllocationDraft(null)}>×</button></header>
+          <div className="calculator-fields"><label><span>按分対象の請求額</span><input type="number" min="0" step="0.01" value={allocationDraft.amount} onChange={(event) => setAllocationDraft((current) => current && { ...current, amount: event.target.value })} /></label></div>
+          <table className="workspace-data-table"><thead><tr><th>テナント・区画</th><th>配賦率</th><th>按分額</th></tr></thead><tbody>{allocationContracts.map((contract) => {
+            const rate = allocationDraft.ratios[contract.lease_contract_unit_id] ?? "";
+            return <tr key={contract.lease_contract_unit_id}><td>{contract.contract?.tenant?.tenant_name} / {contract.unit?.unit_name || contract.unit?.unit_code}</td><td><input aria-label={`${contract.unit?.unit_name || contract.unit?.unit_code}の配賦率`} type="number" min="0" step="any" value={rate} onChange={(event) => setAllocationDraft((current) => current && { ...current, ratios: { ...current.ratios, [contract.lease_contract_unit_id]: event.target.value } })} /></td><td>{allocationDraft.amount !== "" && rate !== "" ? formatYen(roundUtilityAmount(Number(allocationDraft.amount) * Number(rate), contract.utility_amount_rounding_mode)) : "—"}</td></tr>;
+          })}</tbody></table>
+          <p>配賦率の合計は1にしてください。各区画の請求額は「請求額 × 配賦率」で計算します。</p>
+          <footer><button type="button" className="primary" disabled={allocationSaving || status === "confirmed"} onClick={() => void saveAmountAllocation()}>{allocationSaving ? "保存中…" : "按分額を保存"}</button></footer>
+        </section>
+      </div>}
     </div>
   );
 }
@@ -1854,6 +1896,7 @@ function VariableUnitPriceCalculator({
   onClose: () => void;
 }) {
   const [grossExpression, setGrossExpression] = useState(formatAdditionExpression(String(initialCalculation?.billed_inclusive ?? "")));
+  const [basicChargeExpression, setBasicChargeExpression] = useState(formatAdditionExpression(String(initialCalculation?.billed_basic_charge ?? "")));
   const [taxExpression, setTaxExpression] = useState(formatAdditionExpression(String(initialCalculation?.billed_tax ?? "")));
   const [usageExpression, setUsageExpression] = useState(formatAdditionExpression(String(initialCalculation?.billed_usage ?? "")));
   const [adjustmentEnabled, setAdjustmentEnabled] = useState(initialCalculation?.unit_price_adjustment_enabled ?? false);
@@ -1879,17 +1922,23 @@ function VariableUnitPriceCalculator({
   const sewerTiers = databaseSewerTiers?.length ? databaseSewerTiers : osakaGeneralSewerTiers;
   const [draftTariffTiers, setDraftTariffTiers] = useState<UtilityTariffTier[]>(tariffDefinition?.tiers ?? []);
   const grossAmount = evaluateAdditionExpression(grossExpression);
-  const automaticTaxAmount = grossAmount == null ? null : Math.floor(grossAmount * 10 / 110);
-  const enteredTaxAmount = evaluateAdditionExpression(taxExpression);
+  const basicChargeAmount = basicChargeExpression.trim() === "" ? 0 : evaluateAdditionExpression(basicChargeExpression);
+  const automaticTaxAmount = taxMode === "inclusive" || grossAmount == null ? null : Math.floor(grossAmount * 10 / 110);
+  const enteredTaxAmount = taxMode === "inclusive" ? null : evaluateAdditionExpression(taxExpression);
   const selectedRateSource = rateSourceMeters.find((meter) => meter.id === rateSourceMeterId);
   const tariff = priceMode === "master_meter" && selectedRateSource
     ? calculateOsakaGeneralWaterTariff(selectedRateSource.usage, waterTiers, sewerTiers, tariffDefinition?.tax_rate ?? 0.1)
     : null;
   const effectiveGrossAmount = priceMode === "master_meter" ? tariff?.totalGross ?? null : grossAmount;
-  const taxAmount = priceMode === "master_meter" ? tariff?.tax ?? null : enteredTaxAmount ?? automaticTaxAmount;
-  const netAmount = effectiveGrossAmount == null || taxAmount == null ? null : effectiveGrossAmount - taxAmount;
+  const taxAmount = priceMode === "master_meter" ? tariff?.tax ?? null : taxMode === "inclusive" ? null : enteredTaxAmount ?? automaticTaxAmount;
+  const netAmount = (priceMode === "amount" && taxMode === "inclusive") || effectiveGrossAmount == null || taxAmount == null
+    ? null : effectiveGrossAmount - taxAmount;
   const usage = priceMode === "master_meter" ? tariff?.billedUsage ?? null : evaluateAdditionExpression(usageExpression);
-  const calculationAmount = taxMode === "inclusive" ? effectiveGrossAmount : netAmount;
+  const inclusiveAmountAfterBasic = priceMode === "amount" && effectiveGrossAmount != null && basicChargeAmount != null
+    ? effectiveGrossAmount - basicChargeAmount : null;
+  const calculationAmount = taxMode === "inclusive"
+    ? priceMode === "amount" ? inclusiveAmountAfterBasic != null && inclusiveAmountAfterBasic >= 0 ? inclusiveAmountAfterBasic : null : effectiveGrossAmount
+    : netAmount;
   const adjustmentFactor = evaluateAdditionExpression(adjustmentFactorExpression);
   const effectiveAdjustmentFactor = adjustmentEnabled ? adjustmentFactor : 1;
   const calculatedUnitPrice = calculationAmount != null && usage != null && usage !== 0
@@ -1904,6 +1953,11 @@ function VariableUnitPriceCalculator({
 
   const save = async () => {
     if (calculatedUnitPrice == null) {
+      if (priceMode === "amount" && taxMode === "inclusive" && grossExpression.trim() !== "" &&
+          (basicChargeAmount == null || (grossAmount != null && basicChargeAmount > grossAmount))) {
+        setSaveError("税込基本料は0以上で、請求金額（税込）以下の金額を入力してください。");
+        return;
+      }
       onClose();
       return;
     }
@@ -1914,6 +1968,7 @@ function VariableUnitPriceCalculator({
         asset_meter_sub_item_id: initialCalculation?.asset_meter_sub_item_id ?? "",
         unit_price: calculatedUnitPrice,
         billed_inclusive: effectiveGrossAmount,
+        billed_basic_charge: priceMode === "amount" && taxMode === "inclusive" && basicChargeExpression.trim() ? basicChargeAmount : null,
         billed_tax: taxAmount,
         billed_exclusive: netAmount,
         billed_usage: usage,
@@ -2024,18 +2079,28 @@ function VariableUnitPriceCalculator({
             <span>{billingCompanyLabel}</span>
             <input value={grossExpression} onChange={(event) => setGrossExpression(formatAdditionExpression(event.target.value))} inputMode="decimal" placeholder="例：100,000＋25,000" autoFocus />
           </label>
-          <label>
-            <span>消費税額</span>
-            <input value={taxExpression || (automaticTaxAmount?.toLocaleString("ja-JP") ?? "")} onChange={(event) => setTaxExpression(formatAdditionExpression(event.target.value))} inputMode="decimal" placeholder="未入力時は自動計算" />
-          </label>
-          <div className="calculator-result-field">
-            <span>請求金額（税抜）</span>
-            <strong>{netAmount == null ? "—" : formatYen(netAmount)}</strong>
-          </div>
+          {taxMode === "inclusive" && <label>
+            <span>差し引く基本料（税込）</span>
+            <input value={basicChargeExpression} onChange={(event) => setBasicChargeExpression(formatAdditionExpression(event.target.value))} inputMode="decimal" placeholder="基本料がなければ空欄" />
+          </label>}
+          {taxMode === "exclusive" && <>
+            <label>
+              <span>消費税額</span>
+              <input value={taxExpression || (automaticTaxAmount?.toLocaleString("ja-JP") ?? "")} onChange={(event) => setTaxExpression(formatAdditionExpression(event.target.value))} inputMode="decimal" placeholder="未入力時は自動計算" />
+            </label>
+            <div className="calculator-result-field">
+              <span>請求金額（税抜）</span>
+              <strong>{netAmount == null ? "—" : formatYen(netAmount)}</strong>
+            </div>
+          </>}
           <label>
             <span>使用量</span>
             <input value={usageExpression} onChange={(event) => setUsageExpression(formatAdditionExpression(event.target.value))} inputMode="decimal" placeholder="例：27,235" />
           </label>
+          {taxMode === "inclusive" && <div className="calculator-result-field">
+            <span>単価計算対象額（税込）</span>
+            <strong>{calculationAmount == null ? "—" : formatYen(calculationAmount)}</strong>
+          </div>}
           <div className="calculator-adjustment-field">
             <label className="calculator-adjustment-toggle">
               <input type="checkbox" checked={adjustmentEnabled} onChange={(event) => setAdjustmentEnabled(event.target.checked)} />
@@ -2044,7 +2109,7 @@ function VariableUnitPriceCalculator({
             {adjustmentEnabled && <label>
               <span>補正係数</span>
               <input value={adjustmentFactorExpression} onChange={(event) => setAdjustmentFactorExpression(event.target.value)} inputMode="decimal" placeholder="例：1.2" />
-              <small>請求金額 ÷ 使用量 × 補正係数で単価を計算します。</small>
+              <small>{taxMode === "inclusive" ? "（税込請求金額 − 基本料）÷ 使用量 × 補正係数" : "請求金額 ÷ 使用量 × 補正係数"}で単価を計算します。</small>
             </label>}
           </div>
         </div>}
@@ -2161,17 +2226,13 @@ function SummaryView({
     const itemPrice = contract.prices.find((row) => row.asset_billing_line_item_id === item.asset_billing_line_item_id);
     const categoryPrice = contract.categoryPrices.find((row) => row.category === item.category);
     const utilitySetting = utilitySettings.find((setting) => setting.category === item.category);
-    const taxMode = utilitySetting?.price_scope === "category"
-      ? utilitySetting.default_tax_mode
-      : itemPrice?.tax_mode ?? item.tax_mode;
+    const taxMode = meterTermFor(contract, item)?.tax_mode ?? itemPrice?.tax_mode ?? categoryPrice?.tax_mode ?? (utilitySetting?.price_scope === "category" ? utilitySetting.default_tax_mode : item.tax_mode);
     const calculatedPrice = unitPriceCalculations[item.asset_meter_sub_item_id]?.unit_price;
     const contractPrice = contractUnitPriceForBillingMonth(itemPrice, billingMonth)
       ?? contractUnitPriceForBillingMonth(categoryPrice, billingMonth);
     const defaultPrice = item.default_unit_price
       ?? utilitySettings.find((setting) => setting.category === item.category)?.default_unit_price;
-    const price = item.variable_price_for_unpriced_only
-      ? contractPrice ?? calculatedPrice ?? defaultPrice
-      : calculatedPrice ?? contractPrice ?? defaultPrice;
+    const price = usesVariablePrice(contract, item) ? calculatedPrice : contractPrice ?? defaultPrice;
     return { price: price == null ? null : Number(price), taxMode };
   };
   const calculationForContracts = (billableContracts: ContractUnit[], item: MeterSubItem) => {
@@ -2208,7 +2269,7 @@ function SummaryView({
         chargeRows,
         item.aggregation_decimal_digits,
         item.usage_rounding_mode,
-        sumModeFor(contract, item.category),
+        item.amount_calculation_scope,
         amountRoundingFor(contract),
       );
       const amount = priceDetails.taxMode === "inclusive"
@@ -2410,7 +2471,7 @@ function SettingsView({
   const [tagMeterId, setTagMeterId] = useState<string | null>(null);
   const [editingTagId, setEditingTagId] = useState<string | null>(null);
   const [tagDraft, setTagDraft] = useState({ name: "", color: "#8eaadb" });
-  const allowsRateSource = activeSubItem?.price_mode === "master_meter";
+  const allowsRateSource = activeSubItem?.price_mode === "master_meter" || Boolean(activeSubItem && contracts.some((contract) => meterTermFor(contract, activeSubItem)?.price_mode === "master_meter"));
   const [adjustmentMeterId, setAdjustmentMeterId] = useState<string | null>(null);
   const [allocationMeterId, setAllocationMeterId] = useState<string | null>(null);
   const [allocationMethod, setAllocationMethod] = useState<"area" | "ratio" | "meter_usage">("area");
@@ -3484,7 +3545,7 @@ function BasicChargeTable({
               <MonthlyFixedInput
                 key={`${contract.lease_contract_unit_id}-${item.asset_meter_sub_item_id}`}
                 amount={amount}
-                disabled={confirmed}
+                disabled={confirmed || item.calculation_mode === "allocated_amount"}
                 onCommit={(next) => {
                   onMonthlyFixedChange(
                     contractId ?? null,
@@ -3572,6 +3633,8 @@ function CustomItemTable({
   defaultUnitPrice,
   variablePriceForUnpricedOnly,
   taxMode,
+  subItemTaxMode,
+  amountCalculationScope,
   taxRoundingMode,
   values,
   saveStates,
@@ -3591,7 +3654,9 @@ function CustomItemTable({
   defaultUnitPrice: number | null;
   variablePriceForUnpricedOnly: boolean;
   taxMode: TaxMode;
-  taxRoundingMode: "floor" | "round" | "ceil";
+  subItemTaxMode: TaxMode;
+  amountCalculationScope: AmountCalculationScope;
+  taxRoundingMode: "none" | "floor" | "round" | "ceil";
   values: Record<string, string>;
   saveStates: Record<string, SaveState>;
   confirmed: boolean;
@@ -3605,7 +3670,9 @@ function CustomItemTable({
   onChange: (meter: MeterReadingRow, value: string) => void;
 }) {
   const showsInclusiveAndExclusiveAmounts = taxMode === "inclusive";
-  const toExclusiveAmount = (amount: number) => showsInclusiveAndExclusiveAmounts
+  const isInclusiveContract = (contract?: ContractUnit) =>
+    (contract?.meterTerms?.find((term) => term.asset_meter_sub_item_id === meters[0]?.subItem.asset_meter_sub_item_id)?.tax_mode ?? subItemTaxMode) === "inclusive";
+  const toExclusiveAmount = (amount: number, contract?: ContractUnit) => isInclusiveContract(contract)
     ? exclusiveAmountFromInclusive(amount, taxRoundingMode)
     : amount;
   const contractFor = (meter: MeterReadingRow) =>
@@ -3615,7 +3682,7 @@ function CustomItemTable({
     );
   const unitKey = (meter: MeterReadingRow) => {
     if (isAllocationDisplayParent(meter)) return `allocation-parent-${meter.asset_meter_id}`;
-    if (meter.is_allocation_source) return `allocation-source-${meter.asset_meter_id}`;
+    if (meter.is_allocation_source && !isCombinedPositionSource(meter)) return `allocation-source-${meter.asset_meter_id}`;
     if (!meter.is_rate_source && !contractFor(meter)) {
       return meter.assignments[0]?.unit_id
         ? `vacant-unit-${meter.assignments[0].unit_id}`
@@ -3626,7 +3693,7 @@ function CustomItemTable({
   const billingKey = (meter: MeterReadingRow) =>
     isAllocationDisplayParent(meter)
       ? `allocation-parent-${meter.asset_meter_id}`
-      : meter.is_allocation_source
+      : meter.is_allocation_source && !isCombinedPositionSource(meter)
       ? `allocation-source-${meter.asset_meter_id}`
       : contractFor(meter)
       ? billingGroupKey(contractFor(meter))
@@ -3634,7 +3701,7 @@ function CustomItemTable({
   const tenantKey = (meter: MeterReadingRow) =>
     isAllocationDisplayParent(meter)
       ? `allocation-parent-${meter.asset_meter_id}`
-      : meter.is_allocation_source
+      : meter.is_allocation_source && !isCombinedPositionSource(meter)
       ? `allocation-source-${meter.asset_meter_id}`
       : contractFor(meter)?.contract?.tenant_id
         ?? (meter.assignments[0]?.unit_id
@@ -3670,10 +3737,12 @@ function CustomItemTable({
         billingMonth,
       )
     ) : null;
+    const contractMode = contract?.meterTerms?.find((term) => term.asset_meter_sub_item_id === meter.subItem.asset_meter_sub_item_id)?.price_mode;
+    if (contractMode) return contractMode === "fixed" ? contractPrice ?? defaultUnitPrice : unitPriceOverride ?? null;
     if (variablePriceForUnpricedOnly) return contractPrice ?? unitPriceOverride ?? defaultUnitPrice;
     return unitPriceOverride ?? contractPrice ?? defaultUnitPrice;
   };
-  const allocationResults = meters.flatMap((parent) => {
+  const allAllocationResults = meters.flatMap((parent) => {
     if (!isAllocationDisplayParent(parent)) return [];
     return parent.assignments.flatMap((assignment) => {
       const combinedPositionSource = isCombinedAllocationParent(parent)
@@ -3701,6 +3770,13 @@ function CustomItemTable({
       return [{ parent, source, assignment, contract, usage, previous, previousYear, price, amount, digits }];
     });
   });
+  // 合算按分の結果は表示位置用メーターの行そのものに表示する。
+  // 通常のメーターがない区画でも表示し、設定した並び順を維持する。
+  const combinedResults = new Map(allAllocationResults
+    .filter((result) => isCombinedPositionSource(result.source))
+    .map((result) => [result.source.asset_meter_id, result]));
+  const allocationResults = allAllocationResults.filter((result) => !isCombinedPositionSource(result.source));
+  const displayedMeterUsage = (meter: MeterReadingRow) => combinedResults.get(meter.asset_meter_id)?.usage ?? meterUsage(meter);
   // contracts は asset_billing_tenant_order（KANAMEのテナント請求順）で読み込まれている。
   // 入居テナント間はその順序を維持し、空室だけをレントロールの区画順の位置へ差し込む。
   type DisplayUnit = { floor_label: string | null; unit_name: string | null; unit_code: string };
@@ -3745,13 +3821,13 @@ function CustomItemTable({
   ));
   const allocationOwnerFor = (meter: MeterReadingRow) => isAllocationDisplayParent(meter)
     ? meter
-    : meter.is_allocation_source || isCombinedAllocationSource(meter, meters)
+    : !isCombinedPositionSource(meter) && (meter.is_allocation_source || isCombinedAllocationSource(meter, meters))
       ? meters.find((candidate) =>
           candidate.assignments.some((row) => row.allocation_source_meter_id === meter.asset_meter_id) ||
           candidate.allocation_common_source_meter_ids.includes(meter.asset_meter_id),
         )
       : undefined;
-  const billableMeters = orderedMeters.filter((meter) => !meter.is_rate_source && !meter.is_allocation_source && !isCombinedAllocationSource(meter, meters) && !isAllocationDisplayParent(meter));
+  const billableMeters = orderedMeters.filter((meter) => combinedResults.has(meter.asset_meter_id) || (!meter.is_rate_source && !meter.is_allocation_source && !isCombinedAllocationSource(meter, meters) && !isAllocationDisplayParent(meter)));
   const rankedUnitPrices = Array.from(new Set(
     orderedMeters.map((meter) => unitPrice(meter)).filter((price): price is number => price != null),
   )).sort((left, right) => right - left);
@@ -3765,21 +3841,23 @@ function CustomItemTable({
     return calculateUsageCharge(
       targetMeters.map((targetMeter) => ({
         meterId: targetMeter.asset_meter_id,
-        usage: meterUsage(targetMeter),
+        unitId: targetMeter.assignments[0]?.unit_id,
+        usage: displayedMeterUsage(targetMeter),
         price: unitPrice(targetMeter),
+        taxMode: isInclusiveContract(contractFor(targetMeter)) ? "inclusive" as const : "exclusive" as const,
         amountRoundingMode: amountRoundingFor(contractFor(targetMeter)),
       })),
       first.subItem.aggregation_decimal_digits,
       first.subItem.usage_rounding_mode,
-      sumModeFor(contractFor(first), category),
+      amountCalculationScope,
       amountRoundingFor(contractFor(first)),
     );
   };
   const displayGroupsForBilling = (billingMeters: MeterReadingRow[]) =>
-    sumModeFor(contractFor(billingMeters[0]), category) === "aggregate"
+    amountCalculationScope === "tenant"
       ? [billingMeters]
       : Array.from(new Map(
-          billingMeters.map((meter) => [unitKey(meter), billingMeters.filter((row) => unitKey(row) === unitKey(meter))]),
+          billingMeters.map((meter) => [amountCalculationScope === "meter" ? meter.asset_meter_id : unitKey(meter), billingMeters.filter((row) => (amountCalculationScope === "meter" ? row.asset_meter_id : unitKey(row)) === (amountCalculationScope === "meter" ? meter.asset_meter_id : unitKey(meter)))]),
         ).values());
   const displayedUsageForTenant = (tenantMeters: MeterReadingRow[]) => {
     const tenantBillingGroups = Array.from(new Map(
@@ -3789,11 +3867,18 @@ function CustomItemTable({
       tenantSum + displayGroupsForBilling(billingMeters)
         .reduce((groupSum, group) => groupSum + chargeForMeters(group).usage, 0), 0);
   };
+  const exclusiveChargeForMeters = (targetMeters: MeterReadingRow[]) => chargeForMeters(targetMeters).groups.reduce(
+    (sum, group) => sum + (group.taxMode === "inclusive" ? exclusiveAmountFromInclusive(group.amount, taxRoundingMode) : group.amount), 0,
+  );
   const displayedAmountForTenant = (tenantMeters: MeterReadingRow[]) => Array.from(new Map(
-    tenantMeters.map((meter) => [unitKey(meter), tenantMeters.filter((row) => unitKey(row) === unitKey(meter))]),
-  ).values()).reduce((sum, group) => sum + toExclusiveAmount(chargeForMeters(group).amount), 0);
+    tenantMeters.map((meter) => [billingKey(meter), tenantMeters.filter((row) => billingKey(row) === billingKey(meter))]),
+  ).values()).flatMap(displayGroupsForBilling).reduce((sum, group) => sum + exclusiveChargeForMeters(group), 0);
   const previousUsageFor = (meter: MeterReadingRow) => usageHistory.previous[meter.asset_meter_id] ?? 0;
   const previousYearUsageFor = (meter: MeterReadingRow) => usageHistory.previousYear[meter.asset_meter_id] ?? 0;
+  const displayedPreviousUsage = (meter: MeterReadingRow) => combinedResults.get(meter.asset_meter_id)?.previous
+    ?? billingAdjustedUsage(meter, adjustedMeterUsage(meter, meters, previousUsageFor));
+  const displayedPreviousYearUsage = (meter: MeterReadingRow) => combinedResults.get(meter.asset_meter_id)?.previousYear
+    ?? billingAdjustedUsage(meter, adjustedMeterUsage(meter, meters, previousYearUsageFor));
   const totalsFor = (targetMeters: MeterReadingRow[]) => {
     const targetBillingGroups = Array.from(new Map(
       targetMeters.map((meter) => [billingKey(meter), targetMeters.filter((row) => billingKey(row) === billingKey(meter))]),
@@ -3801,33 +3886,26 @@ function CustomItemTable({
     const targetTenantGroups = Array.from(new Map(
       targetMeters.map((meter) => [tenantKey(meter), targetMeters.filter((row) => tenantKey(row) === tenantKey(meter))]),
     ).values());
-    const targetUnitGroups = Array.from(new Map(
-      targetMeters.map((meter) => [unitKey(meter), targetMeters.filter((row) => unitKey(row) === unitKey(meter))]),
-    ).values());
     const displayedGroups = targetBillingGroups.flatMap(displayGroupsForBilling);
     const displayedAmounts = displayedGroups.map((group) => chargeForMeters(group).amount);
-    const unitAmounts = targetUnitGroups.map((group) => chargeForMeters(group).amount);
     return {
       meterUsage: targetMeters.reduce((sum, meter) => sum + roundToDigits(
-        meterUsage(meter),
+        displayedMeterUsage(meter),
         showReadings ? meter.subItem.aggregation_decimal_digits : meter.subItem.input_decimal_digits,
         meter.subItem.usage_rounding_mode,
       ), 0),
       unitUsage: displayedGroups.reduce((sum, group) => sum + chargeForMeters(group).usage, 0),
       amount: displayedAmounts.reduce((sum, amount) => sum + amount, 0),
-      exclusiveAmount: unitAmounts.reduce(
-        (sum, amount) => sum + toExclusiveAmount(amount),
-        0,
-      ),
+      exclusiveAmount: displayedGroups.reduce((sum, group) => sum + exclusiveChargeForMeters(group), 0),
       tenantUsage: targetTenantGroups.reduce((sum, group) => sum + displayedUsageForTenant(group), 0),
       tenantAmount: targetTenantGroups.reduce((sum, group) => sum + displayedAmountForTenant(group), 0),
       previousUsage: targetMeters.reduce((sum, meter) => sum + roundToDigits(
-        billingAdjustedUsage(meter, adjustedMeterUsage(meter, meters, previousUsageFor)),
+        displayedPreviousUsage(meter),
         meter.subItem.aggregation_decimal_digits,
         meter.subItem.usage_rounding_mode,
       ), 0),
       previousYearUsage: targetMeters.reduce((sum, meter) => sum + roundToDigits(
-        billingAdjustedUsage(meter, adjustedMeterUsage(meter, meters, previousYearUsageFor)),
+        displayedPreviousYearUsage(meter),
         meter.subItem.aggregation_decimal_digits,
         meter.subItem.usage_rounding_mode,
       ), 0),
@@ -3842,10 +3920,10 @@ function CustomItemTable({
     amount: allocationResults.reduce((sum, result) => sum + (result.amount ?? 0), 0),
     exclusiveAmount: allocationResults.reduce((sum, result) => {
       const amount = result.amount ?? 0;
-      return sum + toExclusiveAmount(amount);
+      return sum + toExclusiveAmount(amount, result.contract);
     }, 0),
     tenantUsage: allocationResults.reduce((sum, result) => sum + result.usage, 0),
-    tenantAmount: allocationResults.reduce((sum, result) => sum + toExclusiveAmount(result.amount ?? 0), 0),
+    tenantAmount: allocationResults.reduce((sum, result) => sum + toExclusiveAmount(result.amount ?? 0, result.contract), 0),
     previousUsage: allocationResults.reduce((sum, result) => sum + (result.previous ?? 0), 0),
     previousYearUsage: allocationResults.reduce((sum, result) => sum + (result.previousYear ?? 0), 0),
   };
@@ -3887,9 +3965,9 @@ function CustomItemTable({
     const allocationResultsForTenant = contract?.contract?.tenant_id
       ? allocationResults.filter((result) => result.contract.contract?.tenant_id === contract.contract?.tenant_id)
       : [];
-    const previousUsage = unitMeters.reduce((sum, row) => sum + billingAdjustedUsage(row, adjustedMeterUsage(row, meters, previousUsageFor)), 0)
+    const previousUsage = unitMeters.reduce((sum, row) => sum + displayedPreviousUsage(row), 0)
       + allocationResultsForUnit.reduce((sum, result) => sum + (result.previous ?? 0), 0);
-    const previousYearUsage = unitMeters.reduce((sum, row) => sum + billingAdjustedUsage(row, adjustedMeterUsage(row, meters, previousYearUsageFor)), 0)
+    const previousYearUsage = unitMeters.reduce((sum, row) => sum + displayedPreviousYearUsage(row), 0)
       + allocationResultsForUnit.reduce((sum, result) => sum + (result.previousYear ?? 0), 0);
     return {
       key: unitKey(meter),
@@ -3899,10 +3977,10 @@ function CustomItemTable({
       unitName: meter.is_rate_source ? "大元メーター" : unit?.unit_name || unit?.unit_code || "未割当",
       unitPrice: prices.length === 1 ? formatYen(prices[0]) : prices.length > 1 ? "複数" : "未設定",
       usage: charge.usage + allocationResultsForUnit.reduce((sum, result) => sum + result.usage, 0),
-      amount: toExclusiveAmount(charge.amount) + allocationResultsForUnit.reduce((sum, result) => sum + toExclusiveAmount(result.amount ?? 0), 0),
+      amount: toExclusiveAmount(charge.amount, contract) + allocationResultsForUnit.reduce((sum, result) => sum + toExclusiveAmount(result.amount ?? 0, result.contract), 0),
       tenantUsage: displayedUsageForTenant(tenantMeters) + allocationResultsForTenant.reduce((sum, result) => sum + result.usage, 0),
       tenantAmount: displayedAmountForTenant(tenantMeters)
-        + allocationResultsForTenant.reduce((sum, result) => sum + toExclusiveAmount(result.amount ?? 0), 0),
+        + allocationResultsForTenant.reduce((sum, result) => sum + toExclusiveAmount(result.amount ?? 0, result.contract), 0),
       previousUsage: roundToDigits(previousUsage, meter.subItem.aggregation_decimal_digits, meter.subItem.usage_rounding_mode),
       previousYearUsage: roundToDigits(previousYearUsage, meter.subItem.aggregation_decimal_digits, meter.subItem.usage_rounding_mode),
       digits: meter.subItem.aggregation_decimal_digits,
@@ -3950,6 +4028,7 @@ function CustomItemTable({
         </thead>
         <tbody>
           {orderedMeters.map((meter, index) => {
+            const combinedResult = combinedResults.get(meter.asset_meter_id);
             const unit = meter.assignments[0]?.unit;
             const isVacant = !meter.is_rate_source && !contractFor(meter);
             const allocationOwner = allocationOwnerFor(meter);
@@ -4001,7 +4080,7 @@ function CustomItemTable({
                 tenantKey(orderedMeters[unitEndIndex + 1]) !== currentTenantKey);
             const contract = contractFor(meter);
             const price = unitPrice(meter);
-            const aggregateBilling = sumModeFor(contract, category) === "aggregate";
+            const aggregateBilling = amountCalculationScope === "tenant";
             const state =
               saveStates[meter.asset_meter_id] ??
               (meter.entry ? "saved" : "idle");
@@ -4020,7 +4099,7 @@ function CustomItemTable({
                   (result.contract.unit?.floor_label ?? "") === (unit?.floor_label ?? ""),
                 )
               : [];
-            const unitMeters = orderedMeters.filter((row) => unitKey(row) === currentUnitKey && !row.is_allocation_source && !isAllocationDisplayParent(row));
+            const unitMeters = billableMeters.filter((row) => unitKey(row) === currentUnitKey);
             const unitCharge = unitMeters.length ? chargeForMeters(unitMeters) : { usage: 0, amount: 0 };
             const unitHasPrice = unitMeters.some((row) => unitPrice(row) != null) || allocationResultsForUnit.some((result) => result.price != null);
             const unitUsage = unitCharge.usage + allocationResultsForUnit.reduce((sum, result) => sum + result.usage, 0);
@@ -4029,18 +4108,23 @@ function CustomItemTable({
             const billingUsage = chargeForMeters(billingMeters).usage + allocationResultsForBilling.reduce((sum, result) => sum + result.usage, 0);
             const billingAmount = chargeForMeters(billingMeters).amount + allocationResultsForBilling.reduce((sum, result) => sum + (result.amount ?? 0), 0);
             const tenantAmount = displayedAmountForTenant(tenantMeters)
-              + allocationResultsForTenant.reduce((sum, result) => sum + toExclusiveAmount(result.amount ?? 0), 0);
-            const previousUsage = usageHistory.previous[meter.asset_meter_id] == null
+              + allocationResultsForTenant.reduce((sum, result) => sum + toExclusiveAmount(result.amount ?? 0, result.contract), 0);
+            const previousUsage = combinedResult ? combinedResult.previous : usageHistory.previous[meter.asset_meter_id] == null
               ? undefined
               : billingAdjustedUsage(meter, adjustedMeterUsage(meter, meters, previousUsageFor));
-            const previousYearUsage = usageHistory.previousYear[meter.asset_meter_id] == null
+            const previousYearUsage = combinedResult ? combinedResult.previousYear : usageHistory.previousYear[meter.asset_meter_id] == null
               ? undefined
               : billingAdjustedUsage(meter, adjustedMeterUsage(meter, meters, previousYearUsageFor));
-            const currentUsage = meterUsage(meter);
-            const meterUsesReading = effectiveInputMode(meter) === "reading";
+            const currentUsage = combinedResult?.usage ?? (isCombinedAllocationParent(meter) ? rawMeterUsage(meter) : meterUsage(meter));
+            const meterUsesReading = !combinedResult && effectiveInputMode(meter) === "reading";
             const isUnentered = (values[meter.asset_meter_id] ?? "").trim() === "";
             const allocationParent = isAllocationDisplayParent(meter);
+            const combinedInputParent = isCombinedAllocationParent(meter);
             const allocationSource = Boolean(allocationOwner) && !allocationParent;
+            const combinedInputSource = allocationSource && Boolean(allocationOwner && isCombinedAllocationParent(allocationOwner));
+            const combinedInputRowCount = combinedInputParent
+              ? orderedMeters.filter((candidate) => candidate.asset_meter_id === meter.asset_meter_id || allocationOwnerFor(candidate)?.asset_meter_id === meter.asset_meter_id).length
+              : 0;
             const allocationOwnerId = allocationOwner?.asset_meter_id;
             const lastAllocationSource = allocationOwnerId != null && (
               index === orderedMeters.length - 1 ||
@@ -4075,7 +4159,7 @@ function CustomItemTable({
             }} /></div>{state === "error" && <span className="save-error" title="保存エラー" />}</div>;
             return (
               <Fragment key={meter.asset_meter_id}>
-              <tr className={`${firstInUnit ? "unit-group-start" : ""} ${lastInUnit && !tenantAllocationResults.length ? "unit-group-end" : ""} ${firstInTenant ? "tenant-group-start" : ""} ${lastInTenant && !tenantAllocationResults.length ? "tenant-group-end" : ""} ${isVacant ? "vacant-meter-row" : ""} ${allocationSource ? "allocation-source-input-row" : ""} ${allocationParent ? "allocation-parent-input-row allocation-block-start" : ""} ${allocationParent || allocationOwner ? "allocation-block-row" : ""} ${lastAllocationSource ? "allocation-block-end" : ""}`}>
+              <tr className={`${combinedResult ? "allocation-result-row tenant-allocation-result-row" : ""} ${firstInUnit ? "unit-group-start" : ""} ${lastInUnit && !tenantAllocationResults.length ? "unit-group-end" : ""} ${firstInTenant ? "tenant-group-start" : ""} ${lastInTenant && !tenantAllocationResults.length ? "tenant-group-end" : ""} ${isVacant ? "vacant-meter-row" : ""} ${allocationSource ? "allocation-source-input-row" : ""} ${allocationParent ? "allocation-parent-input-row allocation-block-start" : ""} ${combinedInputParent || combinedInputSource ? "combined-allocation-input-row" : ""} ${allocationParent || allocationOwner ? "allocation-block-row" : ""} ${lastAllocationSource ? "allocation-block-end" : ""}`}>
                 {firstInTenant && (
                   <td className="tenant-cell tenant-identity" rowSpan={tenantMeters.length + tenantAllocationResultCount}>
                     <span className="merged-value">
@@ -4092,8 +4176,8 @@ function CustomItemTable({
                     <td className={`unit-identity ${unitEndsTenant ? "tenant-boundary" : ""}`} rowSpan={unitMeterCount + unitAllocationResultCount}><span className="merged-value">{allocationOwner ? "—" : meter.is_rate_source ? "大元メーター" : unit?.unit_name || unit?.unit_code || "未割当"}</span></td>
                   </>
                 )}
-                <td><strong className="meter-code-with-tag">{allocationParent ? <>{meter.tag && <span className="meter-tag-badge" style={{ backgroundColor: meter.tag.color, color: readableTextColor(meter.tag.color) }}>{meter.tag.tag_name}</span>}{isCombinedAllocationParent(meter) ? "合算按分・代表メーター" : "按分用親メーター"}</> : allocationSource ? <span className="allocation-source-meter-code">{isCombinedPositionSource(meter) ? combinedPositionName(meter) : meter.meter_label ?? meter.meter_code}</span> : <>{meter.tag && <span className="meter-tag-badge" style={{ backgroundColor: meter.tag.color, color: readableTextColor(meter.tag.color) }}>{meter.tag.tag_name}</span>}{meter.parent_meter_id && <span className="child-meter-mark">↳ 子</span>}{meter.meter_code}</>}</strong></td>
-                <td className={`numeric unit-price-cell ${calculationOnly ? "" : unitPriceClass(price)}`}>{calculationOnly ? "—" : formatYen(price)}</td>
+                <td><strong className="meter-code-with-tag">{combinedResult ? <span>└{combinedResult.parent.meter_label ?? combinedResult.parent.meter_code} 按分</span> : allocationParent ? <>{meter.tag && <span className="meter-tag-badge" style={{ backgroundColor: meter.tag.color, color: readableTextColor(meter.tag.color) }}>{meter.tag.tag_name}</span>}{isCombinedAllocationParent(meter) ? meter.meter_code : "按分用親メーター"}</> : allocationSource ? <span className="allocation-source-meter-code">{meter.meter_label ?? meter.meter_code}</span> : <>{meter.tag && <span className="meter-tag-badge" style={{ backgroundColor: meter.tag.color, color: readableTextColor(meter.tag.color) }}>{meter.tag.tag_name}</span>}{meter.parent_meter_id && <span className="child-meter-mark">↳ 子</span>}{meter.meter_code}</>}</strong></td>
+                <td className={`numeric unit-price-cell ${calculationOnly ? "" : unitPriceClass(price)}`}>{calculationOnly ? "—" : <>{formatYen(price)}{price != null && isInclusiveContract(contract) && <small>税込</small>}</>}</td>
                 {showReadings && (
                   <td className="numeric reading-value">
                     {!meterUsesReading || meter.entry?.previous_reading == null ? "—" : formatUsage(Number(meter.entry.previous_reading), getReadingDecimalDigits(meter.subItem.asset_meter_sub_item_id, meter.subItem.input_decimal_digits))}
@@ -4102,10 +4186,14 @@ function CustomItemTable({
                 {showReadings && (
                   <td className="reading-entry-cell">{meterUsesReading ? inputControl : "—"}</td>
                 )}
-                <td className={meterUsesReading ? `numeric meter-usage ${allocationSource || allocationParent ? "allocation-source-usage" : ""}` : "reading-entry-cell"}>
-                  {meterUsesReading ? <strong>{meter.is_rate_source || isUnentered ? "—" : formatUsage(currentUsage, aggregationDigits)}</strong> : inputControl}
+                <td className={meterUsesReading || combinedResult ? `numeric meter-usage ${allocationSource || allocationParent ? "allocation-source-usage" : ""}` : "reading-entry-cell"}>
+                  {combinedResult ? <strong>{formatUsage(currentUsage, aggregationDigits)}</strong> : meterUsesReading ? <strong>{meter.is_rate_source || isUnentered ? "—" : formatUsage(currentUsage, aggregationDigits)}</strong> : inputControl}
                 </td>
-                {calculationOnly ? (
+                {combinedInputParent ? (
+                  <td className={`numeric unit-total combined-allocation-total ${unitEndsTenant ? "tenant-boundary" : ""}`} rowSpan={combinedInputRowCount}>
+                    <span className="merged-value">{formatUsage(meterUsage(meter), aggregationDigits)}</span>
+                  </td>
+                ) : combinedInputSource ? null : calculationOnly ? (
                   <td className="numeric">—</td>
                 ) : firstInUnit ? (
                   <td className={`numeric unit-total ${unitEndsTenant ? "tenant-boundary" : ""}`} rowSpan={unitMeterCount + allocationResultsForUnit.length}>
@@ -4116,9 +4204,9 @@ function CustomItemTable({
                   <>{showsInclusiveAndExclusiveAmounts && <td className="numeric">—</td>}<td className="numeric">—</td></>
                 ) : firstInUnit ? (
                   <>
-                    {showsInclusiveAndExclusiveAmounts && <td className={`numeric unit-amount ${unitEndsTenant ? "tenant-boundary" : ""}`} rowSpan={unitMeterCount + allocationResultsForUnit.length}><span className="merged-value">{unitHasPrice ? formatYen(unitAmount) : "未設定"}</span></td>}
+                    {showsInclusiveAndExclusiveAmounts && <td className={`numeric unit-amount ${unitEndsTenant ? "tenant-boundary" : ""}`} rowSpan={unitMeterCount + allocationResultsForUnit.length}><span className="merged-value">{isInclusiveContract(contract) ? unitHasPrice ? formatYen(unitAmount) : "未設定" : ""}</span></td>}
                     <td className={`numeric unit-amount ${unitEndsTenant ? "tenant-boundary" : ""}`} rowSpan={unitMeterCount + allocationResultsForUnit.length}>
-                      <span className="merged-value">{unitHasPrice ? formatYen(toExclusiveAmount(unitAmount)) : "未設定"}</span>
+                      <span className="merged-value">{unitHasPrice ? formatYen(toExclusiveAmount(unitAmount, contract)) : "未設定"}</span>
                     </td>
                   </>
                 ) : null}
@@ -4137,8 +4225,8 @@ function CustomItemTable({
               </tr>
               {tenantAllocationResults.map((result) => (
                 <tr className="allocation-result-row tenant-allocation-result-row unit-group-end tenant-group-end" key={`allocation-result:${result.parent.asset_meter_id}:${result.assignment.unit_id}`}>
-                  <td className="allocation-result-label"><strong className="meter-code-with-tag">{result.source.tag && <span className="meter-tag-badge" style={{ backgroundColor: result.source.tag.color, color: readableTextColor(result.source.tag.color) }}>{result.source.tag.tag_name}</span>}<span>↳ {result.parent.meter_label ?? result.parent.meter_code} 按分</span></strong></td>
-                  <td className={`numeric unit-price-cell ${unitPriceClass(result.price)}`}>{formatYen(result.price)}</td>
+                  <td className="allocation-result-label"><strong className="meter-code-with-tag">{result.source.tag && <span className="meter-tag-badge" style={{ backgroundColor: result.source.tag.color, color: readableTextColor(result.source.tag.color) }}>{result.source.tag.tag_name}</span>}<span>└{result.parent.meter_label ?? result.parent.meter_code} 按分</span></strong></td>
+                  <td className={`numeric unit-price-cell ${unitPriceClass(result.price)}`}>{formatYen(result.price)}{result.price != null && isInclusiveContract(result.contract) && <small>税込</small>}</td>
                   {showReadings && <><td className="numeric reading-value">—</td><td className="numeric reading-value">—</td></>}
                   <td className="numeric meter-usage"><strong>{formatUsage(result.usage, result.digits)}</strong></td>
                   <td className="numeric">{result.previous == null ? "—" : formatUsage(result.previous, result.digits)}</td>
@@ -4589,8 +4677,9 @@ function BuildingSettingsView({
     asset_billing_line_item_id: null, sort_order: current.filter((row) => row.category === category).length,
     input_mode: "usage", input_decimal_digits: 1, aggregation_decimal_digits: 1, usage_rounding_mode: "round",
     billing_period_pattern_id: null, price_mode: "fixed", default_unit_price: null, tax_mode: "exclusive",
-    tax_rounding_mode: "floor", show_unit_price_on_invoice: true,
-    is_monthly_fixed: false,
+    tax_rounding_mode: "none", show_unit_price_on_invoice: true, show_usage_on_invoice: true,
+    is_monthly_fixed: false, calculation_mode: "meter",
+    amount_calculation_scope: "tenant",
   }]);
   const save = async () => {
     if (draftSubItems.some((item) => !item.sub_item_name.trim())) {
@@ -4649,22 +4738,24 @@ function BuildingSettingsView({
               .sort((a, b) => periodOrder.indexOf(a.pattern_name ?? "") - periodOrder.indexOf(b.pattern_name ?? ""));
             return <section className={`configuration-category utility-${category}`} key={category}>
               <header className="configuration-category-header"><strong>{labels[category]}</strong><label>請求タイミング<select value={utilitySetting.billing_frequency} onChange={(event) => updateUtilitySetting(category, { billing_frequency: event.target.value as AssetUtilitySetting["billing_frequency"] })}><option value="monthly">毎月</option><option value="odd">奇数月</option><option value="even">偶数月</option></select></label><label>使用量の単位<input value={setting.usage_unit} onChange={(event) => updateCategory(category, { usage_unit: event.target.value })} /></label><label className="checkbox-label"><input type="checkbox" checked={setting.is_basic_billable} onChange={(event) => updateBasicBillable(category, event.target.checked)} />基本料を請求する</label>{setting.is_basic_billable && <><label className="basic-charge-setting">算定方法<select value={setting.basic_charge_method} onChange={(event) => updateCategory(category, { basic_charge_method: event.target.value as MeterCategorySetting["basic_charge_method"] })}><option value="fixed">定額</option><option value="sqm">㎡ × 単価</option><option value="tsubo">坪数 × 単価</option></select></label>{setting.basic_charge_method !== "fixed" && <label className="basic-charge-setting">面積単価<input type="number" min="0" step="0.01" value={setting.basic_charge_area_unit_price ?? ""} placeholder="未設定" onChange={(event) => updateCategory(category, { basic_charge_area_unit_price: event.target.value === "" ? null : Number(event.target.value) })} /><span>{setting.basic_charge_method === "sqm" ? "円/㎡" : "円/坪"}</span></label>}</>}<label className="price-setting-label price-setting-separator">既定単価設定<select value={utilitySetting.price_scope} onChange={(event) => updateUtilitySetting(category, { price_scope: event.target.value as AssetUtilitySetting["price_scope"] })}><option value="category">共通して設定</option><option value="line_item">小分類ごとに設定</option></select></label>{usesSharedPrice && <><label className="price-setting-label">共通単価<input type="number" min="0" step="0.0001" value={utilitySetting.default_unit_price ?? ""} onChange={(event) => updateUtilitySetting(category, { default_unit_price: event.target.value === "" ? null : Number(event.target.value) })} /></label><label className="price-setting-label">共通単価の税区分<select value={utilitySetting.default_tax_mode} onChange={(event) => updateUtilitySetting(category, { default_tax_mode: event.target.value as TaxMode })}><option value="exclusive">税抜</option><option value="inclusive">税込</option></select></label></>}<label className="checkbox-label"><input type="checkbox" checked={utilitySetting.show_in_rent_roll} onChange={(event) => updateUtilitySetting(category, { show_in_rent_roll: event.target.checked })} />単価をレントロールに表示</label><button type="button" className="text-button" onClick={() => addSubItem(category)}>小分類を追加</button></header>
-              <div className="table-wrap"><ResizableTable className="configuration-table resizable-configuration-table" storageKey={`building-settings:${assetId}:meter-configuration`} storageUserId={columnStorageUserId} columnGroups={["subitem", "line-item", "monthly-fixed", "price-mode", "default-price", "invoice-price", "tax-mode", "tax-rounding", "billing-period", "actions"]}><thead><tr><ColumnHeader columnGroup="subitem">小分類</ColumnHeader><ColumnHeader columnGroup="line-item">請求明細の項目</ColumnHeader><ColumnHeader columnGroup="monthly-fixed">毎月定額</ColumnHeader><ColumnHeader columnGroup="price-mode">単価計算方法</ColumnHeader><ColumnHeader columnGroup="default-price">既定単価</ColumnHeader><ColumnHeader columnGroup="invoice-price">請求書に単価を表示</ColumnHeader><ColumnHeader columnGroup="tax-mode">税区分</ColumnHeader><ColumnHeader columnGroup="tax-rounding">税込単価の税抜換算</ColumnHeader><ColumnHeader columnGroup="billing-period">既定の請求期間</ColumnHeader><ColumnHeader columnGroup="actions" /></tr></thead><tbody>
+              <div className="table-wrap"><ResizableTable className="configuration-table resizable-configuration-table" storageKey={`building-settings:${assetId}:meter-configuration`} storageUserId={columnStorageUserId} columnGroups={["subitem", "line-item", "monthly-fixed", "amount-scope", "price-mode", "default-price", "invoice-price", "invoice-usage", "tax-mode", "tax-rounding", "billing-period", "actions"]}><thead><tr><ColumnHeader columnGroup="subitem">小分類</ColumnHeader><ColumnHeader columnGroup="line-item">請求明細の項目</ColumnHeader><ColumnHeader columnGroup="monthly-fixed">計算方法</ColumnHeader><ColumnHeader columnGroup="amount-scope">金額の計算単位</ColumnHeader><ColumnHeader columnGroup="price-mode">既定の単価計算方法</ColumnHeader><ColumnHeader columnGroup="default-price">既定単価</ColumnHeader><ColumnHeader columnGroup="invoice-price">既定の請求書単価表示</ColumnHeader><ColumnHeader columnGroup="invoice-usage">既定の請求書使用量表示</ColumnHeader><ColumnHeader columnGroup="tax-mode">既定の税区分</ColumnHeader><ColumnHeader columnGroup="tax-rounding">税込単価の税抜換算</ColumnHeader><ColumnHeader columnGroup="billing-period">既定の請求期間</ColumnHeader><ColumnHeader columnGroup="actions" /></tr></thead><tbody>
                 {items.map((item) => <tr key={item.asset_meter_sub_item_id}>
                   <td>{item.sub_item_kind === "basic"
                     ? <strong>{item.sub_item_name}</strong>
                     : <input value={item.sub_item_name} placeholder="新しい小分類" onChange={(event) => updateSubItem(item.asset_meter_sub_item_id, { sub_item_name: event.target.value })} />}</td>
                   <td className="align-left"><select value={item.asset_billing_line_item_id ?? ""} onChange={(event) => updateSubItem(item.asset_meter_sub_item_id, { asset_billing_line_item_id: event.target.value || null })}><option value="">未設定</option>{categoryLineItems.map((line) => <option key={line.asset_billing_line_item_id} value={line.asset_billing_line_item_id}>{line.line_item_name}</option>)}</select></td>
-                  <td>{item.sub_item_kind === "basic" ? "—" : <input type="checkbox" checked={item.is_monthly_fixed} onChange={(event) => updateSubItem(item.asset_meter_sub_item_id, { is_monthly_fixed: event.target.checked })} />}</td>
+                  <td>{item.sub_item_kind === "basic" ? "—" : <select value={item.calculation_mode} onChange={(event) => { const mode = event.target.value as MeterSubItem["calculation_mode"]; updateSubItem(item.asset_meter_sub_item_id, { calculation_mode: mode, is_monthly_fixed: mode !== "meter" }); }}><option value="meter">検針データから計算</option><option value="fixed">毎月定額</option><option value="allocated_amount">請求額から計算</option></select>}</td>
+                  <td>{item.sub_item_kind === "basic" || item.is_monthly_fixed ? "—" : <select value={item.amount_calculation_scope} onChange={(event) => updateSubItem(item.asset_meter_sub_item_id, { amount_calculation_scope: event.target.value as MeterSubItem["amount_calculation_scope"] })}><option value="meter">メーターごと</option><option value="unit">区画ごと</option><option value="tenant">テナントごと</option></select>}</td>
                   <td>{item.sub_item_kind === "basic" || item.is_monthly_fixed ? "—" : <select value={item.price_mode} onChange={(event) => updateSubItem(item.asset_meter_sub_item_id, { price_mode: event.target.value as MeterSubItem["price_mode"] })}><option value="fixed">固定</option><option value="amount">金額から計算</option><option value="master_meter">大元メーターから計算</option></select>}</td>
                   <td>{item.is_monthly_fixed ? "—" : <input type="number" min="0" step="0.0001" disabled={item.sub_item_kind === "basic" || usesSharedPrice} value={item.default_unit_price ?? ""} onChange={(event) => updateSubItem(item.asset_meter_sub_item_id, { default_unit_price: event.target.value === "" ? null : Number(event.target.value) })} />}</td>
                   <td>{item.sub_item_kind === "basic" || item.is_monthly_fixed ? "—" : <input type="checkbox" checked={item.show_unit_price_on_invoice} onChange={(event) => updateSubItem(item.asset_meter_sub_item_id, { show_unit_price_on_invoice: event.target.checked })} />}</td>
+                  <td>{item.sub_item_kind === "basic" || item.is_monthly_fixed ? "—" : <input type="checkbox" checked={item.show_usage_on_invoice} onChange={(event) => updateSubItem(item.asset_meter_sub_item_id, { show_usage_on_invoice: event.target.checked })} />}</td>
                   <td>{usesSharedPrice ? <span>{utilitySetting.default_tax_mode === "inclusive" ? "税込（分類共通）" : "税抜（分類共通）"}</span> : <select value={item.tax_mode} onChange={(event) => updateSubItem(item.asset_meter_sub_item_id, { tax_mode: event.target.value as TaxMode })}><option value="exclusive">税抜</option><option value="inclusive">税込</option></select>}</td>
-                  <td>{(usesSharedPrice ? utilitySetting.default_tax_mode : item.tax_mode) === "inclusive" ? <select value={item.tax_rounding_mode} onChange={(event) => updateSubItem(item.asset_meter_sub_item_id, { tax_rounding_mode: event.target.value as "floor" | "round" | "ceil" })}><option value="floor">切り捨て</option><option value="round">四捨五入</option><option value="ceil">切り上げ</option></select> : "—"}</td>
+                  <td>{item.sub_item_kind === "basic" || item.is_monthly_fixed ? "—" : <select value={item.tax_rounding_mode} onChange={(event) => updateSubItem(item.asset_meter_sub_item_id, { tax_rounding_mode: event.target.value as MeterSubItem["tax_rounding_mode"] })}><option value="none">ー</option><option value="floor">切り捨て</option><option value="round">四捨五入</option><option value="ceil">切り上げ</option></select>}</td>
                   <td className="align-left"><select value={item.billing_period_pattern_id ?? ""} onChange={(event) => updateSubItem(item.asset_meter_sub_item_id, { billing_period_pattern_id: event.target.value || null })}><option value="">未設定</option>{periodOptions.map((period) => <option key={period.billing_period_pattern_id} value={period.billing_period_pattern_id}>{period.pattern_name}</option>)}</select></td>
                   <td>{item.sub_item_kind === "custom" && <button type="button" className="danger-link" onClick={() => window.confirm(`「${item.sub_item_name}」を削除しますか？`) && setDraftSubItems((current) => current.filter((row) => row.asset_meter_sub_item_id !== item.asset_meter_sub_item_id))}>削除</button>}</td>
                 </tr>)}
-                {categorySurcharges.filter((item) => item.is_billable && surchargeLineItems.length > 0).map((item) => <tr key={item.asset_meter_surcharge_id} className="surcharge-setting-row"><td><strong>{item.surcharge_name}</strong></td><td className="align-left"><select value={item.asset_billing_line_item_id ?? ""} onChange={(event) => updateSurcharge(item.asset_meter_surcharge_id, { asset_billing_line_item_id: event.target.value || null })}><option value="">未設定</option>{surchargeLineItems.map((line) => <option key={line.asset_billing_line_item_id} value={line.asset_billing_line_item_id}>{line.line_item_name}</option>)}</select></td><td colSpan={6}>—</td><td className="align-left"><select value={item.billing_period_pattern_id ?? ""} onChange={(event) => updateSurcharge(item.asset_meter_surcharge_id, { billing_period_pattern_id: event.target.value || null })}><option value="">未設定</option>{periodOptions.map((period) => <option key={period.billing_period_pattern_id} value={period.billing_period_pattern_id}>{period.pattern_name}</option>)}</select></td><td /></tr>)}
+                {categorySurcharges.filter((item) => item.is_billable && surchargeLineItems.length > 0).map((item) => <tr key={item.asset_meter_surcharge_id} className="surcharge-setting-row"><td><strong>{item.surcharge_name}</strong></td><td className="align-left"><select value={item.asset_billing_line_item_id ?? ""} onChange={(event) => updateSurcharge(item.asset_meter_surcharge_id, { asset_billing_line_item_id: event.target.value || null })}><option value="">未設定</option>{surchargeLineItems.map((line) => <option key={line.asset_billing_line_item_id} value={line.asset_billing_line_item_id}>{line.line_item_name}</option>)}</select></td><td colSpan={8}>—</td><td className="align-left"><select value={item.billing_period_pattern_id ?? ""} onChange={(event) => updateSurcharge(item.asset_meter_surcharge_id, { billing_period_pattern_id: event.target.value || null })}><option value="">未設定</option>{periodOptions.map((period) => <option key={period.billing_period_pattern_id} value={period.billing_period_pattern_id}>{period.pattern_name}</option>)}</select></td><td /></tr>)}
               </tbody></ResizableTable></div>
             </section>;
           })}
@@ -4887,10 +4978,11 @@ function roundUtilityAmount(
 
 function exclusiveAmountFromInclusive(
   inclusiveAmount: number,
-  taxRoundingMode: "floor" | "round" | "ceil",
+  taxRoundingMode: "none" | "floor" | "round" | "ceil",
   applicableTaxRate = DEFAULT_CONSUMPTION_TAX_RATE,
 ) {
   const rawExclusiveAmount = inclusiveAmount / (1 + applicableTaxRate);
+  if (taxRoundingMode === "none") return inclusiveAmount;
   return taxRoundingMode === "ceil"
     ? Math.ceil(rawExclusiveAmount)
     : taxRoundingMode === "round"
