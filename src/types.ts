@@ -27,6 +27,7 @@ export type AssetUtilitySetting = {
   billing_frequency: "monthly" | "odd" | "even";
 };
 export type AssetMeterBuildingSetting = { meter_date_mode: "shared" | "category" };
+export type MeterDateSetting = { asset_meter_date_setting_id: string; date_number: number; setting_name: string };
 export type MeterTag = {
   asset_meter_tag_id: string;
   asset_id: string;
@@ -85,6 +86,8 @@ export type ContractUnit = {
     row_no: number;
     invoice_number: number;
     split_label: string | null;
+    split_items: Array<"rent" | "common" | "storage" | "variable">;
+    surcharge_excluded: boolean;
     electric_billable: boolean;
     water_billable: boolean;
     gas_billable: boolean;
@@ -184,6 +187,7 @@ export type MeterSubItem = {
   aggregation_decimal_digits: number;
   usage_rounding_mode: "floor" | "round" | "ceil";
   billing_period_pattern_id: string | null;
+  asset_meter_date_setting_id: string | null;
   price_mode: "fixed" | "amount" | "master_meter";
   default_unit_price: number | null;
   tax_mode: TaxMode;
@@ -238,6 +242,7 @@ export type MeterSurcharge = {
   surcharge_name: string;
   is_billable: boolean;
   billing_period_pattern_id: string | null;
+  asset_meter_date_setting_id: string | null;
   asset_billing_line_item_id: string | null;
   calculation_scope: "tenant" | "unit";
   recovery_inclusive_mode?: "from_exclusive" | "use_calculated_inclusive";

@@ -8,6 +8,7 @@ import type {
   ConfirmedMeterAmount,
   ContractUnit,
   MeterCategorySetting,
+  MeterDateSetting,
   MeterReadingRow,
   MeterSubItem,
   MeterSurcharge,
@@ -214,6 +215,10 @@ function isMissingVariablePriceForUnpricedOnlyColumn(error: { code?: string; mes
     ));
 }
 
+function isMissingMeterDateSettingSchema(error: { code?: string; message: string } | null) {
+  return Boolean(error && (["42703", "42P01", "PGRST204", "PGRST205"].includes(error.code ?? "") || error.message.includes("asset_meter_date_setting")));
+}
+
 const billingUnitValue = (id: string) => `billing:${id}`;
 const billingUnitIdOf = (value: string | null) => value?.startsWith("billing:") ? value.slice(8) : null;
 function normalizeAssignment<T extends { unit_id: string | null; lease_contract_billing_unit_id?: string | null; billingUnit?: { billing_unit_name: string; members?: Array<{ contractUnit: { unit: { floor_label: string | null } | Array<{ floor_label: string | null }> } | Array<{ unit: { floor_label: string | null } | Array<{ floor_label: string | null }> }> }> } | Array<{ billing_unit_name: string; members?: Array<{ contractUnit: { unit: { floor_label: string | null } | Array<{ floor_label: string | null }> } | Array<{ unit: { floor_label: string | null } | Array<{ floor_label: string | null }> }> }> }> | null }>(row: T) {
@@ -273,11 +278,49 @@ export async function saveAssetMeterBuildingSetting(client: SupabaseClient, asse
   fail("ビルの検針日設定を保存できませんでした", error);
 }
 
+export async function loadMeterDateSettings(client: SupabaseClient, assetId: string): Promise<MeterDateSetting[]> {
+  const { data, error } = await client.from("asset_meter_date_setting")
+    .select("asset_meter_date_setting_id, date_number, setting_name")
+    .eq("asset_id", assetId).order("date_number");
+  if (error && (["42P01", "PGRST205"].includes((error as { code?: string }).code ?? "") || error.message.includes("asset_meter_date_setting"))) return [];
+  fail("複数検針日の設定を読み込めませんでした", error);
+  return (data ?? []) as MeterDateSetting[];
+}
+
+export async function saveMeterDateSettings(client: SupabaseClient, assetId: string, settings: MeterDateSetting[], removedIds: string[]) {
+  if (removedIds.length) {
+    const removed = await client.from("asset_meter_date_setting").delete().in("asset_meter_date_setting_id", removedIds).eq("asset_id", assetId);
+    fail("複数検針日の設定を削除できませんでした", removed.error);
+  }
+  if (!settings.length) return [];
+  const { data, error } = await client.from("asset_meter_date_setting").upsert(settings.map((setting) => ({ ...setting, asset_id: assetId })))
+    .select("asset_meter_date_setting_id, date_number, setting_name").order("date_number");
+  fail("複数検針日の設定を保存できませんでした", error);
+  return (data ?? []) as MeterDateSetting[];
+}
+
+export async function loadAdditionalMeterReadingDates(client: SupabaseClient, assetId: string, billingMonth: string) {
+  const previousMonth = new Date(Date.UTC(Number(billingMonth.slice(0, 4)), Number(billingMonth.slice(5, 7)) - 2, 1)).toISOString().slice(0, 10);
+  const { data, error } = await client.from("meter_reading_month_date")
+    .select("billing_month, asset_meter_date_setting_id, meter_date").eq("asset_id", assetId)
+    .in("billing_month", [`${billingMonth}-01`, previousMonth]);
+  if (error && (["42P01", "PGRST205"].includes((error as { code?: string }).code ?? "") || error.message.includes("meter_reading_month_date"))) return { current: {}, previous: {} };
+  fail("複数検針日を読み込めませんでした", error);
+  const current: Record<string, string> = {}, previous: Record<string, string> = {};
+  for (const row of data ?? []) (String(row.billing_month).slice(0, 7) === billingMonth ? current : previous)[row.asset_meter_date_setting_id] = row.meter_date ?? "";
+  return { current, previous };
+}
+
+export async function saveAdditionalMeterReadingDate(client: SupabaseClient, assetId: string, billingMonth: string, settingId: string, meterDate: string) {
+  const { error } = await client.from("meter_reading_month_date").upsert({ asset_id: assetId, billing_month: `${billingMonth}-01`, asset_meter_date_setting_id: settingId, meter_date: meterDate || null }, { onConflict: "asset_id,billing_month,asset_meter_date_setting_id" });
+  fail("検針日を保存できませんでした", error);
+}
+
 export async function loadContractUnits(
   client: SupabaseClient,
   assetId: string,
 ): Promise<ContractUnit[]> {
-  const [contracts, billingUnits, order, meterBilling] = await Promise.all([
+  const [contracts, billingUnits, order, initialMeterBilling] = await Promise.all([
     client
       .from("lease_contract_unit")
       .select(
@@ -296,9 +339,17 @@ export async function loadContractUnits(
       .eq("asset_id", assetId),
     client
       .from("meter_reading_contract")
-      .select("meter_reading_contract_id, tenant_id, row_no, invoice_number, split_label, electric_billable, water_billable, gas_billable, electric_sum_mode, water_sum_mode, gas_sum_mode, units:meter_reading_contract_unit(unit_id), items:meter_reading_contract_item(asset_meter_sub_item_id, is_billable, fixed_amount)")
+      .select("meter_reading_contract_id, tenant_id, row_no, invoice_number, split_label, split_items, surcharge_excluded, electric_billable, water_billable, gas_billable, electric_sum_mode, water_sum_mode, gas_sum_mode, units:meter_reading_contract_unit(unit_id), items:meter_reading_contract_item(asset_meter_sub_item_id, is_billable, fixed_amount)")
       .eq("asset_id", assetId),
   ]);
+  let meterBilling: { data: Array<Record<string, unknown>> | null; error: { message: string } | null } = initialMeterBilling;
+  // DBマイグレーションの反映前でも、既存の検針画面を止めないよう従来の列だけで読み直す。
+  if (meterBilling.error?.message.includes("surcharge_excluded")) {
+    meterBilling = await client
+      .from("meter_reading_contract")
+      .select("meter_reading_contract_id, tenant_id, row_no, invoice_number, split_label, split_items, electric_billable, water_billable, gas_billable, electric_sum_mode, water_sum_mode, gas_sum_mode, units:meter_reading_contract_unit(unit_id), items:meter_reading_contract_item(asset_meter_sub_item_id, is_billable, fixed_amount)")
+      .eq("asset_id", assetId);
+  }
   fail("契約ごとの公共料金設定を読み込めませんでした", contracts.error);
   fail("請求区画ごとの公共料金設定を読み込めませんでした", billingUnits.error);
   fail("テナントの並び順を読み込めませんでした", order.error);
@@ -309,6 +360,8 @@ export async function loadContractUnits(
   type BillingMemberUnit = { lease_contract_unit_id: string; unit: { unit_id: string; floor_label: string | null } | Array<{ unit_id: string; floor_label: string | null }> };
   const asArray = <T>(value: T | T[] | null | undefined): T[] => value == null ? [] : Array.isArray(value) ? value : [value];
   const billingRows = ((billingUnits.data ?? []) as unknown as Array<{ lease_contract_billing_unit_id: string; billing_unit_name: string; contract: ContractUnit["contract"] | ContractUnit["contract"][]; members: Array<{ contractUnit: BillingMemberUnit | BillingMemberUnit[] }>; prices: ContractUnit["prices"]; categoryPrices: ContractUnit["categoryPrices"]; basics: ContractUnit["basics"]; meterTerms: ContractUnit["meterTerms"] }>).filter((row) => row.members.length > 0);
+  type MeterBillingSetting = ContractUnit["meterBilling"][number] & { tenant_id: string };
+  const storedMeterBilling = (meterBilling.data ?? []) as unknown as MeterBillingSetting[];
   const groupedContractUnitIds = new Set(billingRows.flatMap((row) => row.members.flatMap((member) => asArray(member.contractUnit).map((unit) => unit.lease_contract_unit_id))));
   const rows = ((contracts.data ?? []) as unknown as ContractUnit[]).filter((row) => !groupedContractUnitIds.has(row.lease_contract_unit_id));
   for (const billing of billingRows) {
@@ -324,12 +377,13 @@ export async function loadContractUnits(
     });
   }
   for (const row of rows) {
-    const tenantSettings = (meterBilling.data ?? [])
+    const tenantSettings = storedMeterBilling.map((setting) => ({ ...setting, surcharge_excluded: Boolean(setting.surcharge_excluded) }))
       .filter((setting) => setting.tenant_id === row.contract?.tenant_id)
       .sort((left, right) => left.row_no - right.row_no);
-    const matchingSetting = tenantSettings.find((setting) =>
+    const variableSplitEnabled = tenantSettings.some((setting) => (setting.split_items ?? ["variable"]).includes("variable"));
+    const matchingSetting = variableSplitEnabled ? tenantSettings.find((setting) =>
       setting.units?.some((unit: { unit_id: string }) => (row.member_unit_ids ?? [row.unit?.unit_id]).includes(unit.unit_id)),
-    );
+    ) : undefined;
     // 分割行のどこにも明示されていない区画は、KANAMEと同じく1行目へ含める。
     row.meterBilling = matchingSetting ? [matchingSetting] : tenantSettings.slice(0, 1);
   }
@@ -876,6 +930,41 @@ export async function saveMonthlyFixedCharge(
   return effectiveContractId as string;
 }
 
+export async function saveSurchargeExclusion(
+  client: SupabaseClient,
+  assetId: string,
+  tenantId: string,
+  contractId: string | null,
+  excluded: boolean,
+): Promise<string> {
+  let effectiveContractId = contractId;
+  if (!effectiveContractId) {
+    const existing = await client.from("meter_reading_contract")
+      .select("meter_reading_contract_id").eq("asset_id", assetId).eq("tenant_id", tenantId)
+      .order("row_no").limit(1).maybeSingle();
+    fail("請求グループを確認できませんでした", existing.error);
+    effectiveContractId = existing.data?.meter_reading_contract_id ?? null;
+    if (!effectiveContractId) {
+      let created = await client.from("meter_reading_contract")
+        .insert({ asset_id: assetId, tenant_id: tenantId, row_no: 1, surcharge_excluded: excluded })
+        .select("meter_reading_contract_id").single();
+      if (created.error?.message.includes("surcharge_excluded")) {
+        created = await client.from("meter_reading_contract")
+          .insert({ asset_id: assetId, tenant_id: tenantId, row_no: 1 })
+          .select("meter_reading_contract_id").single();
+      }
+      fail("請求グループを準備できませんでした", created.error);
+      return created.data!.meter_reading_contract_id;
+    }
+  }
+  const { error } = await client.from("meter_reading_contract")
+    .update({ surcharge_excluded: excluded }).eq("meter_reading_contract_id", effectiveContractId);
+  // 旧スキーマでは画面側のローカル互換保存を使う。列追加後は通常どおりDBに保存される。
+  if (error?.message.includes("surcharge_excluded")) return effectiveContractId;
+  fail("増額分の除外設定を保存できませんでした", error);
+  return effectiveContractId;
+}
+
 export async function loadSurchargeEvidence(
   client: SupabaseClient,
   assetId: string,
@@ -1049,17 +1138,35 @@ export async function loadMeteringConfiguration(
   if (variablePriceModes.error && !missingVariablePriceColumn) {
     fail("変動単価の適用設定を読み込めませんでした", variablePriceModes.error);
   }
+  const [subItemDateSettings, surchargeDateSettings] = await Promise.all([
+    client.from("asset_meter_sub_item").select("asset_meter_sub_item_id, asset_meter_date_setting_id").eq("asset_id", assetId),
+    client.from("asset_meter_surcharge").select("asset_meter_surcharge_id, asset_meter_date_setting_id").eq("asset_id", assetId),
+  ]);
+  const subItemDateById = new Map((subItemDateSettings.error ? [] : subItemDateSettings.data ?? []).map((row) => [row.asset_meter_sub_item_id, row.asset_meter_date_setting_id]));
+  const surchargeDateById = new Map((surchargeDateSettings.error ? [] : surchargeDateSettings.data ?? []).map((row) => [row.asset_meter_surcharge_id, row.asset_meter_date_setting_id]));
   const recoveryModeById = new Map((recoveryModes.data ?? []).map((row) => [row.asset_meter_surcharge_id, row.recovery_inclusive_mode]));
   const variablePriceModeById = new Map((variablePriceModes.data ?? []).map((row) => [row.asset_meter_sub_item_id, Boolean(row.variable_price_for_unpriced_only)]));
+  // 旧名「電気増額分」と現行名「増額分」、または同時初期化で重複した行は画面上で1件にまとめる。
+  type SurchargeRow = NonNullable<typeof surcharges.data>[number];
+  const surchargeByName = new Map<string, SurchargeRow>();
+  for (const row of surcharges.data ?? []) {
+    const normalizedName = row.surcharge_name === "電気増額分" ? "増額分" : row.surcharge_name;
+    const key = `${row.category}\u0000${normalizedName}`;
+    const current = surchargeByName.get(key);
+    // 請求明細に紐づいた既存設定を優先し、未設定の重複行は表示しない。
+    if (!current || (!current.asset_billing_line_item_id && row.asset_billing_line_item_id)) surchargeByName.set(key, row);
+  }
+  const uniqueSurcharges = Array.from(surchargeByName.values());
   return {
     categories: (categories.data ?? []) as MeterCategorySetting[],
     subItems: (subItems.data ?? []).map((row) => ({
       ...row,
+      asset_meter_date_setting_id: subItemDateById.get(row.asset_meter_sub_item_id) ?? null,
       variable_price_for_unpriced_only: variablePriceModeById.get(row.asset_meter_sub_item_id) ?? false,
     })) as MeterSubItem[],
-    surcharges: (surcharges.data ?? []).map((row) => {
+    surcharges: uniqueSurcharges.map((row) => {
       const recoveryInclusiveMode = recoveryModeById.get(row.asset_meter_surcharge_id);
-      return recoveryInclusiveMode ? { ...row, recovery_inclusive_mode: recoveryInclusiveMode } : row;
+      return { ...row, asset_meter_date_setting_id: surchargeDateById.get(row.asset_meter_surcharge_id) ?? null, ...(recoveryInclusiveMode ? { recovery_inclusive_mode: recoveryInclusiveMode } : {}) };
     }) as MeterSurcharge[],
     periodPatterns: (periodPatterns.data ?? []) as BillingPeriodPattern[],
   };
@@ -1137,8 +1244,7 @@ export async function saveMeteringSettings(
       ? { ...row, asset_meter_sub_item_id: existingId }
       : row;
   });
-  const subItemResult = await client.from("asset_meter_sub_item").upsert(
-    normalizedSubItems.map((row) => ({
+  const subItemRows = normalizedSubItems.map((row) => ({
       asset_meter_sub_item_id: row.asset_meter_sub_item_id,
       asset_id: assetId,
       category: row.category,
@@ -1151,17 +1257,23 @@ export async function saveMeteringSettings(
       aggregation_decimal_digits: row.aggregation_decimal_digits,
       usage_rounding_mode: row.usage_rounding_mode,
       billing_period_pattern_id: row.billing_period_pattern_id,
+      asset_meter_date_setting_id: row.asset_meter_date_setting_id,
       price_mode: row.sub_item_kind === "basic" ? "fixed" : row.price_mode,
       default_unit_price: row.sub_item_kind === "basic" ? null : row.default_unit_price,
-      tax_mode: row.tax_mode,
+      tax_mode: row.sub_item_kind === "custom" && row.calculation_mode !== "meter" ? "exclusive" : row.tax_mode,
       tax_rounding_mode: row.tax_rounding_mode,
       show_unit_price_on_invoice: row.show_unit_price_on_invoice,
       show_usage_on_invoice: row.show_usage_on_invoice,
       is_monthly_fixed: row.sub_item_kind === "custom" && row.calculation_mode !== "meter",
       calculation_mode: row.calculation_mode,
       amount_calculation_scope: row.amount_calculation_scope,
-    })),
-  ).select("asset_meter_sub_item_id, category, sub_item_name, sub_item_kind, asset_billing_line_item_id, sort_order, input_mode, input_decimal_digits, aggregation_decimal_digits, usage_rounding_mode, billing_period_pattern_id, price_mode, default_unit_price, tax_mode, tax_rounding_mode, show_unit_price_on_invoice, show_usage_on_invoice, is_monthly_fixed, calculation_mode, amount_calculation_scope");
+    }));
+  let subItemResult = await client.from("asset_meter_sub_item").upsert(subItemRows)
+    .select("asset_meter_sub_item_id, category, sub_item_name, sub_item_kind, asset_billing_line_item_id, sort_order, input_mode, input_decimal_digits, aggregation_decimal_digits, usage_rounding_mode, billing_period_pattern_id, asset_meter_date_setting_id, price_mode, default_unit_price, tax_mode, tax_rounding_mode, show_unit_price_on_invoice, show_usage_on_invoice, is_monthly_fixed, calculation_mode, amount_calculation_scope");
+  if (isMissingMeterDateSettingSchema(subItemResult.error)) {
+    subItemResult = await client.from("asset_meter_sub_item").upsert(subItemRows.map(({ asset_meter_date_setting_id: _dateSettingId, ...row }) => row))
+      .select("asset_meter_sub_item_id, category, sub_item_name, sub_item_kind, asset_billing_line_item_id, sort_order, input_mode, input_decimal_digits, aggregation_decimal_digits, usage_rounding_mode, billing_period_pattern_id, price_mode, default_unit_price, tax_mode, tax_rounding_mode, show_unit_price_on_invoice, show_usage_on_invoice, is_monthly_fixed, calculation_mode, amount_calculation_scope");
+  }
   fail("小分類設定を保存できませんでした", subItemResult.error);
   const surchargeRows = surcharges.map((row) => ({
       asset_meter_surcharge_id: row.asset_meter_surcharge_id,
@@ -1171,10 +1283,14 @@ export async function saveMeteringSettings(
       asset_billing_line_item_id: row.asset_billing_line_item_id,
       is_billable: row.is_billable,
       billing_period_pattern_id: row.billing_period_pattern_id,
+      asset_meter_date_setting_id: row.asset_meter_date_setting_id,
       calculation_scope: row.calculation_scope,
       recovery_inclusive_mode: row.recovery_inclusive_mode,
     }));
   let surchargeResult = await client.from("asset_meter_surcharge").upsert(surchargeRows);
+  if (isMissingMeterDateSettingSchema(surchargeResult.error)) {
+    surchargeResult = await client.from("asset_meter_surcharge").upsert(surchargeRows.map(({ asset_meter_date_setting_id: _dateSettingId, ...row }) => row));
+  }
   if (isMissingRecoveryInclusiveModeColumn(surchargeResult.error)) {
     surchargeResult = await client.from("asset_meter_surcharge").upsert(
       surchargeRows.map(({ recovery_inclusive_mode: _recoveryInclusiveMode, ...row }) => row),
