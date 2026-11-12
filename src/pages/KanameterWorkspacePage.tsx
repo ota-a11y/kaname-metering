@@ -4538,9 +4538,7 @@ function SurchargeWorkspace({
     ? sortedEligibleContracts.map((contract) => [contract])
     : billingGroupIds.map((billingGroupId) => sortedEligibleContracts.filter((row) => billingGroupKey(row) === billingGroupId));
   const tenantRows = calculationGroups.map((tenantContracts) => {
-    const unitIds = new Set(tenantContracts.flatMap((row) => row.member_unit_ids?.length
-      ? row.member_unit_ids
-      : row.unit?.unit_id ? [row.unit.unit_id] : []));
+    const unitIds = new Set(tenantContracts.flatMap((row) => row.unit?.unit_id ? [row.unit.unit_id] : []));
     return {
       tenantContracts,
       usage: usageForUnitIds(unitIds),

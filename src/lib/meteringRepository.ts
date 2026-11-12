@@ -389,14 +389,20 @@ export async function loadContractUnits(
       .sort((left, right) => left.row_no - right.row_no);
     // データ分割された請求行は、分割対象の請求項目にかかわらず検針計算でも
     // 区画の所属先として扱う。split_items に variable がない行も合算しない。
-    const matchingSettings = tenantSettings.length > 1 ? tenantSettings.filter((setting) => {
-      const settingUnitIds = new Set(setting.units?.map((unit) => unit.unit_id) ?? []);
-      const physicalMatch = (row.member_unit_ids ?? [row.unit?.unit_id]).some((unitId) => unitId && settingUnitIds.has(unitId));
-      const billingUnitMatch = Boolean(row.lease_contract_billing_unit_id && setting.billingUnits?.some((billingUnit) =>
+    const billingUnitSettings = tenantSettings.filter((setting) =>
+      Boolean(row.lease_contract_billing_unit_id && setting.billingUnits?.some((billingUnit) =>
         billingUnit.lease_contract_billing_unit_id === row.lease_contract_billing_unit_id
-      ));
-      return physicalMatch || billingUnitMatch;
-    }) : [];
+      )),
+    );
+    const physicalUnitSettings = tenantSettings.filter((setting) => {
+      const settingUnitIds = new Set(setting.units?.map((unit) => unit.unit_id) ?? []);
+      return (row.member_unit_ids ?? [row.unit?.unit_id]).some((unitId) => unitId && settingUnitIds.has(unitId));
+    });
+    // 請求区画IDは、同じ物理区画を共有する複数の請求区画を区別するための主キー。
+    // 明示的な請求区画割当がある場合、物理区画一致を混ぜると再び1行に統合される。
+    const matchingSettings = tenantSettings.length > 1
+      ? billingUnitSettings.length ? billingUnitSettings : physicalUnitSettings
+      : [];
     if (!matchingSettings.length) {
       splitRows.push({ ...row, meterBilling: tenantSettings.slice(0, 1) });
       continue;
@@ -410,7 +416,7 @@ export async function loadContractUnits(
         lease_contract_unit_id: `${row.lease_contract_unit_id}:${setting.meter_reading_contract_id}`,
         member_unit_ids: memberUnitIds,
         member_units: selectedMembers.length ? selectedMembers : row.member_units,
-        unit: row.unit && selectedMembers.length ? {
+        unit: row.unit && selectedMembers.length && !row.lease_contract_billing_unit_id ? {
           ...row.unit,
           unit_code: selectedMembers.map((unit) => unit.unit_code).join("・"),
           unit_name: selectedMembers.map((unit) => unit.unit_name || unit.unit_code).join("・"),
