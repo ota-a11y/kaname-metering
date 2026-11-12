@@ -3884,9 +3884,6 @@ function CustomItemTable({
   };
   const chargeForMeters = (targetMeters: MeterReadingRow[]) => {
     const first = targetMeters[0];
-    const calculationScope = amountCalculationScope === "tenant" && targetMeters.some((meter) => isSplitBillingContract(contractFor(meter)))
-      ? "unit"
-      : amountCalculationScope;
     return calculateUsageCharge(
       targetMeters.map((targetMeter) => ({
         meterId: targetMeter.asset_meter_id,
@@ -3897,11 +3894,11 @@ function CustomItemTable({
       })),
       first.subItem.aggregation_decimal_digits,
       first.subItem.usage_rounding_mode,
-      calculationScope,
+      amountCalculationScope,
     );
   };
   const displayGroupsForBilling = (billingMeters: MeterReadingRow[]) =>
-    amountCalculationScope === "tenant" && !billingMeters.some((meter) => isSplitBillingContract(contractFor(meter)))
+    amountCalculationScope === "tenant"
       ? [billingMeters]
       : Array.from(new Map(
           billingMeters.map((meter) => [amountCalculationScope === "meter" ? meter.asset_meter_id : unitKey(meter), billingMeters.filter((row) => (amountCalculationScope === "meter" ? row.asset_meter_id : unitKey(row)) === (amountCalculationScope === "meter" ? meter.asset_meter_id : unitKey(meter)))]),
@@ -4129,6 +4126,7 @@ function CustomItemTable({
             let billingEndIndex = index;
             while (billingEndIndex + 1 < orderedMeters.length && billingKey(orderedMeters[billingEndIndex + 1]) === currentBillingKey) billingEndIndex += 1;
             const billingMeters = orderedMeters.slice(billingStartIndex, billingEndIndex + 1);
+            const billingBillableMeters = billingMeters.filter((candidate) => billableMeters.includes(candidate));
             let billingMeterCount = 1;
             while (index + billingMeterCount < orderedMeters.length && billingKey(orderedMeters[index + billingMeterCount]) === currentBillingKey) billingMeterCount += 1;
             const unitEndIndex = index + unitMeterCount - 1;
@@ -4168,14 +4166,25 @@ function CustomItemTable({
                 + allocationResultsForUnit.reduce((sum, result) => sum + (result.inclusiveAmount ?? 0), 0)
               : 0;
             const tenantUsage = displayedUsageForTenant(tenantBillableMeters) + allocationResultsForTenant.reduce((sum, result) => sum + result.usage, 0);
-            const billingUsage = chargeForMeters(billingMeters).usage + allocationResultsForBilling.reduce((sum, result) => sum + result.usage, 0);
-            const billingAmount = chargeForMeters(billingMeters).amount + allocationResultsForBilling.reduce((sum, result) => sum + (result.amount ?? 0), 0);
+            const billingUsage = billingBillableMeters.length
+              ? displayGroupsForBilling(billingBillableMeters).reduce((sum, group) => sum + chargeForMeters(group).usage, 0)
+                + allocationResultsForBilling.reduce((sum, result) => sum + result.usage, 0)
+              : 0;
+            const billingAmount = billingBillableMeters.length
+              ? displayGroupsForBilling(billingBillableMeters).reduce((sum, group) => sum + exclusiveChargeForMeters(group), 0)
+                + allocationResultsForBilling.reduce((sum, result) => sum + toExclusiveAmount(result.amount ?? 0, result.contract), 0)
+              : 0;
+            const billingInclusiveAmount = billingBillableMeters.length
+              ? displayGroupsForBilling(billingBillableMeters).reduce((sum, group) => sum + chargeForMeters(group).groups.reduce(
+                  (groupSum, charge) => groupSum + (charge.inclusiveAmount ?? 0), 0,
+                ), 0) + allocationResultsForBilling.reduce((sum, result) => sum + (result.inclusiveAmount ?? 0), 0)
+              : 0;
+            const billingHasPrice = billingBillableMeters.some((row) => unitPrice(row) != null)
+              || allocationResultsForBilling.some((result) => result.price != null);
             const tenantAmount = displayedAmountForTenant(tenantBillableMeters)
               + allocationResultsForTenant.reduce((sum, result) => sum + toExclusiveAmount(result.amount ?? 0, result.contract), 0);
             const tenantInclusiveAmount = displayedInclusiveAmountForTenant(tenantBillableMeters)
               + allocationResultsForTenant.reduce((sum, result) => sum + (result.inclusiveAmount ?? 0), 0);
-            const tenantHasInclusiveAmount = tenantBillableMeters.some((row) => isInclusiveContract(contractFor(row)))
-              || allocationResultsForTenant.some((result) => isInclusiveContract(result.contract));
             const previousUsage = combinedResult ? combinedResult.previous : usageHistory.previous[meter.asset_meter_id] == null
               ? undefined
               : billingAdjustedUsage(meter, adjustedMeterUsage(meter, meters, previousUsageFor));
@@ -4198,7 +4207,22 @@ function CustomItemTable({
               allocationOwnerFor(orderedMeters[index + 1])?.asset_meter_id !== allocationOwnerId
             );
             const calculationOnly = meter.is_rate_source || allocationSource || allocationParent;
+            // テナント計算をデータ分割している場合だけ、「区画合計」を物理区画単位ではなく
+            // 分割データに含まれる全区画（例: A1+A2、倉庫A～D）単位で表示する。
+            const usesBillingGroupUnitTotal = amountCalculationScope === "tenant" && isSplitBillingContract(contract);
+            const firstInDisplayedUnitTotal = usesBillingGroupUnitTotal
+              ? !calculationOnly && billingBillableMeters[0]?.asset_meter_id === meter.asset_meter_id
+              : firstInUnit;
+            const displayedUnitTotalRowSpan = usesBillingGroupUnitTotal
+              ? billingEndIndex - index + 1 + allocationResultsForBilling.length
+              : unitMeterCount + allocationResultsForUnit.length;
+            const displayedUnitUsage = usesBillingGroupUnitTotal ? billingUsage : unitUsage;
+            const displayedUnitAmount = usesBillingGroupUnitTotal ? billingAmount : unitAmount;
+            const displayedUnitInclusiveAmount = usesBillingGroupUnitTotal ? billingInclusiveAmount : unitInclusiveAmount;
+            const displayedUnitHasPrice = usesBillingGroupUnitTotal ? billingHasPrice : unitHasPrice;
             const firstBillableInTenant = !calculationOnly && tenantBillableMeters[0]?.asset_meter_id === meter.asset_meter_id;
+            const tenantHasInclusiveAmount = tenantBillableMeters.some((row) => isInclusiveContract(contractFor(row)))
+              || allocationResultsForTenant.some((result) => isInclusiveContract(result.contract));
             const currentTenantId = contract?.contract?.tenant_id;
             const currentUnitId = unit?.unit_id;
             const lastRegularMeterForUnit = Boolean(currentUnitId) &&
@@ -4264,18 +4288,18 @@ function CustomItemTable({
                   </td>
                 ) : combinedInputSource ? null : calculationOnly ? (
                   <td className="numeric">—</td>
-                ) : firstInUnit ? (
-                  <td className={`numeric unit-total ${unitEndsTenant ? "tenant-boundary" : ""}`} rowSpan={unitMeterCount + allocationResultsForUnit.length}>
-                    <span className="merged-value">{unit && usesUnitTotalsForBilling ? formatUsage(unitUsage, aggregationDigits) : "—"}</span>
+                ) : firstInDisplayedUnitTotal ? (
+                  <td className={`numeric unit-total ${unitEndsTenant ? "tenant-boundary" : ""}`} rowSpan={displayedUnitTotalRowSpan}>
+                    <span className="merged-value">{unit && usesUnitTotalsForBilling ? formatUsage(displayedUnitUsage, aggregationDigits) : "—"}</span>
                   </td>
                 ) : null)}
                 {showsUnitAmount && (calculationOnly ? (
                   <>{showsInclusiveAndExclusiveAmounts && <td className="numeric">—</td>}<td className="numeric">—</td></>
-                ) : firstInUnit ? (
+                ) : firstInDisplayedUnitTotal ? (
                   <>
-                    {showsInclusiveAndExclusiveAmounts && <td className={`numeric unit-amount ${unitEndsTenant ? "tenant-boundary" : ""}`} rowSpan={unitMeterCount + allocationResultsForUnit.length}><span className="merged-value">{usesUnitTotalsForBilling ? isInclusiveContract(contract) ? unitHasPrice ? formatYen(unitInclusiveAmount) : "未設定" : "" : "—"}</span></td>}
-                    <td className={`numeric unit-amount ${unitEndsTenant ? "tenant-boundary" : ""}`} rowSpan={unitMeterCount + allocationResultsForUnit.length}>
-                      <span className="merged-value">{usesUnitTotalsForBilling ? unitHasPrice ? formatYen(toExclusiveAmount(unitAmount, contract)) : "未設定" : "—"}</span>
+                    {showsInclusiveAndExclusiveAmounts && <td className={`numeric unit-amount ${unitEndsTenant ? "tenant-boundary" : ""}`} rowSpan={displayedUnitTotalRowSpan}><span className="merged-value">{usesUnitTotalsForBilling ? isInclusiveContract(contract) ? displayedUnitHasPrice ? formatYen(displayedUnitInclusiveAmount) : "未設定" : "" : "—"}</span></td>}
+                    <td className={`numeric unit-amount ${unitEndsTenant ? "tenant-boundary" : ""}`} rowSpan={displayedUnitTotalRowSpan}>
+                      <span className="merged-value">{usesUnitTotalsForBilling ? displayedUnitHasPrice ? formatYen(toExclusiveAmount(displayedUnitAmount, contract)) : "未設定" : "—"}</span>
                     </td>
                   </>
                 ) : null)}
