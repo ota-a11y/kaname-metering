@@ -1213,7 +1213,12 @@ export function KanameterWorkspacePage({
   const categoryBasicEnabled = activeCategory
     ? categorySettings.find((setting) => setting.category === activeCategory)?.is_basic_billable ?? false
     : false;
-  const categoryTabItems = categorySubItems;
+  const monthlyFixedItems = categorySubItems.filter((item) => item.is_monthly_fixed);
+  // 定額小分類は独立タブにせず、基本料の画面へまとめる。
+  // 基本料が無効な分類では、最初の定額小分類をまとめ画面への入口として残す。
+  const categoryTabItems = categorySubItems.filter((item) => !item.is_monthly_fixed || (
+    !categoryBasicEnabled && item.asset_meter_sub_item_id === monthlyFixedItems[0]?.asset_meter_sub_item_id
+  ));
   const selectedSubItem = categoryTabItems.find(
     (item) => item.asset_meter_sub_item_id === selectedItemId,
   );
@@ -1363,7 +1368,7 @@ export function KanameterWorkspacePage({
     const setting = categorySettings.find((row) => row.category === category);
     const firstSubItem = subItems.find(
       (item) => item.category === category && !item.is_monthly_fixed && (item.sub_item_kind !== "basic" || setting?.is_basic_billable),
-    );
+    ) ?? subItems.find((item) => item.category === category && item.is_monthly_fixed);
     const firstSurcharge = category === "electric"
       ? surcharges.find((item) => item.category === category && item.is_billable)
       : undefined;
@@ -1482,10 +1487,11 @@ export function KanameterWorkspacePage({
             const categoryAvailable = billableThisMonth(category);
             const basicEnabled = categorySettings.find((setting) => setting.category === category)?.is_basic_billable ?? false;
             const items = subItems.filter((item) => item.category === category && !item.is_monthly_fixed && (item.sub_item_kind !== "basic" || basicEnabled));
+            const hasMonthlyFixedItems = subItems.some((item) => item.category === category && item.is_monthly_fixed);
             const categorySurchargeItems = category === "electric"
               ? surcharges.filter((item) => item.category === category && item.is_billable)
               : [];
-            if (!billable(category) || (!items.length && !categorySurchargeItems.length)) return null;
+            if (!billable(category) || (!items.length && !hasMonthlyFixedItems && !categorySurchargeItems.length)) return null;
             return (
               <div className={`sidebar-category utility-${category}`} key={category}>
                 <button
@@ -1795,10 +1801,10 @@ export function KanameterWorkspacePage({
               ) : <div className="workspace-table-card">
                 {selectedSubItem?.sub_item_kind === "basic" || selectedSubItem?.is_monthly_fixed ? (
                   <BasicChargeTable
-                    contracts={billableSubItemContracts}
+                    contracts={billableCategoryContracts}
                     category={mainTab as UtilityCategory}
-                    showBasicCharge={selectedSubItem?.sub_item_kind === "basic" && categoryBasicEnabled}
-                    monthlyFixedItems={selectedSubItem?.is_monthly_fixed ? [selectedSubItem] : []}
+                    showBasicCharge={categoryBasicEnabled}
+                    monthlyFixedItems={monthlyFixedItems}
                     monthlyFixedCharges={displayedMonthlyFixedCharges}
                     confirmed={status === "confirmed"}
                     onMonthlyFixedChange={(contractId, tenantId, leaseContractUnitId, subItemId, amount) => {
@@ -2303,6 +2309,11 @@ function SummaryView({
     return { category, enabled: !!setting?.is_billable && isUtilityBillingMonth(utilitySettings.find((row) => row.category === category), billingMonth), basic, custom, surcharge, showTotal: subItemCount >= 2 };
   }).filter((group) => group.enabled);
   const billingGroupIds = Array.from(new Set(eligibleContracts.map((row) => billingGroupKey(row))));
+  const isSurchargeExcluded = (contract: ContractUnit) => {
+    const setting = contract.meterBilling[0];
+    return setting?.surcharge_excluded === true
+      || localStorage.getItem(`kanameter-surcharge-excluded:${assetId}:${setting?.meter_reading_contract_id ?? contract.contract?.tenant_id ?? ""}`) === "true";
+  };
   const priceForContractItem = (contract: ContractUnit, item: MeterSubItem) => {
     const itemPrice = contract.prices.find((row) => row.asset_billing_line_item_id === item.asset_billing_line_item_id);
     const categoryPrice = contract.categoryPrices.find((row) => row.category === item.category);
@@ -2327,34 +2338,32 @@ function SummaryView({
       );
       return { usage: 0, amount };
     }
-    return billableContracts.reduce((totals, contract) => {
-      const unitId = contract.unit?.unit_id;
-      if (!unitId) return totals;
-      const priceDetails = priceForContractItem(contract, item);
-      const chargeRows = meters.flatMap((meter) => {
-        if (meter.subItem.asset_meter_sub_item_id !== item.asset_meter_sub_item_id) return [];
-        if (meter.is_allocation_source || isCombinedAllocationSource(meter, meters)) return [];
-        const assignment = meter.assignments.find((row) => row.unit_id === unitId);
-        if (!assignment) return [];
-        const totalUsage = billingAdjustedUsage(meter, adjustedMeterUsage(meter, meters, storedMeterUsage));
+    const contractByUnitId = new Map(
+      billableContracts.flatMap((contract) => contract.unit?.unit_id ? [[contract.unit.unit_id, contract] as const] : []),
+    );
+    const chargeRows = meters.flatMap((meter) => {
+      if (meter.subItem.asset_meter_sub_item_id !== item.asset_meter_sub_item_id) return [];
+      if (meter.is_allocation_source || isCombinedAllocationSource(meter, meters)) return [];
+      const totalUsage = billingAdjustedUsage(meter, adjustedMeterUsage(meter, meters, storedMeterUsage));
+      return meter.assignments.flatMap((assignment) => {
+        const contract = contractByUnitId.get(assignment.unit_id);
+        if (!contract) return [];
+        const priceDetails = priceForContractItem(contract, item);
         return [{
-          meterId: `${meter.asset_meter_id}:${unitId}`,
-          usage: totalUsage * meterAllocationShare(meter, unitId, meters),
-          price: priceDetails.price,
+          meterId: `${meter.asset_meter_id}:${assignment.unit_id}`,
+          unitId: assignment.unit_id,
+          usage: totalUsage * meterAllocationShare(meter, assignment.unit_id, meters),
+          ...priceDetails,
         }];
       });
-      const calculation = calculateUsageCharge(
-        chargeRows,
-        item.aggregation_decimal_digits,
-        item.usage_rounding_mode,
-        item.amount_calculation_scope,
-      );
-      const amount = calculation.amount;
-      return {
-        usage: totals.usage + calculation.usage,
-        amount: totals.amount + amount,
-      };
-    }, { usage: 0, amount: 0 });
+    });
+    const calculation = calculateUsageCharge(
+      chargeRows,
+      item.aggregation_decimal_digits,
+      item.usage_rounding_mode,
+      item.amount_calculation_scope,
+    );
+    return { usage: calculation.usage, amount: calculation.amount };
   };
   const summaryRows = billingGroupIds.map((billingGroupId) => {
     const tenantContracts = eligibleContracts.filter((row) => billingGroupKey(row) === billingGroupId);
@@ -2386,18 +2395,20 @@ function SummaryView({
       });
       const totalUsage = custom.reduce((sum, item) => sum + item.usage, 0);
       const surchargePrice = group.surcharge ? surchargePrices[group.surcharge.asset_meter_surcharge_id] : null;
+      const surchargeExcluded = billableContracts.some(isSurchargeExcluded);
       const surchargeAmount = group.surcharge
         ? surchargePrice == null
           ? 0
           : group.surcharge.calculation_scope === "unit"
             ? billableContracts.reduce((sum, contract) => {
+                if (isSurchargeExcluded(contract)) return sum;
                 const unitUsage = group.custom.reduce(
                   (usageSum, item) => usageSum + calculationForContracts([contract], item).usage,
                   0,
                 );
-            return sum + roundUtilityAmount(unitUsage * surchargePrice);
+                return sum + roundUtilityAmount(unitUsage * surchargePrice);
               }, 0)
-            : roundUtilityAmount(totalUsage * surchargePrice)
+            : surchargeExcluded ? 0 : roundUtilityAmount(totalUsage * surchargePrice)
         : null;
       const total = (basicAmount ?? 0) + custom.reduce((sum, item) => sum + item.amount, 0);
       return { enabled, basicEnabled, basicAmount, custom, surchargeAmount, totalUsage, total };
@@ -3628,8 +3639,10 @@ function BasicChargeTable({
           formatYen(eligibleContracts.reduce((sum, row) => sum + basicAmountFor(row), 0)),
           formatYen(eligibleContracts.reduce((sum, row) => sum + basicAmountFor(row), 0)),
         ] : []),
-        ...monthlyFixedItems.flatMap((item) =>
-          [formatYen(eligibleContracts.reduce((sum, contract) => sum + fixedExclusiveFor(contract, item), 0)), ""]),
+        ...monthlyFixedItems.flatMap((item) => {
+          const total = formatYen(eligibleContracts.reduce((sum, contract) => sum + fixedExclusiveFor(contract, item), 0));
+          return [total, total];
+        }),
       ]}
     />
   );
@@ -3645,9 +3658,9 @@ function MonthlyFixedInput({
   onCommit: (amount: number) => void;
 }) {
   const [editing, setEditing] = useState(false);
-  const [value, setValue] = useState(amount == null ? "" : formatYen(amount));
+  const [value, setValue] = useState(amount == null || amount === 0 ? "" : formatYen(amount));
   useEffect(() => {
-    if (!editing) setValue(amount == null ? "" : formatYen(amount));
+    if (!editing) setValue(amount == null || amount === 0 ? "" : formatYen(amount));
   }, [amount, editing]);
   return (
     <input
@@ -3659,18 +3672,21 @@ function MonthlyFixedInput({
       onChange={(event) => setValue(event.target.value)}
       onFocus={(event) => {
         setEditing(true);
-        setValue(amount == null ? "" : String(amount));
+        setValue(amount == null || amount === 0 ? "" : String(amount));
         requestAnimationFrame(() => event.currentTarget.select());
       }}
       onBlur={() => {
         const rawValue = value.replace(/[,円\s]/g, "");
         const next = Number(rawValue);
         setEditing(false);
-        if (rawValue !== "" && Number.isFinite(next) && next >= 0) {
+        if (rawValue === "") {
+          setValue("");
+          if (amount != null && amount !== 0) onCommit(0);
+        } else if (Number.isFinite(next) && next >= 0) {
           setValue(formatYen(next));
           if (next !== amount) onCommit(next);
         } else {
-          setValue(amount == null ? "" : formatYen(amount));
+          setValue(amount == null || amount === 0 ? "" : formatYen(amount));
         }
       }}
     />
@@ -4669,7 +4685,7 @@ function SurchargeWorkspace({
       tenantContracts.map((row) => row.unit?.unit_name || row.unit?.unit_code).filter(Boolean).join("・") || "—",
     ];
     if (calculationScope !== "unit") {
-      return [...leadingCells, formatUsage(usage, aggregationDigits), amount == null ? "—" : formatYen(amount), <input type="checkbox" checked={excluded} aria-label={`${billingGroupTenantName(tenantContracts[0])}を増額分から除外`} onChange={(event) => onSurchargeExclusionChange(surchargeTenantKey(tenantContracts[0]), tenantContracts[0]?.meterBilling[0]?.meter_reading_contract_id ?? null, event.target.checked)} />];
+      return [...leadingCells, excluded ? "—" : formatUsage(usage, aggregationDigits), amount == null ? "—" : formatYen(amount), <input type="checkbox" checked={excluded} aria-label={`${billingGroupTenantName(tenantContracts[0])}を増額分から除外`} onChange={(event) => onSurchargeExclusionChange(surchargeTenantKey(tenantContracts[0]), tenantContracts[0]?.meterBilling[0]?.meter_reading_contract_id ?? null, event.target.checked)} />];
     }
     const tenantUsage = tenantRows
       .slice(index, index + tenantRowSpan)
@@ -4679,7 +4695,7 @@ function SurchargeWorkspace({
       .reduce((sum, row) => sum + (surchargeAmountFor(row.tenantContracts, row.usage, row.excluded) ?? 0), 0);
     return [
       ...leadingCells,
-      formatUsage(usage, aggregationDigits),
+      excluded ? "—" : formatUsage(usage, aggregationDigits),
       amount == null ? "—" : formatYen(amount),
       firstInTenant ? mergedTableCell(formatUsage(tenantUsage, aggregationDigits), tenantRowSpan) : skippedTableCell(),
       firstInTenant ? mergedTableCell(tenantUnitPriceExcludingTax == null ? "—" : formatYen(tenantAmount), tenantRowSpan) : skippedTableCell(),
