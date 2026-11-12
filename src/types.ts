@@ -62,6 +62,7 @@ export type ContractUnit = {
     contract_status: string;
     contract_start_date: string | null;
     contract_end_date: string | null;
+    actual_end_date: string | null;
     tenant: { tenant_name: string } | null;
   } | null;
   prices: Array<{
@@ -98,6 +99,7 @@ export type ContractUnit = {
     water_sum_mode: "aggregate" | "perMeter";
     gas_sum_mode: "aggregate" | "perMeter";
     units: Array<{ unit_id: string }>;
+    billingUnits: Array<{ lease_contract_billing_unit_id: string }>;
     items: Array<{
       asset_meter_sub_item_id: string;
       is_billable: boolean;

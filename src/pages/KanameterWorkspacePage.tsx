@@ -150,7 +150,7 @@ function contractsForBillingPeriod(contracts: ContractUnit[], periodStart: strin
         ? contract.member_periods
         : [{
             start: contract.lease_start_date ?? contract.contract?.contract_start_date ?? null,
-            end: contract.lease_end_date ?? contract.contract?.contract_end_date ?? null,
+            end: contract.lease_end_date ?? contract.contract?.actual_end_date ?? contract.contract?.contract_end_date ?? null,
           }];
       return periods.some((period) =>
         (!period.start || period.start <= periodEnd) && (!period.end || period.end >= periodStart),
@@ -1795,7 +1795,7 @@ export function KanameterWorkspacePage({
                           if (row.contract?.tenant_id !== tenantId) return row;
                           if (!row.meterBilling.length) return {
                             ...row,
-                            meterBilling: [{ meter_reading_contract_id: savedContractId, row_no: 1, invoice_number: 1, electric_billable: true, water_billable: true, gas_billable: true, electric_sum_mode: "aggregate", water_sum_mode: "aggregate", gas_sum_mode: "aggregate", amount_rounding_mode: "floor", split_label: null, split_items: ["rent", "common", "storage", "variable"], surcharge_excluded: excluded, units: [], items: [] }],
+                            meterBilling: [{ meter_reading_contract_id: savedContractId, row_no: 1, invoice_number: 1, electric_billable: true, water_billable: true, gas_billable: true, electric_sum_mode: "aggregate", water_sum_mode: "aggregate", gas_sum_mode: "aggregate", amount_rounding_mode: "floor", split_label: null, split_items: ["rent", "common", "storage", "variable"], surcharge_excluded: excluded, units: [], billingUnits: [], items: [] }],
                           };
                           return { ...row, meterBilling: row.meterBilling.map((setting) => setting.meter_reading_contract_id === savedContractId ? { ...setting, surcharge_excluded: excluded } : setting) };
                         }));
@@ -1824,7 +1824,7 @@ export function KanameterWorkspacePage({
                       void saveMonthlyFixedCharge(supabase!, assetId, billingMonth, contractId, tenantId, leaseContractUnitId, subItemId, amount)
                         .then((savedContractId) => {
                           setContracts((current) => current.map((row) => row.contract?.tenant_id === tenantId && !row.meterBilling.length
-                            ? { ...row, meterBilling: [{ meter_reading_contract_id: savedContractId, row_no: 1, invoice_number: 1, electric_billable: true, water_billable: true, gas_billable: true, electric_sum_mode: "aggregate", water_sum_mode: "aggregate", gas_sum_mode: "aggregate", amount_rounding_mode: "floor", split_label: null, split_items: ["rent", "common", "storage", "variable"], surcharge_excluded: false, units: [], items: [] }] }
+                            ? { ...row, meterBilling: [{ meter_reading_contract_id: savedContractId, row_no: 1, invoice_number: 1, electric_billable: true, water_billable: true, gas_billable: true, electric_sum_mode: "aggregate", water_sum_mode: "aggregate", gas_sum_mode: "aggregate", amount_rounding_mode: "floor", split_label: null, split_items: ["rent", "common", "storage", "variable"], surcharge_excluded: false, units: [], billingUnits: [], items: [] }] }
                             : row));
                           setStatus((current) => current ?? "draft");
                           setNotice("月額定額を保存しました。");
