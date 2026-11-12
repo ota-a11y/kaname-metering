@@ -45,14 +45,14 @@ const allocatedTable = renderToStaticMarkup(React.createElement(BasicChargeTable
   contracts: allocatedContracts, category: 'electric', showBasicCharge: false, monthlyFixedItems: [allocatedItem],
   monthlyFixedCharges: { '202|allocated-basic': 1100, '201|allocated-basic': 500 }, confirmed: false, onMonthlyFixedChange() {},
 }));
-assert.ok(allocatedTable.includes('区画ごと（税込）') && allocatedTable.includes('テナント合計（税抜）'), 'allocated charge has gross, net and tenant net columns');
-assert.ok(allocatedTable.includes('value="1,100 円"') && allocatedTable.includes('>1,000 円<'), 'inclusive allocation converts to net even when unit-price tax rounding is unset');
+assert.ok(!allocatedTable.includes('区画ごと（税込）') && allocatedTable.includes('区画ごと（税抜）') && allocatedTable.includes('テナント合計（税抜）'), 'allocated charge displays only tax-exclusive amount columns');
+assert.ok(allocatedTable.includes('value="1,100 円"') && allocatedTable.includes('>1,100 円<'), 'allocated amount displays its stored tax-exclusive value');
 const sharedTenantAllocation = renderToStaticMarkup(React.createElement(BasicChargeTable, {
   contracts: [allocatedContracts[0], { ...allocatedContracts[1], contract: allocatedContracts[0].contract }],
   category: 'electric', showBasicCharge: false, monthlyFixedItems: [allocatedItem],
   monthlyFixedCharges: { '202|allocated-basic': 1100, '201|allocated-basic': 500 }, confirmed: false, onMonthlyFixedChange() {},
 }));
-assert.ok(sharedTenantAllocation.includes('>1,454 円<'), 'tenant total adds net amounts after converting each unit with the subitem tax setting');
+assert.ok(sharedTenantAllocation.includes('>1,600 円<'), 'tenant total adds the stored tax-exclusive unit amounts');
 const surchargeWithAllocatedBasic = renderToStaticMarkup(React.createElement(SurchargeWorkspace, {
   surcharge: { asset_meter_surcharge_id: 'increase', category: 'electric', surcharge_name: '電気増額分', calculation_scope: 'tenant', recovery_inclusive_mode: 'from_exclusive' },
   assetId: 'asset', billingMonth: '2026-11', unit: 'kWh', contracts: [allocatedContracts[0]], meters: [],
@@ -60,7 +60,7 @@ const surchargeWithAllocatedBasic = renderToStaticMarkup(React.createElement(Sur
   categorySettings: [{ category: 'electric', is_billable: true, is_basic_billable: false, usage_unit: 'kWh' }],
   utilitySettings: [], unitPriceCalculations: {}, monthlyFixedCharges: { '202|allocated-basic': 1100 }, onSettingsSaved() {},
 }));
-assert.match(surchargeWithAllocatedBasic, /金額（税抜）<\/dt><dd>1,000 円<\/dd>/, 'recovery net amount includes the net total of an allocated subitem without meters');
+assert.match(surchargeWithAllocatedBasic, /金額（税抜）<\/dt><dd>1,100 円<\/dd>/, 'recovery net amount includes the stored tax-exclusive total of an allocated subitem without meters');
 const meteredRecoveryItem = { ...allocatedItem, asset_meter_sub_item_id: 'metered', sub_item_name: '電気代', sub_item_kind: 'custom', is_monthly_fixed: false, calculation_mode: 'meter', price_mode: 'fixed', tax_mode: 'exclusive', default_unit_price: 10, asset_billing_line_item_id: null, amount_calculation_scope: 'unit', aggregation_decimal_digits: 1, usage_rounding_mode: 'round' };
 const surchargeWithTwoSubitems = renderToStaticMarkup(React.createElement(SurchargeWorkspace, {
   surcharge: { asset_meter_surcharge_id: 'increase', category: 'electric', surcharge_name: '電気増額分', calculation_scope: 'tenant', recovery_inclusive_mode: 'from_exclusive' },
@@ -70,7 +70,7 @@ const surchargeWithTwoSubitems = renderToStaticMarkup(React.createElement(Surcha
   categorySettings: [{ category: 'electric', is_billable: true, is_basic_billable: false, usage_unit: 'kWh' }],
   utilitySettings: [], unitPriceCalculations: {}, monthlyFixedCharges: { '202|allocated-basic': 1100 }, onSettingsSaved() {},
 }));
-assert.match(surchargeWithTwoSubitems, /金額（税抜）<\/dt><dd>2,000 円<\/dd>/, 'recovery net amount sums the net totals of all subitems');
+assert.match(surchargeWithTwoSubitems, /金額（税抜）<\/dt><dd>2,100 円<\/dd>/, 'recovery net amount sums the stored tax-exclusive totals of all subitems');
 const parent = meter('light', '電灯', 10, [assignment('202', 2, 'ratio'), assignment('201', 3, 'ratio')]);
 parent.meter_label = '2F按分用';
 parent.allocation_common_source_meter_ids = ['power1', 'power2', 'power3', 'position40', 'position60'];
@@ -134,7 +134,7 @@ html = render({ meters: [...meters, regular] });
 assert.ok(html.indexOf('通常メーター') < html.indexOf('└2F按分用 按分'), 'allocation result follows the configured position within the tenant');
 assert.equal((html.match(/└2F按分用 按分/g) ?? []).length, 2, 'result is not duplicated after a regular meter');
 verifyGrid(html, 14);
-verifyGrid(render({ meters: [...meters, regular], taxMode: 'inclusive' }), 16);
+verifyGrid(render({ meters: [...meters, regular], taxMode: 'inclusive' }), 15);
 const meterScope = render({ meters: [...meters, regular], amountCalculationScope: 'meter' });
 verifyGrid(meterScope, 13);
 assert.ok(!meterScope.includes('区画ごと</th>'), 'meter scope hides unit usage');
@@ -142,8 +142,8 @@ const tenantScope = render({ meters: [...meters, regular], amountCalculationScop
 verifyGrid(tenantScope, 12);
 assert.ok(!tenantScope.includes('区画ごと</th>'), 'tenant scope hides unit usage');
 const inclusiveTenantScope = render({ meters: [...meters, regular], amountCalculationScope: 'tenant', taxMode: 'inclusive', subItemTaxMode: 'inclusive' });
-verifyGrid(inclusiveTenantScope, 14);
-assert.ok(inclusiveTenantScope.includes('金額（税込）') && inclusiveTenantScope.includes('金額（税抜）'), 'tenant scope shows both tax amounts');
+verifyGrid(inclusiveTenantScope, 13);
+assert.ok(!inclusiveTenantScope.includes('金額（税込）') && inclusiveTenantScope.includes('金額（税抜）'), 'tenant scope shows only the tax-exclusive amount');
 
 // The existing meter-usage allocation (e.g. Sakaisuji-Hommachi) still appends
 // results below the tenant's physical meters and keeps source inputs separate.
@@ -171,7 +171,7 @@ assert.ok(bodyRows(html).find((row) => row.includes('Tenant 201')).includes('>20
 assert.ok(bodyRows(html).find((row) => row.includes('Tenant 202')).includes('>13.2 円<'), 'exclusive contract also displays its tax-inclusive unit price');
 assert.ok(bodyRows(html).find((row) => row.includes('Tenant 201')).includes('>18.19 円<'), 'inclusive contract displays its rounded tax-exclusive unit price');
 assert.match(html, /<th colSpan="2"[^>]*>単価.*?<\/tr><tr><th[^>]*>税込.*?<\/th><th[^>]*>税抜/s, 'inclusive billing uses a two-row, two-column unit-price header');
-verifyGrid(html, 16);
+verifyGrid(html, 15);
 const categoryInclusiveContracts = contracts.map((row, index) => ({
   ...row,
   prices: [],
@@ -182,7 +182,7 @@ const categoryInclusive = render({ contracts: categoryInclusiveContracts, taxMod
 assert.ok(bodyRows(categoryInclusive).find((row) => row.includes('Tenant 202')).includes('>33 円<') && bodyRows(categoryInclusive).find((row) => row.includes('Tenant 202')).includes('>30 円<'), 'registered 33-yen gross price is displayed as 33 yen gross and 30 yen net');
 assert.ok(bodyRows(categoryInclusive).find((row) => row.includes('Tenant 201')).includes('>30 円<') && bodyRows(categoryInclusive).find((row) => row.includes('Tenant 201')).includes('>27.28 円<'), 'registered 30-yen gross price is converted back to 27.28 yen net');
 assert.ok(html.includes('税込<span') && html.includes('税抜<span'), 'unit scope displays gross and net columns when an inclusive contract exists');
-assert.ok(bodyRows(html).find((row) => row.includes('Tenant 201')).includes('>4,800 円</span>'), 'inclusive unit amount is displayed before tax conversion');
+assert.ok(!bodyRows(html).find((row) => row.includes('Tenant 201')).includes('>4,800 円</span>'), 'inclusive unit amount is not displayed');
 assert.ok(html.match(/<tfoot>.*?<\/tfoot>/s)[0].includes('>6,286 円</th>'), 'inclusive prices are converted by rounding up at the third decimal, then net amounts are rounded up');
 const calculatorProps = { itemName: '電気代', category: 'electric', priceMode: 'amount', billingMonth: '2026-11', tariffDefinition: null, rateSourceMeters: [], initialCalculation: {
   billed_inclusive: 110000, billed_tax: 10000, billed_exclusive: 100000, billed_usage: 1000,

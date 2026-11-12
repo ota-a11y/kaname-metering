@@ -3712,7 +3712,6 @@ function CustomItemTable({
   const showsSplitUnitTotals = amountCalculationScope === "tenant" && splitBillingTenantIds.size > 0;
   const showsUnitUsage = amountCalculationScope === "unit" || showsSplitUnitTotals;
   const showsUnitAmount = amountCalculationScope !== "tenant" || showsSplitUnitTotals;
-  const showsTenantInclusiveAmount = amountCalculationScope === "tenant" && showsInclusiveAndExclusiveAmounts;
   const isInclusiveContract = (contract?: ContractUnit) => (
     contract?.meterTerms?.find((term) => term.asset_meter_sub_item_id === meters[0]?.subItem.asset_meter_sub_item_id)?.tax_mode
     ?? taxMode
@@ -4057,7 +4056,7 @@ function CustomItemTable({
       <ResizableTable className="workspace-data-table" storageKey={`readings-${showReadings ? "reading" : "usage"}`} storageUserId={columnStorageUserId} columnGroups={[
         "tenant", "floor", "unit", "meter", "price", ...(showsInclusiveAndExclusiveAmounts ? ["price"] : []),
         ...(showReadings ? ["reading", "reading"] : []),
-        "usage", ...(showsUnitUsage ? ["usage"] : []), ...(showsUnitAmount ? ["amount", ...(showsInclusiveAndExclusiveAmounts ? ["amount"] : [])] : []), "usage", ...(showsTenantInclusiveAmount ? ["amount"] : []), "amount",
+        "usage", ...(showsUnitUsage ? ["usage"] : []), ...(showsUnitAmount ? ["amount"] : []), "usage", "amount",
         "usage", "comparison", "usage", "comparison",
       ]}>
         <thead>
@@ -4069,8 +4068,8 @@ function CustomItemTable({
             <ColumnHeader rowSpan={showsInclusiveAndExclusiveAmounts ? undefined : 2} colSpan={showsInclusiveAndExclusiveAmounts ? 2 : undefined} textAlign="amount" columnGroup="price">単価</ColumnHeader>
             {showReadings && <ColumnHeader colSpan={2} className="usage-heading">検針値</ColumnHeader>}
             <ColumnHeader rowSpan={showsUnitUsage ? undefined : 2} colSpan={showsUnitUsage ? 2 : undefined} className="usage-heading" columnGroup="usage">使用量</ColumnHeader>
-            {showsUnitAmount && <ColumnHeader rowSpan={showsInclusiveAndExclusiveAmounts ? undefined : 2} colSpan={showsInclusiveAndExclusiveAmounts ? 2 : undefined} textAlign="amount" columnGroup="amount">{showsSplitUnitTotals ? "区画金額" : "金額"}</ColumnHeader>}
-            <ColumnHeader colSpan={showsTenantInclusiveAmount ? 3 : 2} className="usage-heading">テナント合計</ColumnHeader>
+            {showsUnitAmount && <ColumnHeader rowSpan={2} textAlign="amount" columnGroup="amount">{showsSplitUnitTotals ? "区画金額（税抜）" : "金額（税抜）"}</ColumnHeader>}
+            <ColumnHeader colSpan={2} className="usage-heading">テナント合計</ColumnHeader>
             <ColumnHeader colSpan={2} className="usage-heading">前月</ColumnHeader>
             <ColumnHeader colSpan={2} className="usage-heading">前年同月</ColumnHeader>
           </tr>
@@ -4078,10 +4077,8 @@ function CustomItemTable({
             {showsInclusiveAndExclusiveAmounts && <><ColumnHeader textAlign="amount" columnGroup="price">税込</ColumnHeader><ColumnHeader textAlign="amount" columnGroup="price">税抜</ColumnHeader></>}
             {showReadings && <><ColumnHeader columnGroup="reading">前月</ColumnHeader><ColumnHeader columnGroup="reading">当月</ColumnHeader></>}
             {showsUnitUsage && <><ColumnHeader columnGroup="usage">メーターごと</ColumnHeader><ColumnHeader columnGroup="usage">区画合計</ColumnHeader></>}
-            {showsUnitAmount && showsInclusiveAndExclusiveAmounts && <><ColumnHeader textAlign="amount" columnGroup="amount">税込</ColumnHeader><ColumnHeader textAlign="amount" columnGroup="amount">税抜</ColumnHeader></>}
             <ColumnHeader columnGroup="usage">使用量</ColumnHeader>
-            {showsTenantInclusiveAmount && <ColumnHeader columnGroup="amount">金額（税込）</ColumnHeader>}
-            <ColumnHeader columnGroup="amount">{showsTenantInclusiveAmount ? "金額（税抜）" : "金額"}</ColumnHeader>
+            <ColumnHeader columnGroup="amount">{showsInclusiveAndExclusiveAmounts ? "金額（税抜）" : "金額"}</ColumnHeader>
             <ColumnHeader columnGroup="usage">使用量</ColumnHeader>
             <ColumnHeader columnGroup="comparison">当月比</ColumnHeader>
             <ColumnHeader columnGroup="usage">使用量</ColumnHeader>
@@ -4302,21 +4299,17 @@ function CustomItemTable({
                   </td>
                 ) : null)}
                 {showsUnitAmount && (calculationOnly ? (
-                  <>{showsInclusiveAndExclusiveAmounts && <td className="numeric">—</td>}<td className="numeric">—</td></>
+                  <td className="numeric">—</td>
                 ) : firstInDisplayedUnitTotal ? (
-                  <>
-                    {showsInclusiveAndExclusiveAmounts && <td className={`numeric unit-amount ${unitEndsTenant ? "tenant-boundary" : ""}`} rowSpan={displayedUnitTotalRowSpan}><span className="merged-value">{usesUnitTotalsForBilling ? isInclusiveContract(contract) ? displayedUnitHasPrice ? formatYen(displayedUnitInclusiveAmount) : "未設定" : "" : "—"}</span></td>}
-                    <td className={`numeric unit-amount ${unitEndsTenant ? "tenant-boundary" : ""}`} rowSpan={displayedUnitTotalRowSpan}>
-                      <span className="merged-value">{usesUnitTotalsForBilling ? displayedUnitHasPrice ? formatYen(toExclusiveAmount(displayedUnitAmount, contract)) : "未設定" : "—"}</span>
-                    </td>
-                  </>
+                  <td className={`numeric unit-amount ${unitEndsTenant ? "tenant-boundary" : ""}`} rowSpan={displayedUnitTotalRowSpan}>
+                    <span className="merged-value">{usesUnitTotalsForBilling ? displayedUnitHasPrice ? formatYen(toExclusiveAmount(displayedUnitAmount, contract)) : "未設定" : "—"}</span>
+                  </td>
                 ) : null)}
                 {calculationOnly ? (
-                  <><td className="numeric">—</td>{showsTenantInclusiveAmount && <td className="numeric">—</td>}<td className="numeric">—</td></>
+                  <><td className="numeric">—</td><td className="numeric">—</td></>
                 ) : firstBillableInTenant && (
                   <>
                     <td className="numeric tenant-total" rowSpan={tenantEndIndex - index + 1 + allocationResultsForTenant.length}><span className="merged-value">{formatUsage(tenantUsage, aggregationDigits)}</span></td>
-                    {showsTenantInclusiveAmount && <td className="numeric tenant-total" rowSpan={tenantEndIndex - index + 1 + allocationResultsForTenant.length}><span className="merged-value">{tenantHasInclusiveAmount ? formatYen(tenantInclusiveAmount) : ""}</span></td>}
                     <td className="numeric tenant-total" rowSpan={tenantEndIndex - index + 1 + allocationResultsForTenant.length}><span className="merged-value">{formatYen(tenantAmount)}</span></td>
                   </>
                 )}
@@ -4343,7 +4336,7 @@ function CustomItemTable({
           })}
           {!meters.length && (
             <tr>
-              <td colSpan={5 + (showsInclusiveAndExclusiveAmounts ? 1 : 0) + (showReadings ? 2 : 0) + (showsUnitUsage ? 2 : 1) + (showsUnitAmount ? showsInclusiveAndExclusiveAmounts ? 2 : 1 : 0) + (showsTenantInclusiveAmount ? 3 : 2) + 4} className="empty-cell">
+              <td colSpan={5 + (showsInclusiveAndExclusiveAmounts ? 1 : 0) + (showReadings ? 2 : 0) + (showsUnitUsage ? 2 : 1) + (showsUnitAmount ? 1 : 0) + 2 + 4} className="empty-cell">
                 対象メーターがありません。
               </td>
             </tr>
@@ -4359,9 +4352,8 @@ function CustomItemTable({
                 {showReadings && <><th className="numeric">—</th><th className="numeric">—</th></>}
                 <th className="numeric">{formatUsage(totals.meterUsage, showReadings ? aggregationTotalDigits : inputTotalDigits)}</th>
                 {showsUnitUsage && <th className="numeric">{formatUsage(totals.unitUsage, aggregationTotalDigits)}</th>}
-                {showsUnitAmount && <>{showsInclusiveAndExclusiveAmounts && <th className="numeric">{formatYen(totals.amount)}</th>}<th className="numeric">{formatYen(totals.exclusiveAmount)}</th></>}
+                {showsUnitAmount && <th className="numeric">{formatYen(totals.exclusiveAmount)}</th>}
                 <th className="numeric">{formatUsage(totals.tenantUsage, aggregationTotalDigits)}</th>
-                {showsTenantInclusiveAmount && <th className="numeric">{formatYen(totals.tenantInclusiveAmount)}</th>}
                 <th className="numeric">{formatYen(totals.tenantAmount)}</th>
                 <th className="numeric">{formatUsage(totals.previousUsage, aggregationTotalDigits)}</th>
                 <th className="numeric">{formatComparison(comparisonRatio(totals.meterUsage, totals.previousUsage))}</th>
