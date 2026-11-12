@@ -4542,19 +4542,6 @@ function SurchargeWorkspace({
   const electricUtilitySetting = utilitySettings.find((setting) => setting.category === "electric");
   const electricBasicItem = subItems.find((item) => item.category === "electric" && item.sub_item_kind === "basic");
   const customRecoveryIds = subItems.filter((item) => item.category === "electric" && item.sub_item_kind === "custom").map((item) => item.asset_meter_sub_item_id);
-  const recoverySubitemRows = buildConfirmedMeterAmounts({
-    contracts: eligibleContracts,
-    meters,
-    categorySettings,
-    utilitySettings,
-    subItems,
-    surcharges: [],
-    surchargePrices: {},
-    unitPriceCalculations,
-    billingLineItems: [],
-    monthlyFixedCharges,
-    billingMonth,
-  }).filter((row) => row.category === "electric" && row.source_kind === "subItem");
   const recoveryAmounts = eligibleContracts.reduce((totals, contract) => {
     const basic = contract.basics.find((row) => row.category === "electric");
     const basicAmount = Number(basic?.amount ?? 0);
@@ -4619,14 +4606,9 @@ function SurchargeWorkspace({
       inclusive: totals.inclusive + basicInclusive + customAmounts.inclusive,
     };
   }, { exclusive: 0, inclusive: 0 });
-  const recoveryAmountExcludingTax = recoverySubitemRows.reduce((sum, row) => {
-    const item = subItems.find((candidate) => candidate.asset_meter_sub_item_id === row.source_id);
-    if (!item || !Number.isFinite(Number(row.amount))) return sum;
-    const amount = Number(row.amount);
-    return sum + (item.sub_item_kind === "basic" && row.tax_mode === "inclusive"
-      ? exclusiveFixedChargeAmount(amount, item)
-      : amount);
-  }, 0);
+  // 回収額は請求連携用の明細（請求対象設定で絞り込まれる）ではなく、
+  // 増額分画面の対象となる全小分類について算出した税抜金額を合計する。
+  const recoveryAmountExcludingTax = recoveryAmounts.exclusive;
   const recoveryAmountIncludingTax = recoveryInclusiveMode === "use_calculated_inclusive"
     ? recoveryAmounts.inclusive
     : Math.round(recoveryAmountExcludingTax * (1 + DEFAULT_CONSUMPTION_TAX_RATE));
