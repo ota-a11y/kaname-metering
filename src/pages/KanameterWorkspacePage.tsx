@@ -142,12 +142,12 @@ function isUtilityBillingMonth(setting: AssetUtilitySetting | undefined, billing
       : true;
 }
 
-function contractsForReferenceDate(contracts: ContractUnit[], referenceDate: string) {
+function contractsForBillingPeriod(contracts: ContractUnit[], periodStart: string, periodEnd: string) {
   const contractOrder = new Map(contracts.map((contract, index) => [contract.lease_contract_unit_id, index]));
   const matching = contracts
     .filter((contract) =>
-      (!contract.contract?.contract_start_date || contract.contract.contract_start_date <= referenceDate) &&
-      (!contract.contract?.contract_end_date || contract.contract.contract_end_date >= referenceDate),
+      (!contract.contract?.contract_start_date || contract.contract.contract_start_date <= periodEnd) &&
+      (!contract.contract?.contract_end_date || contract.contract.contract_end_date >= periodStart),
     )
     .sort((left, right) =>
       (right.contract?.contract_start_date ?? "").localeCompare(left.contract?.contract_start_date ?? ""),
@@ -1146,7 +1146,7 @@ export function KanameterWorkspacePage({
       const freshCalculations = Object.fromEntries(
         calculationRows.map((row) => [row.asset_meter_sub_item_id, row]),
       );
-      const freshPeriodContracts = contractsForReferenceDate(freshContracts, contractReferenceDate);
+      const freshPeriodContracts = contractsForBillingPeriod(freshContracts, contractPeriodStartDate, contractReferenceDate);
       const amounts = buildConfirmedMeterAmounts({
         contracts: freshPeriodContracts,
         meters: freshMeters,
@@ -1249,10 +1249,13 @@ export function KanameterWorkspacePage({
   const comparisonMeterDate = billingPeriods.find((period) => period.billingMonth === comparisonMonth)?.meterDates[activeDateCategory]
     ?? (comparisonMonthOffsetFor(activeDateCategory) === 1 ? previousMeterDate : "");
   const selectedBillingPeriod = billingPeriodRange(billingMonth, selectedPeriodPattern, meterDate, comparisonMeterDate);
+  const fallbackPeriodStart = new Date(Number(billingMonth.slice(0, 4)), Number(billingMonth.slice(5, 7)) - 1, 1);
   const fallbackPeriodEnd = new Date(Number(billingMonth.slice(0, 4)), Number(billingMonth.slice(5, 7)), 0);
+  const contractPeriodStart = selectedBillingPeriod?.start ?? fallbackPeriodStart;
   const contractDate = mainTab === "summary" ? fallbackPeriodEnd : selectedBillingPeriod?.end ?? fallbackPeriodEnd;
+  const contractPeriodStartDate = `${contractPeriodStart.getFullYear()}-${String(contractPeriodStart.getMonth() + 1).padStart(2, "0")}-${String(contractPeriodStart.getDate()).padStart(2, "0")}`;
   const contractReferenceDate = `${contractDate.getFullYear()}-${String(contractDate.getMonth() + 1).padStart(2, "0")}-${String(contractDate.getDate()).padStart(2, "0")}`;
-  const periodContracts = contractsForReferenceDate(contracts, contractReferenceDate);
+  const periodContracts = contractsForBillingPeriod(contracts, contractPeriodStartDate, contractReferenceDate);
   const billableCategoryContracts = activeCategory
     ? periodContracts.filter((contract) => isContractCategoryBillable(contract, activeCategory))
     : periodContracts;
@@ -1801,7 +1804,7 @@ export function KanameterWorkspacePage({
               ) : <div className="workspace-table-card">
                 {selectedSubItem?.sub_item_kind === "basic" || selectedSubItem?.is_monthly_fixed ? (
                   <BasicChargeTable
-                    contracts={billableCategoryContracts}
+                    contracts={billableSubItemContracts}
                     category={mainTab as UtilityCategory}
                     showBasicCharge={categoryBasicEnabled}
                     monthlyFixedItems={monthlyFixedItems}

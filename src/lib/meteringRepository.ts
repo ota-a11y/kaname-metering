@@ -380,8 +380,9 @@ export async function loadContractUnits(
     const tenantSettings = storedMeterBilling.map((setting) => ({ ...setting, surcharge_excluded: Boolean(setting.surcharge_excluded) }))
       .filter((setting) => setting.tenant_id === row.contract?.tenant_id)
       .sort((left, right) => left.row_no - right.row_no);
-    const variableSplitEnabled = tenantSettings.some((setting) => (setting.split_items ?? ["variable"]).includes("variable"));
-    const matchingSetting = variableSplitEnabled ? tenantSettings.find((setting) =>
+    // データ分割された請求行は、分割対象の請求項目にかかわらず検針計算でも
+    // 区画の所属先として扱う。split_items に variable がない行も合算しない。
+    const matchingSetting = tenantSettings.length > 1 ? tenantSettings.find((setting) =>
       setting.units?.some((unit: { unit_id: string }) => (row.member_unit_ids ?? [row.unit?.unit_id]).includes(unit.unit_id)),
     ) : undefined;
     // 分割行のどこにも明示されていない区画は、KANAMEと同じく1行目へ含める。
