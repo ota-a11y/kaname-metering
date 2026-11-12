@@ -17,8 +17,8 @@ begin
     and unit.unit_code = 'A1'
     and fixed.amount = 4211;
 
-  if target_count <> 1 then
-    raise exception '削除対象の仙台5F A1空調使用料が一意ではありません（該当件数: %）', target_count;
+  if target_count > 1 then
+    raise exception '削除対象の仙台5F A1空調使用料が複数あります（該当件数: %）', target_count;
   end if;
 
   delete from public.meter_reading_month_fixed_charge fixed
