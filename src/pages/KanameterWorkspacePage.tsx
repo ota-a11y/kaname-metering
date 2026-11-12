@@ -2381,9 +2381,10 @@ function SummaryView({
     const groups = categoryColumns.map((group) => {
       const billableContracts = tenantContracts.filter((contract) => isContractCategoryBillable(contract, group.category));
       const enabled = billableContracts.length > 0;
-      const basicContracts = group.basic
-        ? billableContracts.filter((contract) => isContractSubItemBillable(contract, group.basic!.asset_meter_sub_item_id))
-        : [];
+      // 基本料画面と同じく、分類が請求対象なら契約・請求区画に保存された基本料を表示する。
+      // 増額分だけを分割した行では基本料の小分類フラグが false になるため、
+      // そのフラグで絞ると集計画面から正しい基本料まで消えてしまう。
+      const basicContracts = group.basic ? billableContracts : [];
       const basicEnabled = !group.basic || basicContracts.length > 0;
       const groupBasic = group.basic ? basicContracts[0]?.meterBilling[0]?.items.find((item) => item.asset_meter_sub_item_id === group.basic?.asset_meter_sub_item_id && item.is_billable)?.fixed_amount : null;
       const basicAmount = group.basic
