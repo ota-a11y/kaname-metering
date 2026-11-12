@@ -25,8 +25,10 @@ create table if not exists public.meter_reading_month_date (
 alter table public.asset_meter_date_setting enable row level security;
 alter table public.meter_reading_month_date enable row level security;
 
+drop policy if exists "active users can manage meter date settings" on public.asset_meter_date_setting;
 create policy "active users can manage meter date settings" on public.asset_meter_date_setting
   for all to authenticated using (public.current_account_is_active()) with check (public.current_account_is_active());
+drop policy if exists "active users can manage monthly meter dates" on public.meter_reading_month_date;
 create policy "active users can manage monthly meter dates" on public.meter_reading_month_date
   for all to authenticated using (public.current_account_is_active()) with check (public.current_account_is_active());
 
