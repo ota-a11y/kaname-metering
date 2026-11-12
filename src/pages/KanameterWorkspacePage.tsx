@@ -145,12 +145,20 @@ function isUtilityBillingMonth(setting: AssetUtilitySetting | undefined, billing
 function contractsForBillingPeriod(contracts: ContractUnit[], periodStart: string, periodEnd: string) {
   const contractOrder = new Map(contracts.map((contract, index) => [contract.lease_contract_unit_id, index]));
   const matching = contracts
-    .filter((contract) =>
-      (!contract.contract?.contract_start_date || contract.contract.contract_start_date <= periodEnd) &&
-      (!contract.contract?.contract_end_date || contract.contract.contract_end_date >= periodStart),
-    )
+    .filter((contract) => {
+      const periods = contract.member_periods?.length
+        ? contract.member_periods
+        : [{
+            start: contract.lease_start_date ?? contract.contract?.contract_start_date ?? null,
+            end: contract.lease_end_date ?? contract.contract?.contract_end_date ?? null,
+          }];
+      return periods.some((period) =>
+        (!period.start || period.start <= periodEnd) && (!period.end || period.end >= periodStart),
+      );
+    })
     .sort((left, right) =>
-      (right.contract?.contract_start_date ?? "").localeCompare(left.contract?.contract_start_date ?? ""),
+      (right.lease_start_date ?? right.contract?.contract_start_date ?? "")
+        .localeCompare(left.lease_start_date ?? left.contract?.contract_start_date ?? ""),
     );
   const latestByUnit = new Map<string, ContractUnit>();
   for (const contract of matching) {
@@ -1804,7 +1812,7 @@ export function KanameterWorkspacePage({
               ) : <div className="workspace-table-card">
                 {selectedSubItem?.sub_item_kind === "basic" || selectedSubItem?.is_monthly_fixed ? (
                   <BasicChargeTable
-                    contracts={billableSubItemContracts}
+                    contracts={billableCategoryContracts}
                     category={mainTab as UtilityCategory}
                     showBasicCharge={categoryBasicEnabled}
                     monthlyFixedItems={monthlyFixedItems}

@@ -324,13 +324,13 @@ export async function loadContractUnits(
     client
       .from("lease_contract_unit")
       .select(
-        `lease_contract_unit_id, unit:unit_master!inner(unit_id, unit_code, unit_name, floor_label, unit_type, property_id), contract:lease_contract!inner(lease_contract_id, tenant_id, contract_status, contract_start_date, contract_end_date, tenant:tenant_master(tenant_name)), prices:lease_contract_unit_utility_price(asset_billing_line_item_id, unit_price, tax_mode, billing_month_prices, item:asset_billing_line_item(line_item_name)), categoryPrices:lease_contract_unit_category_price(category, unit_price, tax_mode, billing_month_prices), basics:lease_contract_unit_basic_charge(category, amount, tax_mode), meterTerms:lease_contract_unit_meter_term(asset_meter_sub_item_id, price_mode, tax_mode, show_unit_price_on_invoice, show_usage_on_invoice)`,
+        `lease_contract_unit_id, lease_start_date, lease_end_date, unit:unit_master!inner(unit_id, unit_code, unit_name, floor_label, unit_type, property_id), contract:lease_contract!inner(lease_contract_id, tenant_id, contract_status, contract_start_date, contract_end_date, tenant:tenant_master(tenant_name)), prices:lease_contract_unit_utility_price(asset_billing_line_item_id, unit_price, tax_mode, billing_month_prices, item:asset_billing_line_item(line_item_name)), categoryPrices:lease_contract_unit_category_price(category, unit_price, tax_mode, billing_month_prices), basics:lease_contract_unit_basic_charge(category, amount, tax_mode), meterTerms:lease_contract_unit_meter_term(asset_meter_sub_item_id, price_mode, tax_mode, show_unit_price_on_invoice, show_usage_on_invoice)`,
       )
       .eq("unit.property_id", assetId)
       .order("lease_contract_unit_id"),
     client
       .from("lease_contract_billing_unit")
-      .select(`lease_contract_billing_unit_id, billing_unit_name, contract:lease_contract!inner(lease_contract_id, tenant_id, contract_status, contract_start_date, contract_end_date, tenant:tenant_master(tenant_name)), members:lease_contract_billing_unit_member!inner(contractUnit:lease_contract_unit!inner(lease_contract_unit_id, unit:unit_master!inner(unit_id, floor_label, property_id))), prices:lease_contract_billing_unit_utility_price(asset_billing_line_item_id, unit_price, tax_mode, billing_month_prices, item:asset_billing_line_item(line_item_name)), categoryPrices:lease_contract_billing_unit_category_price(category, unit_price, tax_mode, billing_month_prices), basics:lease_contract_billing_unit_basic_charge(category, amount, tax_mode), meterTerms:lease_contract_billing_unit_meter_term(asset_meter_sub_item_id, price_mode, tax_mode, show_unit_price_on_invoice, show_usage_on_invoice)`)
+      .select(`lease_contract_billing_unit_id, billing_unit_name, contract:lease_contract!inner(lease_contract_id, tenant_id, contract_status, contract_start_date, contract_end_date, tenant:tenant_master(tenant_name)), members:lease_contract_billing_unit_member!inner(contractUnit:lease_contract_unit!inner(lease_contract_unit_id, lease_start_date, lease_end_date, unit:unit_master!inner(unit_id, floor_label, property_id))), prices:lease_contract_billing_unit_utility_price(asset_billing_line_item_id, unit_price, tax_mode, billing_month_prices, item:asset_billing_line_item(line_item_name)), categoryPrices:lease_contract_billing_unit_category_price(category, unit_price, tax_mode, billing_month_prices), basics:lease_contract_billing_unit_basic_charge(category, amount, tax_mode), meterTerms:lease_contract_billing_unit_meter_term(asset_meter_sub_item_id, price_mode, tax_mode, show_unit_price_on_invoice, show_usage_on_invoice)`)
       .eq("members.contractUnit.unit.property_id", assetId)
       .order("sort_order"),
     client
@@ -357,7 +357,7 @@ export async function loadContractUnits(
   const rank = new Map(
     (order.data ?? []).map((row) => [row.tenant_id, row.sort_order]),
   );
-  type BillingMemberUnit = { lease_contract_unit_id: string; unit: { unit_id: string; floor_label: string | null } | Array<{ unit_id: string; floor_label: string | null }> };
+  type BillingMemberUnit = { lease_contract_unit_id: string; lease_start_date: string | null; lease_end_date: string | null; unit: { unit_id: string; floor_label: string | null } | Array<{ unit_id: string; floor_label: string | null }> };
   const asArray = <T>(value: T | T[] | null | undefined): T[] => value == null ? [] : Array.isArray(value) ? value : [value];
   const billingRows = ((billingUnits.data ?? []) as unknown as Array<{ lease_contract_billing_unit_id: string; billing_unit_name: string; contract: ContractUnit["contract"] | ContractUnit["contract"][]; members: Array<{ contractUnit: BillingMemberUnit | BillingMemberUnit[] }>; prices: ContractUnit["prices"]; categoryPrices: ContractUnit["categoryPrices"]; basics: ContractUnit["basics"]; meterTerms: ContractUnit["meterTerms"] }>).filter((row) => row.members.length > 0);
   type MeterBillingSetting = ContractUnit["meterBilling"][number] & { tenant_id: string };
@@ -371,6 +371,7 @@ export async function loadContractUnits(
       lease_contract_unit_id: billing.lease_contract_billing_unit_id,
       lease_contract_billing_unit_id: billing.lease_contract_billing_unit_id,
       member_unit_ids: members.flatMap((member) => asArray(member.unit).map((unit) => unit.unit_id)),
+      member_periods: members.map((member) => ({ start: member.lease_start_date, end: member.lease_end_date })),
       unit: { unit_id: billingUnitValue(billing.lease_contract_billing_unit_id), unit_code: billing.billing_unit_name, unit_name: billing.billing_unit_name, floor_label: asArray(members[0]?.unit)[0]?.floor_label ?? null, unit_type: "office" },
       contract: contract ?? null,
       prices: billing.prices ?? [], categoryPrices: billing.categoryPrices ?? [], basics: billing.basics ?? [], meterTerms: billing.meterTerms ?? [], meterBilling: [],
