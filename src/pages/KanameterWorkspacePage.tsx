@@ -301,14 +301,17 @@ function buildConfirmedMeterAmounts({
         ? subItems.find((item) => item.category === category && item.sub_item_kind === "basic")
         : undefined;
       const basicContracts = basic
-        ? billableContracts.filter((contract) => isContractSubItemBillable(contract, basic.asset_meter_sub_item_id))
+        ? billableContracts
         : [];
       if (basic && basicContracts.length > 0) {
         const groupBasic = billingSetting?.items.find((item) => item.asset_meter_sub_item_id === basic.asset_meter_sub_item_id && item.is_billable)?.fixed_amount;
-        const amount = groupBasic != null ? Number(groupBasic) : basicContracts.reduce(
+        const sourceAmount = groupBasic != null ? Number(groupBasic) : basicContracts.reduce(
           (sum, contract) => sum + Number(contract.basics.find((item) => item.category === category)?.amount ?? 0),
           0,
         );
+        const amount = basic.tax_mode === "inclusive"
+          ? exclusiveAmountFromInclusive(sourceAmount, basic.tax_rounding_mode === "none" ? "floor" : basic.tax_rounding_mode)
+          : sourceAmount;
         rows.push({
           ...shared,
           category,
@@ -2320,108 +2323,39 @@ function SummaryView({
     return { category, enabled: !!setting?.is_billable && isUtilityBillingMonth(utilitySettings.find((row) => row.category === category), billingMonth), basic, custom, surcharge, showTotal: subItemCount >= 2 };
   }).filter((group) => group.enabled);
   const billingGroupIds = Array.from(new Set(eligibleContracts.map((row) => billingGroupKey(row))));
-  const isSurchargeExcluded = (contract: ContractUnit) => {
-    const setting = contract.meterBilling[0];
-    return setting?.surcharge_excluded === true
-      || localStorage.getItem(`kanameter-surcharge-excluded:${assetId}:${setting?.meter_reading_contract_id ?? contract.contract?.tenant_id ?? ""}`) === "true";
-  };
-  const priceForContractItem = (contract: ContractUnit, item: MeterSubItem) => {
-    const itemPrice = contract.prices.find((row) => row.asset_billing_line_item_id === item.asset_billing_line_item_id);
-    const categoryPrice = contract.categoryPrices.find((row) => row.category === item.category);
-    const utilitySetting = utilitySettings.find((setting) => setting.category === item.category);
-    const taxMode = meterTermFor(contract, item)?.tax_mode ?? itemPrice?.tax_mode ?? categoryPrice?.tax_mode ?? (utilitySetting?.price_scope === "category" ? utilitySetting.default_tax_mode : item.tax_mode);
-    const calculatedPrice = unitPriceCalculations[item.asset_meter_sub_item_id]?.unit_price;
-    const contractPrice = contractUnitPriceForBillingMonth(itemPrice, billingMonth)
-      ?? contractUnitPriceForBillingMonth(categoryPrice, billingMonth);
-    const defaultPrice = item.default_unit_price
-      ?? utilitySettings.find((setting) => setting.category === item.category)?.default_unit_price;
-    const price = usesVariablePrice(contract, item) ? calculatedPrice : contractPrice ?? defaultPrice;
-    return { price: price == null ? null : Number(price), taxMode };
-  };
-  const calculationForContracts = (billableContracts: ContractUnit[], item: MeterSubItem) => {
-    if (item.is_monthly_fixed) {
-      const amount = billableContracts.reduce(
-        (sum, contract) => {
-          const savedAmount = monthlyFixedCharges[`${contract.lease_contract_unit_id}|${item.asset_meter_sub_item_id}`] ?? 0;
-          return sum + savedAmount;
-        },
-        0,
-      );
-      return { usage: 0, amount };
-    }
-    const contractByUnitId = new Map(
-      billableContracts.flatMap((contract) => contract.unit?.unit_id ? [[contract.unit.unit_id, contract] as const] : []),
-    );
-    const chargeRows = meters.flatMap((meter) => {
-      if (meter.subItem.asset_meter_sub_item_id !== item.asset_meter_sub_item_id) return [];
-      if (meter.is_allocation_source || isCombinedAllocationSource(meter, meters)) return [];
-      const totalUsage = billingAdjustedUsage(meter, adjustedMeterUsage(meter, meters, storedMeterUsage));
-      return meter.assignments.flatMap((assignment) => {
-        const contract = contractByUnitId.get(assignment.unit_id);
-        if (!contract) return [];
-        const priceDetails = priceForContractItem(contract, item);
-        return [{
-          meterId: `${meter.asset_meter_id}:${assignment.unit_id}`,
-          unitId: assignment.unit_id,
-          usage: totalUsage * meterAllocationShare(meter, assignment.unit_id, meters),
-          ...priceDetails,
-        }];
-      });
-    });
-    const calculation = calculateUsageCharge(
-      chargeRows,
-      item.aggregation_decimal_digits,
-      item.usage_rounding_mode,
-      item.amount_calculation_scope,
-    );
-    return { usage: calculation.usage, amount: calculation.amount };
-  };
+  // 小分類画面・集計・増額分・請求連携が参照する共通の確定明細。
+  // 集計画面ではここで確定した使用量・税抜金額を再計算せず、そのまま表示・加算する。
+  const confirmedRows = buildConfirmedMeterAmounts({
+    contracts: eligibleContracts,
+    meters,
+    categorySettings,
+    utilitySettings,
+    subItems,
+    surcharges,
+    surchargePrices,
+    unitPriceCalculations,
+    billingLineItems: [],
+    monthlyFixedCharges,
+    billingMonth,
+  });
   const summaryRows = billingGroupIds.map((billingGroupId) => {
     const tenantContracts = eligibleContracts.filter((row) => billingGroupKey(row) === billingGroupId);
+    const billingRows = confirmedRows.filter((row) =>
+      (row.meter_reading_contract_id ?? row.tenant_id) === billingGroupId,
+    );
     const groups = categoryColumns.map((group) => {
       const billableContracts = tenantContracts.filter((contract) => isContractCategoryBillable(contract, group.category));
       const enabled = billableContracts.length > 0;
-      // 基本料画面と同じく、分類が請求対象なら契約・請求区画に保存された基本料を表示する。
-      // 増額分だけを分割した行では基本料の小分類フラグが false になるため、
-      // そのフラグで絞ると集計画面から正しい基本料まで消えてしまう。
-      const basicContracts = group.basic ? billableContracts : [];
-      const basicEnabled = !group.basic || basicContracts.length > 0;
-      const groupBasic = group.basic ? basicContracts[0]?.meterBilling[0]?.items.find((item) => item.asset_meter_sub_item_id === group.basic?.asset_meter_sub_item_id && item.is_billable)?.fixed_amount : null;
-      const basicAmount = group.basic
-        ? groupBasic != null
-          ? group.basic.tax_mode === "inclusive"
-            ? exclusiveAmountFromInclusive(Number(groupBasic), group.basic.tax_rounding_mode)
-            : Number(groupBasic)
-          : basicContracts.reduce((sum, contract) => {
-              const basic = contract.basics.find((row) => row.category === group.category);
-              const amount = Number(basic?.amount ?? 0);
-              const taxMode = basic?.tax_mode ?? group.basic?.tax_mode ?? "exclusive";
-              return sum + (taxMode === "inclusive"
-                ? exclusiveAmountFromInclusive(amount, group.basic!.tax_rounding_mode)
-                : amount);
-            }, 0)
-        : null;
+      const basicRow = group.basic ? billingRows.find((row) => row.source_kind === "subItem" && row.source_id === group.basic?.asset_meter_sub_item_id) : undefined;
+      const basicEnabled = !group.basic || Boolean(basicRow);
+      const basicAmount = group.basic ? Number(basicRow?.amount ?? 0) : null;
       const custom = group.custom.map((item) => {
-        const itemContracts = billableContracts.filter((contract) => isContractSubItemBillable(contract, item.asset_meter_sub_item_id));
-        return { ...calculationForContracts(itemContracts, item), enabled: itemContracts.length > 0 };
+        const row = billingRows.find((candidate) => candidate.source_kind === "subItem" && candidate.source_id === item.asset_meter_sub_item_id);
+        return { usage: Number(row?.usage_amount ?? 0), amount: Number(row?.amount ?? 0), enabled: Boolean(row) };
       });
       const totalUsage = custom.reduce((sum, item) => sum + item.usage, 0);
-      const surchargePrice = group.surcharge ? surchargePrices[group.surcharge.asset_meter_surcharge_id] : null;
-      const surchargeExcluded = billableContracts.some(isSurchargeExcluded);
-      const surchargeAmount = group.surcharge
-        ? surchargePrice == null
-          ? 0
-          : group.surcharge.calculation_scope === "unit"
-            ? billableContracts.reduce((sum, contract) => {
-                if (isSurchargeExcluded(contract)) return sum;
-                const unitUsage = group.custom.reduce(
-                  (usageSum, item) => usageSum + calculationForContracts([contract], item).usage,
-                  0,
-                );
-                return sum + roundUtilityAmount(unitUsage * surchargePrice);
-              }, 0)
-            : surchargeExcluded ? 0 : roundUtilityAmount(totalUsage * surchargePrice)
-        : null;
+      const surchargeRow = group.surcharge ? billingRows.find((row) => row.source_kind === "surcharge" && row.source_id === group.surcharge?.asset_meter_surcharge_id) : undefined;
+      const surchargeAmount = group.surcharge ? Number(surchargeRow?.amount ?? 0) : null;
       const total = (basicAmount ?? 0) + custom.reduce((sum, item) => sum + item.amount, 0);
       return { enabled, basicEnabled, basicAmount, custom, surchargeAmount, totalUsage, total };
     });
@@ -4633,14 +4567,10 @@ function SurchargeWorkspace({
       inclusive: totals.inclusive + basicInclusive + customAmounts.inclusive,
     };
   }, { exclusive: 0, inclusive: 0 });
-  const recoveryAmountExcludingTax = confirmedRecoveryRows.reduce((sum, row) => {
-    const item = subItems.find((candidate) => candidate.asset_meter_sub_item_id === row.source_id);
-    if (!item || !Number.isFinite(Number(row.amount))) return sum;
-    const amount = Number(row.amount);
-    return sum + (item.sub_item_kind === "basic" && row.tax_mode === "inclusive"
-      ? exclusiveFixedChargeAmount(amount, item)
-      : amount);
-  }, 0);
+  const recoveryAmountExcludingTax = confirmedRecoveryRows.reduce(
+    (sum, row) => sum + (Number.isFinite(Number(row.amount)) ? Number(row.amount) : 0),
+    0,
+  );
   const recoveryAmountIncludingTax = recoveryInclusiveMode === "use_calculated_inclusive"
     ? recoveryAmounts.inclusive
     : Math.round(recoveryAmountExcludingTax * (1 + DEFAULT_CONSUMPTION_TAX_RATE));
@@ -5184,11 +5114,6 @@ function exclusiveAmountFromInclusive(
     : taxRoundingMode === "round"
       ? Math.round(rawExclusiveAmount)
       : Math.floor(rawExclusiveAmount);
-}
-
-function exclusiveFixedChargeAmount(inclusiveAmount: number, item: MeterSubItem) {
-  // 「ー」は単価の税抜換算設定。請求額そのものは税抜額を必ず計算する。
-  return exclusiveAmountFromInclusive(inclusiveAmount, item.tax_rounding_mode === "none" ? "floor" : item.tax_rounding_mode);
 }
 
 function roundToDigits(value: number, digits: number, mode: "floor" | "round" | "ceil") {
