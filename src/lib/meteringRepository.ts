@@ -19,6 +19,7 @@ import type {
   UtilityTariffTier,
   UtilityTariffVersion,
 } from "../types";
+import { latestUnitPriceAdjustments, type UnitPriceAdjustment } from "./unitPriceAdjustment";
 
 export async function loadUtilityTariff(
   client: SupabaseClient,
@@ -83,6 +84,21 @@ export async function loadMeterUnitPriceCalculations(
     .eq("billing_month", `${billingMonth}-01`);
   fail("月次単価計算を読み込めませんでした", error);
   return (data ?? []) as MeterUnitPriceCalculation[];
+}
+
+export async function loadPreviousMeterUnitPriceAdjustments(
+  client: SupabaseClient,
+  assetId: string,
+  billingMonth: string,
+): Promise<UnitPriceAdjustment[]> {
+  const { data, error } = await client
+    .from("meter_reading_month_sub_item")
+    .select("billing_month, asset_meter_sub_item_id, unit_price_adjustment_enabled, unit_price_adjustment_factor")
+    .eq("asset_id", assetId)
+    .lt("billing_month", `${billingMonth}-01`)
+    .order("billing_month", { ascending: false });
+  fail("前月までの単価補正設定を読み込めませんでした", error);
+  return latestUnitPriceAdjustments((data ?? []) as Array<UnitPriceAdjustment & { billing_month: string }>);
 }
 
 export async function saveMeterUnitPriceCalculation(

@@ -21,6 +21,7 @@ import {
   loadMeterReadings,
   loadMonthlyFixedCharges,
   loadMeterUnitPriceCalculations,
+  loadPreviousMeterUnitPriceAdjustments,
   loadUtilityTariff,
   loadSurchargeEvidence,
   loadMeterUsageHistory,
@@ -55,6 +56,8 @@ import {
 } from "../lib/meteringRepository";
 import { supabase } from "../lib/supabase";
 import { allocationRatioValue, calculateMonthAllocation, evaluateAllocationAmountExpression, formatAllocationAmountInput, ratioForAllocationMode, type MonthAllocationMode, type MonthAllocationRatio } from "../lib/monthAllocation";
+import { contractBasicChargeAmount, isBasicChargeBillable } from "../lib/basicCharge";
+import type { UnitPriceAdjustment } from "../lib/unitPriceAdjustment";
 import type {
   Asset,
   AssetUtilitySetting,
@@ -300,15 +303,12 @@ function buildConfirmedMeterAmounts({
       const basic = categorySetting.is_basic_billable
         ? subItems.find((item) => item.category === category && item.sub_item_kind === "basic")
         : undefined;
-      const basicContracts = basic
+      // 行設定は採否だけに使い、金額は常に契約区画・請求区画の基本料を正とする。
+      const basicContracts = basic && isBasicChargeBillable(billingSetting?.items, basic.asset_meter_sub_item_id)
         ? billableContracts
         : [];
       if (basic && basicContracts.length > 0) {
-        const groupBasic = billingSetting?.items.find((item) => item.asset_meter_sub_item_id === basic.asset_meter_sub_item_id && item.is_billable)?.fixed_amount;
-        const sourceAmount = groupBasic != null ? Number(groupBasic) : basicContracts.reduce(
-          (sum, contract) => sum + Number(contract.basics.find((item) => item.category === category)?.amount ?? 0),
-          0,
-        );
+        const sourceAmount = contractBasicChargeAmount(basicContracts, category);
         const amount = basic.tax_mode === "inclusive"
           ? exclusiveAmountFromInclusive(sourceAmount, basic.tax_rounding_mode === "none" ? "floor" : basic.tax_rounding_mode)
           : sourceAmount;
@@ -729,6 +729,7 @@ export function KanameterWorkspacePage({
   const [unitPriceCalculatorOpen, setUnitPriceCalculatorOpen] = useState(false);
   const [calculatedUnitPrices, setCalculatedUnitPrices] = useState<Record<string, number>>({});
   const [unitPriceCalculations, setUnitPriceCalculations] = useState<Record<string, MeterUnitPriceCalculation>>({});
+  const [previousUnitPriceAdjustments, setPreviousUnitPriceAdjustments] = useState<Record<string, UnitPriceAdjustment>>({});
   const [utilityTariff, setUtilityTariff] = useState<UtilityTariffVersion | null>(null);
   const [values, setValues] = useState<Record<string, string>>({});
   const [monthlyFixedCharges, setMonthlyFixedCharges] = useState<Record<string, number>>({});
@@ -851,9 +852,13 @@ export function KanameterWorkspacePage({
 
   useEffect(() => {
     if (!assetId || !billingMonth) return;
-    void loadMeterUnitPriceCalculations(supabase!, assetId, billingMonth)
-      .then((rows) => {
+    void Promise.all([
+      loadMeterUnitPriceCalculations(supabase!, assetId, billingMonth),
+      loadPreviousMeterUnitPriceAdjustments(supabase!, assetId, billingMonth),
+    ])
+      .then(([rows, previousAdjustments]) => {
         setUnitPriceCalculations(Object.fromEntries(rows.map((row) => [row.asset_meter_sub_item_id, row])));
+        setPreviousUnitPriceAdjustments(Object.fromEntries(previousAdjustments.map((row) => [row.asset_meter_sub_item_id, row])));
         setCalculatedUnitPrices(Object.fromEntries(rows.flatMap((row) =>
           row.unit_price == null ? [] : [[row.asset_meter_sub_item_id, Number(row.unit_price)]],
         )));
@@ -1910,6 +1915,7 @@ export function KanameterWorkspacePage({
           taxMode={selectedUnitPriceTaxMode}
           priceMode={billableCategoryContracts.some((contract) => meterTermFor(contract, selectedSubItem)?.price_mode === "master_meter") || selectedSubItem.price_mode === "master_meter" ? "master_meter" : "amount"}
           initialCalculation={unitPriceCalculations[selectedSubItem.asset_meter_sub_item_id]}
+          previousAdjustment={previousUnitPriceAdjustments[selectedSubItem.asset_meter_sub_item_id]}
           tariffDefinition={utilityTariff}
           billingMonth={billingMonth}
           rateSourceMeters={meters
@@ -1990,6 +1996,7 @@ function VariableUnitPriceCalculator({
   taxMode,
   priceMode,
   initialCalculation,
+  previousAdjustment,
   tariffDefinition,
   billingMonth,
   rateSourceMeters,
@@ -2002,6 +2009,7 @@ function VariableUnitPriceCalculator({
   taxMode: TaxMode;
   priceMode: "amount" | "master_meter";
   initialCalculation?: MeterUnitPriceCalculation;
+  previousAdjustment?: UnitPriceAdjustment;
   tariffDefinition: UtilityTariffVersion | null;
   billingMonth: string;
   rateSourceMeters: Array<{ id: string; label: string; usage: number }>;
@@ -2013,9 +2021,9 @@ function VariableUnitPriceCalculator({
   const [basicChargeExpression, setBasicChargeExpression] = useState(formatAdditionExpression(String(initialCalculation?.billed_basic_charge ?? "")));
   const [taxExpression, setTaxExpression] = useState(formatAdditionExpression(String(initialCalculation?.billed_tax ?? "")));
   const [usageExpression, setUsageExpression] = useState(formatAdditionExpression(String(initialCalculation?.billed_usage ?? "")));
-  const [adjustmentEnabled, setAdjustmentEnabled] = useState(initialCalculation?.unit_price_adjustment_enabled ?? false);
+  const [adjustmentEnabled, setAdjustmentEnabled] = useState(initialCalculation?.unit_price_adjustment_enabled ?? previousAdjustment?.unit_price_adjustment_enabled ?? false);
   const [adjustmentFactorExpression, setAdjustmentFactorExpression] = useState(
-    String(initialCalculation?.unit_price_adjustment_factor ?? 1),
+    String(initialCalculation?.unit_price_adjustment_factor ?? previousAdjustment?.unit_price_adjustment_factor ?? 1),
   );
   const [rateSourceMeterId, setRateSourceMeterId] = useState(
     initialCalculation?.rate_source_meter_id && rateSourceMeters.some((meter) => meter.id === initialCalculation.rate_source_meter_id)
