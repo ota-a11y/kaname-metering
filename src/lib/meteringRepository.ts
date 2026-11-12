@@ -330,7 +330,7 @@ export async function loadContractUnits(
       .order("lease_contract_unit_id"),
     client
       .from("lease_contract_billing_unit")
-      .select(`lease_contract_billing_unit_id, billing_unit_name, contract:lease_contract!inner(lease_contract_id, tenant_id, contract_status, contract_start_date, contract_end_date, actual_end_date, tenant:tenant_master(tenant_name)), members:lease_contract_billing_unit_member!inner(contractUnit:lease_contract_unit!inner(lease_contract_unit_id, lease_start_date, lease_end_date, unit:unit_master!inner(unit_id, floor_label, property_id))), prices:lease_contract_billing_unit_utility_price(asset_billing_line_item_id, unit_price, tax_mode, billing_month_prices, item:asset_billing_line_item(line_item_name)), categoryPrices:lease_contract_billing_unit_category_price(category, unit_price, tax_mode, billing_month_prices), basics:lease_contract_billing_unit_basic_charge(category, amount, tax_mode), meterTerms:lease_contract_billing_unit_meter_term(asset_meter_sub_item_id, price_mode, tax_mode, show_unit_price_on_invoice, show_usage_on_invoice)`)
+      .select(`lease_contract_billing_unit_id, billing_unit_name, contract:lease_contract!inner(lease_contract_id, tenant_id, contract_status, contract_start_date, contract_end_date, actual_end_date, tenant:tenant_master(tenant_name)), members:lease_contract_billing_unit_member!inner(contractUnit:lease_contract_unit!inner(lease_contract_unit_id, lease_start_date, lease_end_date, unit:unit_master!inner(unit_id, unit_code, unit_name, floor_label, property_id))), prices:lease_contract_billing_unit_utility_price(asset_billing_line_item_id, unit_price, tax_mode, billing_month_prices, item:asset_billing_line_item(line_item_name)), categoryPrices:lease_contract_billing_unit_category_price(category, unit_price, tax_mode, billing_month_prices), basics:lease_contract_billing_unit_basic_charge(category, amount, tax_mode), meterTerms:lease_contract_billing_unit_meter_term(asset_meter_sub_item_id, price_mode, tax_mode, show_unit_price_on_invoice, show_usage_on_invoice)`)
       .eq("members.contractUnit.unit.property_id", assetId)
       .order("sort_order"),
     client
@@ -357,7 +357,8 @@ export async function loadContractUnits(
   const rank = new Map(
     (order.data ?? []).map((row) => [row.tenant_id, row.sort_order]),
   );
-  type BillingMemberUnit = { lease_contract_unit_id: string; lease_start_date: string | null; lease_end_date: string | null; unit: { unit_id: string; floor_label: string | null } | Array<{ unit_id: string; floor_label: string | null }> };
+  type BillingPhysicalUnit = { unit_id: string; unit_code: string; unit_name: string | null; floor_label: string | null };
+  type BillingMemberUnit = { lease_contract_unit_id: string; lease_start_date: string | null; lease_end_date: string | null; unit: BillingPhysicalUnit | BillingPhysicalUnit[] };
   const asArray = <T>(value: T | T[] | null | undefined): T[] => value == null ? [] : Array.isArray(value) ? value : [value];
   const billingRows = ((billingUnits.data ?? []) as unknown as Array<{ lease_contract_billing_unit_id: string; billing_unit_name: string; contract: ContractUnit["contract"] | ContractUnit["contract"][]; members: Array<{ contractUnit: BillingMemberUnit | BillingMemberUnit[] }>; prices: ContractUnit["prices"]; categoryPrices: ContractUnit["categoryPrices"]; basics: ContractUnit["basics"]; meterTerms: ContractUnit["meterTerms"] }>).filter((row) => row.members.length > 0);
   type MeterBillingSetting = ContractUnit["meterBilling"][number] & { tenant_id: string };
@@ -371,6 +372,7 @@ export async function loadContractUnits(
       lease_contract_unit_id: billing.lease_contract_billing_unit_id,
       lease_contract_billing_unit_id: billing.lease_contract_billing_unit_id,
       member_unit_ids: members.flatMap((member) => asArray(member.unit).map((unit) => unit.unit_id)),
+      member_units: members.flatMap((member) => asArray(member.unit).map((unit) => ({ unit_id: unit.unit_id, unit_code: unit.unit_code, unit_name: unit.unit_name }))),
       member_periods: members.map((member) => ({
         start: member.lease_start_date ?? contract?.contract_start_date ?? null,
         end: member.lease_end_date ?? contract?.actual_end_date ?? contract?.contract_end_date ?? null,
@@ -380,23 +382,44 @@ export async function loadContractUnits(
       prices: billing.prices ?? [], categoryPrices: billing.categoryPrices ?? [], basics: billing.basics ?? [], meterTerms: billing.meterTerms ?? [], meterBilling: [],
     });
   }
+  const splitRows: ContractUnit[] = [];
   for (const row of rows) {
     const tenantSettings = storedMeterBilling.map((setting) => ({ ...setting, surcharge_excluded: Boolean(setting.surcharge_excluded) }))
       .filter((setting) => setting.tenant_id === row.contract?.tenant_id)
       .sort((left, right) => left.row_no - right.row_no);
     // データ分割された請求行は、分割対象の請求項目にかかわらず検針計算でも
     // 区画の所属先として扱う。split_items に variable がない行も合算しない。
-    const matchingSetting = tenantSettings.length > 1 ? tenantSettings.find((setting) =>
-      (row.lease_contract_billing_unit_id && setting.billingUnits?.some((billingUnit) =>
+    const matchingSettings = tenantSettings.length > 1 ? tenantSettings.filter((setting) => {
+      const settingUnitIds = new Set(setting.units?.map((unit) => unit.unit_id) ?? []);
+      const physicalMatch = (row.member_unit_ids ?? [row.unit?.unit_id]).some((unitId) => unitId && settingUnitIds.has(unitId));
+      const billingUnitMatch = Boolean(row.lease_contract_billing_unit_id && setting.billingUnits?.some((billingUnit) =>
         billingUnit.lease_contract_billing_unit_id === row.lease_contract_billing_unit_id
-      )) || setting.units?.some((unit: { unit_id: string }) =>
-        (row.member_unit_ids ?? [row.unit?.unit_id]).includes(unit.unit_id)
-      ),
-    ) : undefined;
-    // 分割行のどこにも明示されていない区画は、KANAMEと同じく1行目へ含める。
-    row.meterBilling = matchingSetting ? [matchingSetting] : tenantSettings.slice(0, 1);
+      ));
+      return physicalMatch || billingUnitMatch;
+    }) : [];
+    if (!matchingSettings.length) {
+      splitRows.push({ ...row, meterBilling: tenantSettings.slice(0, 1) });
+      continue;
+    }
+    for (const setting of matchingSettings) {
+      const settingUnitIds = new Set(setting.units?.map((unit) => unit.unit_id) ?? []);
+      const selectedMembers = row.member_units?.filter((unit) => settingUnitIds.has(unit.unit_id)) ?? [];
+      const memberUnitIds = selectedMembers.length ? selectedMembers.map((unit) => unit.unit_id) : row.member_unit_ids;
+      splitRows.push({
+        ...row,
+        lease_contract_unit_id: `${row.lease_contract_unit_id}:${setting.meter_reading_contract_id}`,
+        member_unit_ids: memberUnitIds,
+        member_units: selectedMembers.length ? selectedMembers : row.member_units,
+        unit: row.unit && selectedMembers.length ? {
+          ...row.unit,
+          unit_code: selectedMembers.map((unit) => unit.unit_code).join("・"),
+          unit_name: selectedMembers.map((unit) => unit.unit_name || unit.unit_code).join("・"),
+        } : row.unit,
+        meterBilling: [setting],
+      });
+    }
   }
-  return rows.sort(
+  return splitRows.sort(
     (left, right) =>
       (rank.get(left.contract?.tenant_id ?? "") ?? Number.MAX_SAFE_INTEGER) -
         (rank.get(right.contract?.tenant_id ?? "") ?? Number.MAX_SAFE_INTEGER) ||

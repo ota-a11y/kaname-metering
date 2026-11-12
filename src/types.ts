@@ -48,6 +48,7 @@ export type ContractUnit = {
   lease_start_date?: string | null;
   lease_end_date?: string | null;
   member_unit_ids?: string[];
+  member_units?: Array<{ unit_id: string; unit_code: string; unit_name: string | null }>;
   member_periods?: Array<{ start: string | null; end: string | null }>;
   unit: {
     unit_id: string;
