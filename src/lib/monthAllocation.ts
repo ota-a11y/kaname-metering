@@ -90,14 +90,14 @@ export function ratioForAllocationMode(value: unknown, mode: MonthAllocationMode
   catch { return { mode: "multiplier", value: "" }; }
 }
 
-export function calculateMonthAllocation(amountInput: string, targets: MonthAllocationTarget[]) {
+export function calculateMonthAllocation(amountInput: string, targets: MonthAllocationTarget[], taxMode: "exclusive" | "inclusive" = "exclusive") {
   const billedAmount = evaluateAllocationAmountExpression(amountInput);
   if (billedAmount == null) {
     throw new Error("請求額は0以上の数値で入力してください。");
   }
   const rows = targets.map((target) => {
     const ratio = allocationRatioValue(target.ratio);
-    const raw = billedAmount * ratio;
+    const raw = billedAmount * ratio / (taxMode === "inclusive" ? 1.1 : 1);
     const amount = Math.ceil(raw);
     return { id: target.id, ratio, amount };
   });

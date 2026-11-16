@@ -112,6 +112,7 @@ export type ContractUnit = {
 export type MeterReadingRow = {
   asset_meter_id: string;
   use_reading_input: boolean;
+  rollover_digits?: number | null;
   parent_meter_id: string | null;
   is_rate_source: boolean;
   is_allocation_source: boolean;

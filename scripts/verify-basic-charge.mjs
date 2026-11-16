@@ -22,5 +22,6 @@ assert.equal(isBasicChargeBillable(undefined, "basic"), true, "旧データは�
 assert.equal(isBasicChargeBillable([{ asset_meter_sub_item_id: "basic", is_billable: true, fixed_amount: 0 }], "basic"), true, "保存額0でもONなら基本料を載せる");
 assert.equal(isBasicChargeBillable([{ asset_meter_sub_item_id: "basic", is_billable: false, fixed_amount: 3500 }], "basic"), false, "明示的なOFFなら基本料を載せない");
 assert.equal(contractBasicChargeAmount(contracts, "electric"), 3500, "基本料は保存額ではなく契約区画の金額を合計する");
+assert.equal(contractBasicChargeAmount([{ basics: [{ category: "electric", amount: 6612, tax_mode: "inclusive" }] }], "electric"), 6011, "税込基本料は区画ごとに税抜へ割り戻して切り上げる");
 
 console.log("PASS: basic charge ON/OFF and contract amount source");

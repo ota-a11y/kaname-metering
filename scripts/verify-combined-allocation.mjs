@@ -10,18 +10,34 @@ globalThis.localStorage = { getItem: () => null };
 
 // Render the actual reading table with representative data, without connecting to Supabase.
 const source = await readFile('src/pages/KanameterWorkspacePage.tsx', 'utf8');
+assert.match(source, /<SummaryView[\s\S]*?monthlyFixedCharges=\{effectiveMonthlyFixedCharges\}/, 'summary receives the same calculated tax-exclusive allocation amounts as the basic-charge screen');
+assert.match(source, /item\.calculation_mode === "allocated_amount" \|\|/, 'each amount-allocation subitem remains as an independent tab');
+assert.match(source, /_deduct_sub_item_id: allocationDraft\.deductionSubItemId/, 'selected deduction subitem is persisted with allocation settings');
 const outfile = resolve('.tmp-runtime/verify-combined-allocation-component.mjs');
 await build({
-  stdin: { contents: `${source}\nexport { BasicChargeTable, CustomItemTable, SurchargeWorkspace, adjustedMeterUsage, billableContractsForSubItem, calculateMonthAllocation, calculateUsageCharge, VariableUnitPriceCalculator };`, loader: 'tsx', resolveDir: resolve('src/pages') },
+  stdin: { contents: `${source}\nexport { BasicChargeTable, CustomItemTable, SurchargeWorkspace, adjustedMeterUsage, allocationDeductionAmount, billableContractsForSubItem, calculateMonthAllocation, calculateUsageCharge, netAllocationSourceAmount, summaryExclusiveUnitPrice, VariableUnitPriceCalculator };`, loader: 'tsx', resolveDir: resolve('src/pages') },
   bundle: true, packages: 'external', platform: 'node', format: 'esm', jsx: 'automatic',
   define: { 'import.meta.env': '{}' }, outfile,
 });
-const { BasicChargeTable, CustomItemTable, SurchargeWorkspace, adjustedMeterUsage, billableContractsForSubItem, calculateMonthAllocation, calculateUsageCharge, VariableUnitPriceCalculator } = await import(pathToFileURL(outfile).href);
+const { BasicChargeTable, CustomItemTable, SurchargeWorkspace, adjustedMeterUsage, allocationDeductionAmount, billableContractsForSubItem, calculateMonthAllocation, calculateUsageCharge, netAllocationSourceAmount, summaryExclusiveUnitPrice, VariableUnitPriceCalculator } = await import(pathToFileURL(outfile).href);
+const deductionRows = [{ source_kind: 'subItem', source_id: 'fuji-water', amount: 1000 }];
+assert.equal(allocationDeductionAmount(deductionRows, 'fuji-water', 'exclusive'), 1000, 'net allocation source deducts the selected subitem net amount');
+assert.equal(allocationDeductionAmount(deductionRows, 'fuji-water', 'inclusive'), 1100, 'gross allocation source converts the selected subitem to the same tax basis');
+assert.equal(netAllocationSourceAmount(10000, 1100), 8900, 'allocation uses invoice amount after deduction');
+assert.equal(summaryExclusiveUnitPrice(33, 'inclusive'), 30, '集計では税込33円を税抜30円として参照する');
+assert.equal(summaryExclusiveUnitPrice(33, 'exclusive'), 33, '集計では税抜単価をそのまま参照する');
 const exclusiveRounding = calculateUsageCharge([{ meterId: 'exclusive', usage: 0.1, price: 10.01, taxMode: 'exclusive' }], 1, 'round', 'meter', 'floor');
 assert.equal(exclusiveRounding.amount, 2, 'exclusive unit-price charges always round fractional yen up');
 const inclusiveRounding = calculateUsageCharge([{ meterId: 'inclusive', usage: 10, price: 10, taxMode: 'inclusive' }], 1, 'round', 'meter', 'floor');
 assert.equal(inclusiveRounding.amount, 91, 'inclusive unit price is divided by 1.1 and rounded up at the third decimal before multiplication');
+const sumOfRoundedMeters = calculateUsageCharge([
+  { meterId: 'sum-1', usage: 4000.6, price: 33, taxMode: 'inclusive' },
+  { meterId: 'sum-2', usage: 4334.6, price: 33, taxMode: 'inclusive' },
+], 0, 'round', 'tenant');
+assert.equal(sumOfRoundedMeters.usage, 8336, 'meter usages are rounded to integers before tenant aggregation');
+assert.equal(sumOfRoundedMeters.amount, Math.ceil(8336 * 33 / 1.1), 'charges use the sum of individually rounded meter usages');
 assert.equal(calculateMonthAllocation('100.1', [{ id: 'tenant', ratio: { mode: 'multiplier', value: '0.5' } }]).rows[0].amount, 51, 'allocated net amounts always round fractional yen up');
+assert.equal(calculateMonthAllocation('1100', [{ id: 'tenant', ratio: { mode: 'multiplier', value: '0.5' } }], 'inclusive').rows[0].amount, 500, 'inclusive allocation divides gross multiplied amount by 1.1 before rounding up');
 const unit = (id) => ({ unit_id: id, unit_code: id, unit_name: id, floor_label: '2', unit_type: 'office' });
 const assignment = (id, weight = 1, method = 'single') => ({ unit_id: id, unit: unit(id), allocation_method: method, allocation_weight: weight });
 const meter = (id, name, order, assignments) => ({
@@ -45,7 +61,7 @@ const allocatedTable = renderToStaticMarkup(React.createElement(BasicChargeTable
   contracts: allocatedContracts, category: 'electric', showBasicCharge: false, monthlyFixedItems: [allocatedItem],
   monthlyFixedCharges: { '202|allocated-basic': 1100, '201|allocated-basic': 500 }, confirmed: false, onMonthlyFixedChange() {},
 }));
-assert.ok(!allocatedTable.includes('区画ごと（税込）') && allocatedTable.includes('区画ごと（税抜）') && allocatedTable.includes('テナント合計（税抜）'), 'allocated charge displays only tax-exclusive amount columns');
+assert.ok(allocatedTable.includes('区画ごと（税抜）') && allocatedTable.includes('テナント合計（税抜）'), 'allocated charge displays distributed amounts as tax-exclusive');
 assert.ok(allocatedTable.includes('value="1,100 円"') && allocatedTable.includes('>1,100 円<'), 'allocated amount displays its stored tax-exclusive value');
 const sharedTenantAllocation = renderToStaticMarkup(React.createElement(BasicChargeTable, {
   contracts: [allocatedContracts[0], { ...allocatedContracts[1], contract: allocatedContracts[0].contract }],
@@ -60,7 +76,7 @@ const surchargeWithAllocatedBasic = renderToStaticMarkup(React.createElement(Sur
   categorySettings: [{ category: 'electric', is_billable: true, is_basic_billable: false, usage_unit: 'kWh' }],
   utilitySettings: [], unitPriceCalculations: {}, monthlyFixedCharges: { '202|allocated-basic': 1100 }, onSettingsSaved() {},
 }));
-assert.match(surchargeWithAllocatedBasic, /金額（税抜）<\/dt><dd>1,100 円<\/dd>/, 'recovery net amount includes the stored tax-exclusive total of an allocated subitem without meters');
+assert.match(surchargeWithAllocatedBasic, /金額（税抜）<\/dt><dd>1,100 円<\/dd>/, 'recovery uses the stored tax-exclusive allocated amount');
 const meteredRecoveryItem = { ...allocatedItem, asset_meter_sub_item_id: 'metered', sub_item_name: '電気代', sub_item_kind: 'custom', is_monthly_fixed: false, calculation_mode: 'meter', price_mode: 'fixed', tax_mode: 'exclusive', default_unit_price: 10, asset_billing_line_item_id: null, amount_calculation_scope: 'unit', aggregation_decimal_digits: 1, usage_rounding_mode: 'round' };
 const surchargeWithTwoSubitems = renderToStaticMarkup(React.createElement(SurchargeWorkspace, {
   surcharge: { asset_meter_surcharge_id: 'increase', category: 'electric', surcharge_name: '電気増額分', calculation_scope: 'tenant', recovery_inclusive_mode: 'from_exclusive' },
@@ -70,7 +86,7 @@ const surchargeWithTwoSubitems = renderToStaticMarkup(React.createElement(Surcha
   categorySettings: [{ category: 'electric', is_billable: true, is_basic_billable: false, usage_unit: 'kWh' }],
   utilitySettings: [], unitPriceCalculations: {}, monthlyFixedCharges: { '202|allocated-basic': 1100 }, onSettingsSaved() {},
 }));
-assert.match(surchargeWithTwoSubitems, /金額（税抜）<\/dt><dd>2,100 円<\/dd>/, 'recovery net amount sums the stored tax-exclusive totals of all subitems');
+assert.match(surchargeWithTwoSubitems, /金額（税抜）<\/dt><dd>2,100 円<\/dd>/, 'recovery net amount sums allocated amounts and metered charges');
 const parent = meter('light', '電灯', 10, [assignment('202', 2, 'ratio'), assignment('201', 3, 'ratio')]);
 parent.meter_label = '2F按分用';
 parent.allocation_common_source_meter_ids = ['power1', 'power2', 'power3', 'position40', 'position60'];
@@ -168,7 +184,7 @@ const mixedContracts = contracts.map((row) => ({ ...row,
 html = render({ contracts: mixedContracts, unitPriceOverride: 20, taxMode: 'inclusive' });
 assert.ok(bodyRows(html).find((row) => row.includes('Tenant 202')).includes('>12 円<'), 'fixed tenant keeps its contract price');
 assert.ok(bodyRows(html).find((row) => row.includes('Tenant 201')).includes('>20 円<'), 'variable tenant receives the calculated price');
-assert.ok(bodyRows(html).find((row) => row.includes('Tenant 202')).includes('>13.2 円<'), 'exclusive contract also displays its tax-inclusive unit price');
+assert.ok(bodyRows(html).find((row) => row.includes('Tenant 202')).includes('>—<'), 'exclusive contract leaves the tax-inclusive unit-price cell blank');
 assert.ok(bodyRows(html).find((row) => row.includes('Tenant 201')).includes('>18.19 円<'), 'inclusive contract displays its rounded tax-exclusive unit price');
 assert.match(html, /<th colSpan="2"[^>]*>単価.*?<\/tr><tr><th[^>]*>税込.*?<\/th><th[^>]*>税抜/s, 'inclusive billing uses a two-row, two-column unit-price header');
 verifyGrid(html, 15);
@@ -190,13 +206,13 @@ const calculatorProps = { itemName: '電気代', category: 'electric', priceMode
   unit_price_rounding_digits: 2, unit_price_rounding_mode: 'round',
 }, onSave() {}, onSaveTariff() {}, onClose() {} };
 const inclusiveCalculator = renderToStaticMarkup(React.createElement(VariableUnitPriceCalculator, { ...calculatorProps, taxMode: 'inclusive' }));
-assert.ok(inclusiveCalculator.includes('132.00 円'), 'inclusive unit price uses gross / usage × adjustment');
+assert.ok(inclusiveCalculator.includes('132.0000 円') && inclusiveCalculator.includes('120.00 円'), 'inclusive unit price is shown unrounded before conversion and rounding of the net price');
 assert.ok(!inclusiveCalculator.includes('消費税額') && !inclusiveCalculator.includes('請求金額（税抜）'), 'inclusive mode hides tax and net amount');
 const basicChargeCalculator = renderToStaticMarkup(React.createElement(VariableUnitPriceCalculator, { ...calculatorProps, taxMode: 'inclusive', initialCalculation: { ...calculatorProps.initialCalculation, billed_basic_charge: 20000 } }));
-assert.ok(basicChargeCalculator.includes('108.00 円'), 'inclusive basic charge is deducted before division and adjustment');
+assert.ok(basicChargeCalculator.includes('108.0000 円') && basicChargeCalculator.includes('98.18 円'), 'inclusive basic charge is deducted before division, then converted to a rounded net unit price');
 assert.ok(basicChargeCalculator.includes('差し引く基本料（税込）'));
 const invalidBasicChargeCalculator = renderToStaticMarkup(React.createElement(VariableUnitPriceCalculator, { ...calculatorProps, taxMode: 'inclusive', initialCalculation: { ...calculatorProps.initialCalculation, billed_basic_charge: 120000 } }));
-assert.match(invalidBasicChargeCalculator, /計算単価（税込）<\/span><strong>—<\/strong>/, 'basic charge above gross does not produce a price');
+assert.match(invalidBasicChargeCalculator, /計算単価（税込・端数処理前）<\/span><strong>—<\/strong>/, 'basic charge above gross does not produce a price');
 const exclusiveCalculator = renderToStaticMarkup(React.createElement(VariableUnitPriceCalculator, { ...calculatorProps, taxMode: 'exclusive' }));
 assert.ok(exclusiveCalculator.includes('120.00 円') && exclusiveCalculator.includes('消費税額'), 'exclusive mode retains tax calculation');
 console.log('PASS: combined allocation inputs, usage/reading calculations, tenant positions, totals table layout, inclusive tax layout, usage-only view');

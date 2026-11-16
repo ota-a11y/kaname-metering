@@ -458,22 +458,22 @@ export async function loadContractUnits(
   );
 }
 
+export function previousReadingBillingMonth(billingMonth: string, monthOffset: number) {
+  const year = Number(billingMonth.slice(0, 4));
+  const monthIndex = Number(billingMonth.slice(5, 7)) - 1;
+  return new Date(Date.UTC(year, monthIndex - monthOffset, 1)).toISOString().slice(0, 10);
+}
+
 export async function loadMeterReadings(
   client: SupabaseClient,
   assetId: string,
   billingMonth: string,
   category: UtilityCategory,
-  _comparisonMonthOffset = 1,
+  comparisonMonthOffset = 1,
 ): Promise<{ rows: MeterReadingRow[]; status: "draft" | "confirmed" | null }> {
   const month = `${billingMonth}-01`;
-  // 検針値は請求・比較月のずれに関係なく、直前の暦月から引き継ぐ。
-  const previousReadingMonth = new Date(Date.UTC(
-    Number(billingMonth.slice(0, 4)),
-    Number(billingMonth.slice(5, 7)) - 2,
-    1,
-  ))
-    .toISOString()
-    .slice(0, 10);
+  // 毎月請求は1か月前、隔月請求は2か月前の当月検針値を前回検針値として引き継ぐ。
+  const previousReadingMonth = previousReadingBillingMonth(billingMonth, comparisonMonthOffset);
   const [metersResult, entriesResult, previousEntriesResult, monthResult, allocationSourcesResult, commonSourcesResult] = await Promise.all([
     client
       .from("asset_meter")
@@ -1314,7 +1314,7 @@ export async function saveMeteringSettings(
       asset_meter_date_setting_id: row.asset_meter_date_setting_id,
       price_mode: row.sub_item_kind === "basic" ? "fixed" : row.price_mode,
       default_unit_price: row.sub_item_kind === "basic" ? null : row.default_unit_price,
-      tax_mode: row.sub_item_kind === "custom" && row.calculation_mode !== "meter" ? "exclusive" : row.tax_mode,
+      tax_mode: row.sub_item_kind === "custom" && row.calculation_mode === "fixed" ? "exclusive" : row.tax_mode,
       tax_rounding_mode: row.tax_rounding_mode,
       show_unit_price_on_invoice: row.show_unit_price_on_invoice,
       show_usage_on_invoice: row.show_usage_on_invoice,
@@ -1364,13 +1364,33 @@ export async function saveMeterReading(
   meterId: string,
   value: number,
   usageOverride?: number,
+  rolloverValue?: number,
 ) {
-  const { data, error } = await client.rpc("save_kanameter_reading", {
+  const rolloverDigits = rolloverValue == null ? undefined : Math.round(Math.log10(rolloverValue));
+  let { data, error } = rolloverDigits === undefined
+    ? await client.rpc("save_kanameter_reading", {
     p_asset_id: assetId,
     p_billing_month: `${billingMonth}-01`,
     p_asset_meter_id: meterId,
     p_value: value,
-  });
+    })
+    : await client.rpc("save_kanameter_reading_rollover", {
+      p_asset_id: assetId,
+      p_billing_month: `${billingMonth}-01`,
+      p_asset_meter_id: meterId,
+      p_value: value,
+      p_rollover_digits: rolloverDigits,
+    });
+  // DB migrationの反映前でも一周保存を止めない。論理上の累積値で既存RPCを通し、
+  // 保存後に画面で入力した物理メーター値へ戻す。
+  if (rolloverDigits !== undefined && error && (error.code === "PGRST202" || error.message.includes("save_kanameter_reading_rollover"))) {
+    ({ data, error } = await client.rpc("save_kanameter_reading", {
+      p_asset_id: assetId,
+      p_billing_month: `${billingMonth}-01`,
+      p_asset_meter_id: meterId,
+      p_value: value + (rolloverValue ?? 0),
+    }));
+  }
   fail("検針値を保存できませんでした", error);
   const saved = data?.[0] as {
     usage_amount: number;
@@ -1379,15 +1399,16 @@ export async function saveMeterReading(
     month_status: "draft";
     saved_at: string;
   };
-  if (usageOverride !== undefined) {
+  if (usageOverride !== undefined && (rolloverDigits === undefined || Number(saved.current_reading) !== value)) {
     const { error: overrideError } = await client
       .from("meter_reading_entry")
-      .update({ usage_amount: usageOverride })
+      .update({ usage_amount: usageOverride, current_reading: value })
       .eq("asset_id", assetId)
       .eq("billing_month", `${billingMonth}-01`)
       .eq("asset_meter_id", meterId);
     fail("一周補正後の使用量を保存できませんでした", overrideError);
     saved.usage_amount = usageOverride;
+    saved.current_reading = value;
   }
   return saved;
 }
