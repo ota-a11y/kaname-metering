@@ -480,16 +480,25 @@ export function previousReadingBillingMonth(billingMonth: string, monthOffset: n
   return new Date(Date.UTC(year, monthIndex - monthOffset, 1)).toISOString().slice(0, 10);
 }
 
+export function latestPreviousReadings(
+  entries: Array<{ asset_meter_id: string; billing_month: string; current_reading: number | null }>,
+) {
+  const readings = new Map<string, number>();
+  for (const entry of [...entries].sort((left, right) => right.billing_month.localeCompare(left.billing_month))) {
+    if (entry.current_reading == null || readings.has(entry.asset_meter_id)) continue;
+    readings.set(entry.asset_meter_id, entry.current_reading);
+  }
+  return readings;
+}
+
 export async function loadMeterReadings(
   client: SupabaseClient,
   assetId: string,
   billingMonth: string,
   category: UtilityCategory,
-  comparisonMonthOffset = 1,
+  _comparisonMonthOffset = 1,
 ): Promise<{ rows: MeterReadingRow[]; status: "draft" | "confirmed" | null }> {
   const month = `${billingMonth}-01`;
-  // 毎月請求は1か月前、隔月請求は2か月前の当月検針値を前回検針値として引き継ぐ。
-  const previousReadingMonth = previousReadingBillingMonth(billingMonth, comparisonMonthOffset);
   const [metersResult, entriesResult, previousEntriesResult, monthResult, allocationSourcesResult, commonSourcesResult] = await Promise.all([
     client
       .from("asset_meter")
@@ -507,9 +516,11 @@ export async function loadMeterReadings(
       .eq("billing_month", month),
     client
       .from("meter_reading_entry")
-      .select("asset_meter_id, current_reading")
+      .select("asset_meter_id, billing_month, current_reading")
       .eq("asset_id", assetId)
-      .eq("billing_month", previousReadingMonth),
+      .lt("billing_month", month)
+      .not("current_reading", "is", null)
+      .order("billing_month", { ascending: false }),
     client
       .from("meter_reading_month")
       .select("status")
@@ -535,12 +546,9 @@ export async function loadMeterReadings(
   const entries = new Map(
     (entriesResult.data ?? []).map((entry) => [entry.asset_meter_id, entry]),
   );
-  const previousReadings = new Map(
-    (previousEntriesResult.data ?? []).map((entry) => [
-      entry.asset_meter_id,
-      entry.current_reading,
-    ]),
-  );
+  // 対象月より前に保存された同一メーターの最新検針値を引き継ぐ。
+  // 隔月設定でも直前月に値が存在する場合、その値を飛ばして2か月前へ戻さない。
+  const previousReadings = latestPreviousReadings(previousEntriesResult.data ?? []);
   return {
     rows: (metersResult.data ?? []).map((meter) => {
       const currentEntry = entries.get(meter.asset_meter_id);
