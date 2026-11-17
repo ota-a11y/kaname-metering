@@ -1447,6 +1447,9 @@ td ul {
 .meter-adjustment-modal { width: min(560px, 100%); }
 .meter-adjustment-form { display: grid; gap: 16px; margin-top: 18px; }
 .meter-adjustment-form label { display: grid; gap: 6px; color: #52645e; font-size: 12px; font-weight: 700; }
+.meter-adjustment-form .child-meter-option { display: grid; grid-template-columns: 18px minmax(0, 1fr); align-items: center; gap: 10px; min-height: 36px; padding: 4px 8px; border-bottom: 1px solid #e3ebe8; cursor: pointer; }
+.meter-adjustment-form .child-meter-option input[type="checkbox"] { width: 16px; height: 16px; margin: 0; padding: 0; }
+.meter-adjustment-form .child-meter-option span { min-width: 0; line-height: 1.35; }
 .meter-adjustment-form select,
 .meter-adjustment-form input,
 .meter-adjustment-form textarea {

@@ -2910,6 +2910,14 @@ function SettingsView({
     const occupant = unit.unit_type === "equipment" || unit.unit_type === "other" ? "共用部" : tenantName || "空室";
     return `${formatFloor(unit.floor_label)} / ${unit.unit_name || unit.unit_code} / ${occupant}`;
   };
+  const childMeterOptionLabel = (meter: MeterReadingRow) => {
+    const assignment = activeAssignment(meter);
+    const unitOption = units.find((unit) => unit.unit_id === assignment?.unit_id);
+    if (unitOption) return `${meter.meter_code} / ${unitOptionLabel(unitOption)}`;
+    const unitName = assignment?.unit?.unit_name || assignment?.unit?.unit_code || "区画未設定";
+    const tenantName = contracts.find((contract) => contract.unit?.unit_id === assignment?.unit_id)?.contract?.tenant?.tenant_name;
+    return `${meter.meter_code} / ${unitName} / ${tenantName || "空室"}`;
+  };
   const [draggingMeterId, setDraggingMeterId] = useState<string | null>(null);
   useEffect(() => {
     setOrderedMeters(meters);
@@ -3785,7 +3793,7 @@ function SettingsView({
             {orderedMeters
               .filter((candidate) => candidate.asset_meter_id !== childMeterId && !wouldCreateChildCycle(childMeterId, candidate.asset_meter_id))
               .map((candidate) => (
-                <label className="checkbox-label" key={candidate.asset_meter_id}>
+                <label className="child-meter-option" key={candidate.asset_meter_id}>
                   <input
                     type="checkbox"
                     checked={childMeterDraft.includes(candidate.asset_meter_id)}
@@ -3793,7 +3801,7 @@ function SettingsView({
                       ? [...new Set([...current, candidate.asset_meter_id])]
                       : current.filter((id) => id !== candidate.asset_meter_id))}
                   />
-                  {candidate.meter_code} / {activeAssignment(candidate)?.unit?.unit_name || activeAssignment(candidate)?.unit?.unit_code || "区画未設定"}
+                  <span>{childMeterOptionLabel(candidate)}</span>
                 </label>
               ))}
           </div>
