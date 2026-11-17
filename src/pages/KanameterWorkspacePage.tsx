@@ -2656,10 +2656,6 @@ function SummaryView({
   monthlyFixedCharges: Record<string, number>;
   columnStorageUserId: string;
 }) {
-  const eligibleContracts = contracts.filter((row) =>
-    ["office", "warehouse", "storage"].includes((row.unit?.unit_type ?? "").toLowerCase())
-    && isContractAnyCategoryBillable(row),
-  );
   const categoryColumns = categories.map((category) => {
     const setting = categorySettings.find((row) => row.category === category);
     const basic = setting?.is_basic_billable ? subItems.find((item) => item.category === category && item.sub_item_kind === "basic") : undefined;
@@ -2668,6 +2664,11 @@ function SummaryView({
     const subItemCount = (basic ? 1 : 0) + custom.length;
     return { category, enabled: !!setting?.is_billable && isUtilityBillingMonth(utilitySettings.find((row) => row.category === category), billingMonth), basic, custom, surcharge, showTotal: subItemCount >= 2 };
   }).filter((group) => group.enabled);
+  const summaryCategories = categoryColumns.map((group) => group.category);
+  const eligibleContracts = contracts.filter((row) =>
+    ["office", "warehouse", "storage"].includes((row.unit?.unit_type ?? "").toLowerCase())
+    && isContractAnyCategoryBillable(row, summaryCategories),
+  );
   const billingGroupIds = Array.from(new Set(eligibleContracts.map((row) => billingGroupKey(row))));
   // 小分類画面・集計・増額分・請求連携が参照する共通の確定明細。
   // 集計画面ではここで確定した使用量・税抜金額を再計算せず、そのまま表示・加算する。
@@ -5526,8 +5527,8 @@ function isContractCategoryBillable(contract: ContractUnit, category: UtilityCat
   return contract.meterBilling.some((setting) => setting[key]);
 }
 
-function isContractAnyCategoryBillable(contract: ContractUnit) {
-  return categories.some((category) => isContractCategoryBillable(contract, category));
+function isContractAnyCategoryBillable(contract: ContractUnit, targetCategories: UtilityCategory[] = categories) {
+  return targetCategories.some((category) => isContractCategoryBillable(contract, category));
 }
 
 function isContractSubItemBillable(contract: ContractUnit, subItemId: string) {

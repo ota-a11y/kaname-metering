@@ -23,6 +23,7 @@ const { BasicChargeTable, CustomItemTable, SurchargeWorkspace, adjustedMeterUsag
 const allCategoriesOff = { meterBilling: [{ electric_billable: false, water_billable: false, gas_billable: false, items: [] }] };
 assert.equal(isContractAnyCategoryBillable(allCategoriesOff), false, 'tenant with every category disabled is hidden from the summary');
 assert.equal(isContractAnyCategoryBillable({ meterBilling: [{ ...allCategoriesOff.meterBilling[0], water_billable: true }] }), true, 'tenant with any enabled category remains in the summary');
+assert.equal(isContractAnyCategoryBillable({ meterBilling: [{ ...allCategoriesOff.meterBilling[0], gas_billable: true }] }, ['electric', 'water']), false, 'flag for a category not shown in the summary does not keep the tenant visible');
 assert.equal(isContractAnyCategoryBillable({ meterBilling: [] }), true, 'legacy tenant without billing settings remains billable');
 const deductionRows = [{ source_kind: 'subItem', source_id: 'fuji-water', amount: 1000 }];
 assert.equal(allocationDeductionAmount(deductionRows, 'fuji-water', 'exclusive'), 1000, 'net allocation source deducts the selected subitem net amount');
