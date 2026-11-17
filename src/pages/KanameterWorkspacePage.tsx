@@ -39,6 +39,7 @@ import {
   saveSharedMeterReadingDate,
   saveAdditionalMeterReadingDate,
   saveMeterInputOverride,
+  saveMeterInputDigitOverrides,
   saveCombinedAllocationSourceMeters,
   saveMeterLabel,
   saveMonthlyFixedCharge,
@@ -1020,8 +1021,8 @@ export function KanameterWorkspacePage({
             result.rows.map((meter) => [
               meter.asset_meter_id,
               effectiveInputMode(meter) === "reading"
-                ? formatInputValue(meter.entry?.current_reading, getReadingDecimalDigits(meter.subItem.asset_meter_sub_item_id, meter.subItem.input_decimal_digits))
-                : formatInputValue(meter.entry?.usage_amount, meter.subItem.input_decimal_digits),
+                ? formatInputValue(meter.entry?.current_reading, meterReadingDecimalDigits(meter))
+                : formatInputValue(meter.entry?.usage_amount, meterUsageInputDecimalDigits(meter)),
             ]),
           ),
         );
@@ -2219,10 +2220,10 @@ export function KanameterWorkspacePage({
                   {rolloverCandidates.map(({ meter, previous, normalizedPrevious, current, rollover, usage }) => (
                     <tr key={meter.asset_meter_id}>
                       <td>{meter.meter_code}</td>
-                      <td title={`保存値: ${formatUsage(previous, getReadingDecimalDigits(meter.subItem.asset_meter_sub_item_id, meter.subItem.input_decimal_digits))}`}>{formatUsage(normalizedPrevious, getReadingDecimalDigits(meter.subItem.asset_meter_sub_item_id, meter.subItem.input_decimal_digits))}</td>
-                      <td>{formatUsage(current, getReadingDecimalDigits(meter.subItem.asset_meter_sub_item_id, meter.subItem.input_decimal_digits))}</td>
-                      <td>{formatUsage(rollover, getReadingDecimalDigits(meter.subItem.asset_meter_sub_item_id, meter.subItem.input_decimal_digits))}</td>
-                      <td><strong>{formatUsage(usage, getReadingDecimalDigits(meter.subItem.asset_meter_sub_item_id, meter.subItem.input_decimal_digits))}</strong></td>
+                      <td title={`保存値: ${formatUsage(previous, meterReadingDecimalDigits(meter))}`}>{formatUsage(normalizedPrevious, meterReadingDecimalDigits(meter))}</td>
+                      <td>{formatUsage(current, meterReadingDecimalDigits(meter))}</td>
+                      <td>{formatUsage(rollover, meterReadingDecimalDigits(meter))}</td>
+                      <td><strong>{formatUsage(usage, meterReadingDecimalDigits(meter))}</strong></td>
                     </tr>
                   ))}
                 </tbody>
@@ -2872,6 +2873,8 @@ function SettingsView({
   const [adjustmentMeterId, setAdjustmentMeterId] = useState<string | null>(null);
   const [childMeterId, setChildMeterId] = useState<string | null>(null);
   const [childMeterDraft, setChildMeterDraft] = useState<string[]>([]);
+  const [inputDigitsMeterId, setInputDigitsMeterId] = useState<string | null>(null);
+  const [inputDigitsDraft, setInputDigitsDraft] = useState({ reading: "", usage: "" });
   const [allocationMeterId, setAllocationMeterId] = useState<string | null>(null);
   const [allocationMethod, setAllocationMethod] = useState<"area" | "ratio" | "meter_usage">("area");
   const [allocationWeights, setAllocationWeights] = useState<Record<string, string>>({});
@@ -3192,6 +3195,47 @@ function SettingsView({
       await saveMeterChildren(supabase!, meter.asset_meter_id, []);
       await onChanged();
       onNotice("子メーター設定を解除しました。");
+    } catch (reason) {
+      onError((reason as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
+  const openInputDigits = (meter: MeterReadingRow) => {
+    setInputDigitsDraft({
+      reading: meter.reading_decimal_digits == null ? "" : String(meter.reading_decimal_digits),
+      usage: meter.usage_input_decimal_digits == null ? "" : String(meter.usage_input_decimal_digits),
+    });
+    setInputDigitsMeterId(meter.asset_meter_id);
+  };
+  const saveInputDigits = async () => {
+    if (!inputDigitsMeterId) return;
+    const reading = inputDigitsDraft.reading === "" ? null : Number(inputDigitsDraft.reading);
+    const usage = inputDigitsDraft.usage === "" ? null : Number(inputDigitsDraft.usage);
+    if ([reading, usage].some((value) => value != null && (!Number.isInteger(value) || value < 0 || value > 3))) {
+      onError("入力桁数は0から3の整数で指定してください。");
+      return;
+    }
+    setSaving(true);
+    onError("");
+    try {
+      await saveMeterInputDigitOverrides(supabase!, inputDigitsMeterId, reading, usage);
+      await onChanged();
+      setInputDigitsMeterId(null);
+      onNotice(reading == null && usage == null ? "メーター個別の入力設定を解除しました。" : "メーター個別の入力設定を保存しました。");
+    } catch (reason) {
+      onError((reason as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
+  const disableInputDigits = async (meter: MeterReadingRow) => {
+    setSaving(true);
+    onError("");
+    try {
+      await saveMeterInputDigitOverrides(supabase!, meter.asset_meter_id, null, null);
+      await onChanged();
+      onNotice("メーター個別の入力設定を解除しました。");
     } catch (reason) {
       onError((reason as Error).message);
     } finally {
@@ -3567,8 +3611,8 @@ function SettingsView({
         <button type="button" className="primary compact meter-display-save" disabled={saving} onClick={() => void saveDisplaySettings()}>{saving ? "保存中…" : "設定を保存"}</button>
       </div>
       <div className="table-wrap">
-        <ResizableTable className="workspace-data-table meter-settings-table" storageKey="meter-settings-common-v3" columnGroups={["drag", "tag", "meter", "unit", "input-method", "parent-meter", "adjustment", "action"]}>
-          <thead><tr><ColumnHeader columnGroup="drag" /><ColumnHeader columnGroup="tag">タグ</ColumnHeader><ColumnHeader columnGroup="meter">メーター名</ColumnHeader><ColumnHeader columnGroup="unit">設置区画</ColumnHeader><ColumnHeader columnGroup="input-method">読取値入力</ColumnHeader><ColumnHeader columnGroup="parent-meter">子メーター</ColumnHeader><ColumnHeader columnGroup="adjustment">補正設定</ColumnHeader><ColumnHeader columnGroup="action" /></tr></thead>
+        <ResizableTable className="workspace-data-table meter-settings-table" storageKey="meter-settings-common-v4" columnGroups={["drag", "tag", "meter", "unit", "input-method", "input-digits", "parent-meter", "adjustment", "action"]}>
+          <thead><tr><ColumnHeader columnGroup="drag" /><ColumnHeader columnGroup="tag">タグ</ColumnHeader><ColumnHeader columnGroup="meter">メーター名</ColumnHeader><ColumnHeader columnGroup="unit">設置区画</ColumnHeader><ColumnHeader columnGroup="input-method">読取値入力</ColumnHeader><ColumnHeader columnGroup="input-digits">個別入力設定</ColumnHeader><ColumnHeader columnGroup="parent-meter">子メーター</ColumnHeader><ColumnHeader columnGroup="adjustment">補正設定</ColumnHeader><ColumnHeader columnGroup="action" /></tr></thead>
           <tbody>
             {settingsVisibleMeters.map((meter) => {
               const assignment = activeAssignment(meter);
@@ -3646,6 +3690,10 @@ function SettingsView({
                     </div>
                   </td>
                   <td><input type="checkbox" aria-label={`${meter.meter_code}を読取値で入力`} checked={effectiveInputMode(meter) === "reading"} disabled={saving || meter.subItem.input_mode !== "mixed"} title={meter.subItem.input_mode === "mixed" ? undefined : "データ入力方法が「メーターごとに選択」の場合に変更できます"} onChange={(event) => void changeInputOverride(meter, event.target.checked)} /></td>
+                  <td><div className="meter-adjustment-control">
+                    <input type="checkbox" aria-label={`${meter.meter_code}の個別入力設定`} checked={meter.reading_decimal_digits != null || meter.usage_input_decimal_digits != null} disabled={saving || meter.is_allocation_source} onChange={(event) => event.target.checked ? openInputDigits(meter) : void disableInputDigits(meter)} />
+                    {(meter.reading_decimal_digits != null || meter.usage_input_decimal_digits != null) && <button type="button" className="meter-adjustment-status" onClick={() => openInputDigits(meter)}>設定済み</button>}
+                  </div></td>
                   <td>
                     {combinedAllocation ? (
                       <div className="allocation-settings-cell"><button type="button" onClick={() => openCombinedAllocation(meter)}>按分設定</button></div>
@@ -3796,6 +3844,26 @@ function SettingsView({
         </section>
       </div>
     )}
+    {inputDigitsMeterId && (() => {
+      const meter = orderedMeters.find((candidate) => candidate.asset_meter_id === inputDigitsMeterId);
+      if (!meter) return null;
+      const inheritedReading = getReadingDecimalDigits(meter.subItem.asset_meter_sub_item_id, meter.subItem.input_decimal_digits);
+      const inheritedUsage = meter.subItem.input_decimal_digits;
+      return <div className="rollover-modal-backdrop" role="presentation" onMouseDown={() => !saving && setInputDigitsMeterId(null)}>
+        <section className="rollover-modal meter-adjustment-modal" role="dialog" aria-modal="true" aria-labelledby="input-digits-title" onMouseDown={(event) => event.stopPropagation()}>
+          <header>
+            <div><span>メーター設定</span><h2 id="input-digits-title">個別入力設定</h2></div>
+            <button type="button" className="rollover-modal-close" aria-label="閉じる" disabled={saving} onClick={() => setInputDigitsMeterId(null)}>×</button>
+          </header>
+          <p>空欄にすると小分類の既定値を使用します。集計桁数と端数処理は変更されません。</p>
+          <div className="meter-adjustment-form">
+            <label>検針値入力桁数<input type="number" min="0" max="3" step="1" value={inputDigitsDraft.reading} placeholder={`既定: ${inheritedReading}`} onChange={(event) => setInputDigitsDraft((current) => ({ ...current, reading: event.target.value }))} /></label>
+            <label>使用量入力桁数<input type="number" min="0" max="3" step="1" value={inputDigitsDraft.usage} placeholder={`既定: ${inheritedUsage}`} onChange={(event) => setInputDigitsDraft((current) => ({ ...current, usage: event.target.value }))} /></label>
+          </div>
+          <footer><button type="button" className="primary" disabled={saving} onClick={() => void saveInputDigits()}>{saving ? "保存中…" : "個別入力設定を保存"}</button></footer>
+        </section>
+      </div>;
+    })()}
     {childMeterId && (
       <div className="rollover-modal-backdrop" role="presentation" onMouseDown={() => !saving && setChildMeterId(null)}>
         <section className="rollover-modal meter-adjustment-modal" role="dialog" aria-modal="true" aria-labelledby="child-meter-title" onMouseDown={(event) => event.stopPropagation()}>
@@ -4377,7 +4445,7 @@ function CustomItemTable({
     return {
       meterUsage: targetMeters.reduce((sum, meter) => sum + roundToDigits(
         displayedMeterUsage(meter),
-        showReadings ? meter.subItem.aggregation_decimal_digits : meter.subItem.input_decimal_digits,
+        showReadings ? meter.subItem.aggregation_decimal_digits : meterUsageInputDecimalDigits(meter),
         meter.subItem.usage_rounding_mode,
       ), 0),
       unitUsage: displayedGroups.reduce((sum, group) => sum + chargeForMeters(group).usage, 0),
@@ -4708,7 +4776,7 @@ function CustomItemTable({
                 <td className={`numeric unit-price-cell ${calculationOnly ? "" : unitPriceClass(price)}`}>{calculationOnly ? "—" : formatYen(displayPrices.exclusive)}</td>
                 {showReadings && (
                   <td className="numeric reading-value">
-                    {!meterUsesReading || meter.entry?.previous_reading == null ? "—" : formatUsage(Number(meter.entry.previous_reading), getReadingDecimalDigits(meter.subItem.asset_meter_sub_item_id, meter.subItem.input_decimal_digits))}
+                    {!meterUsesReading || meter.entry?.previous_reading == null ? "—" : formatUsage(Number(meter.entry.previous_reading), meterReadingDecimalDigits(meter))}
                   </td>
                 )}
                 {showReadings && (
@@ -5631,6 +5699,15 @@ function variablePriceStorageKey(subItemId: string) {
 function getReadingDecimalDigits(subItemId: string, fallback: number) {
   const stored = Number(localStorage.getItem(readingDigitsStorageKey(subItemId)));
   return Number.isInteger(stored) && stored >= 0 && stored <= 3 ? stored : fallback;
+}
+
+function meterReadingDecimalDigits(meter: MeterReadingRow) {
+  return meter.reading_decimal_digits
+    ?? getReadingDecimalDigits(meter.subItem.asset_meter_sub_item_id, meter.subItem.input_decimal_digits);
+}
+
+function meterUsageInputDecimalDigits(meter: MeterReadingRow) {
+  return meter.usage_input_decimal_digits ?? meter.subItem.input_decimal_digits;
 }
 
 function formatFloor(value: string | null | undefined) {

@@ -113,6 +113,8 @@ export type MeterReadingRow = {
   asset_meter_id: string;
   use_reading_input: boolean;
   rollover_digits?: number | null;
+  reading_decimal_digits: number | null;
+  usage_input_decimal_digits: number | null;
   parent_meter_id: string | null;
   child_meter_ids: string[];
   is_rate_source: boolean;
