@@ -15,11 +15,11 @@ assert.match(source, /item\.calculation_mode === "allocated_amount" \|\|/, 'each
 assert.match(source, /_deduct_sub_item_id: allocationDraft\.deductionSubItemId/, 'selected deduction subitem is persisted with allocation settings');
 const outfile = resolve('.tmp-runtime/verify-combined-allocation-component.mjs');
 await build({
-  stdin: { contents: `${source}\nexport { BasicChargeTable, CustomItemTable, SurchargeWorkspace, adjustedMeterUsage, allocationDeductionAmount, billableContractsForSubItem, buildConfirmedMeterAmounts, calculateMonthAllocation, calculateSurchargeCharge, calculateUsageCharge, isContractAnyCategoryBillable, netAllocationSourceAmount, summaryExclusiveUnitPrice, VariableUnitPriceCalculator };`, loader: 'tsx', resolveDir: resolve('src/pages') },
+  stdin: { contents: `${source}\nexport { BasicChargeTable, CustomItemTable, SurchargeWorkspace, adjustedMeterUsage, allocationDeductionAmount, billableContractsForSubItem, buildConfirmedMeterAmounts, calculateMonthAllocation, calculateSurchargeCharge, calculateUsageCharge, calculatedMeterUsage, isContractAnyCategoryBillable, netAllocationSourceAmount, summaryExclusiveUnitPrice, VariableUnitPriceCalculator };`, loader: 'tsx', resolveDir: resolve('src/pages') },
   bundle: true, packages: 'external', platform: 'node', format: 'esm', jsx: 'automatic',
   define: { 'import.meta.env': '{}' }, outfile,
 });
-const { BasicChargeTable, CustomItemTable, SurchargeWorkspace, adjustedMeterUsage, allocationDeductionAmount, billableContractsForSubItem, buildConfirmedMeterAmounts, calculateMonthAllocation, calculateSurchargeCharge, calculateUsageCharge, isContractAnyCategoryBillable, netAllocationSourceAmount, summaryExclusiveUnitPrice, VariableUnitPriceCalculator } = await import(pathToFileURL(outfile).href);
+const { BasicChargeTable, CustomItemTable, SurchargeWorkspace, adjustedMeterUsage, allocationDeductionAmount, billableContractsForSubItem, buildConfirmedMeterAmounts, calculateMonthAllocation, calculateSurchargeCharge, calculateUsageCharge, calculatedMeterUsage, isContractAnyCategoryBillable, netAllocationSourceAmount, summaryExclusiveUnitPrice, VariableUnitPriceCalculator } = await import(pathToFileURL(outfile).href);
 const allCategoriesOff = { meterBilling: [{ electric_billable: false, water_billable: false, gas_billable: false, items: [] }] };
 assert.equal(isContractAnyCategoryBillable(allCategoriesOff), false, 'tenant with every category disabled is hidden from the summary');
 assert.equal(isContractAnyCategoryBillable({ meterBilling: [{ ...allCategoriesOff.meterBilling[0], water_billable: true }] }), true, 'tenant with any enabled category remains in the summary');
@@ -62,6 +62,10 @@ const childB = { ...meter('child-b', '子B', 2, [assignment('202')]), subItem: {
 const childC = { ...meter('child-c', '子C', 3, [assignment('202')]), subItem: { ...meter('child-c', '子C', 3, [assignment('202')]).subItem, input_mode: 'reading' } };
 const multiChildParent = { ...meter('parent-a', '親A', 1, [assignment('202')]), child_meter_ids: ['child-b', 'child-c'], subItem: { ...meter('parent-a', '親A', 1, [assignment('202')]).subItem, input_mode: 'reading' } };
 assert.equal(adjustedMeterUsage(multiChildParent, [multiChildParent, childB, childC], (row) => row.asset_meter_id === 'parent-a' ? 1500 : row.asset_meter_id === 'child-b' ? 300 : 200), 1000, 'parent usage subtracts every selected child meter');
+const adjustedParent = { ...multiChildParent, billing_adjustment_enabled: true, billing_adjustment_method: 'ratio', billing_adjustment_numerator: 1, billing_adjustment_denominator: 2 };
+const usageForAdjustmentOrder = (row) => row.asset_meter_id === 'parent-a' ? 1500 : row.asset_meter_id === 'child-b' ? 300 : 200;
+assert.equal(calculatedMeterUsage({ ...adjustedParent, billing_adjustment_order: 'after_children' }, [adjustedParent, childB, childC], usageForAdjustmentOrder), 500, 'after-children order adjusts the net parent usage');
+assert.equal(calculatedMeterUsage({ ...adjustedParent, billing_adjustment_order: 'before_children' }, [adjustedParent, childB, childC], usageForAdjustmentOrder), 250, 'before-children order adjusts the parent before subtracting children');
 const subItemFlags = contracts.map((row) => ({ ...row, meterBilling: [{ water_billable: true, items: [{ asset_meter_sub_item_id: 'water-usage', is_billable: row.unit.unit_id === '202' }] }] }));
 assert.deepEqual(billableContractsForSubItem(subItemFlags, 'water-usage').map((row) => row.unit.unit_id), ['202'], 'a tenant with the subitem billing flag off is omitted');
 const allocatedItem = { asset_meter_sub_item_id: 'allocated-basic', sub_item_name: '基本料', category: 'electric', calculation_mode: 'allocated_amount', tax_mode: 'inclusive', tax_rounding_mode: 'none' };

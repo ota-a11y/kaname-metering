@@ -189,6 +189,7 @@ export async function saveMeterBillingAdjustment(
     numerator: number | null;
     denominator: number | null;
     note: string;
+    order: "before_children" | "after_children";
   },
 ) {
   const { error } = await client
@@ -200,6 +201,7 @@ export async function saveMeterBillingAdjustment(
       billing_adjustment_numerator: adjustment.enabled && adjustment.method === "ratio" ? adjustment.numerator : null,
       billing_adjustment_denominator: adjustment.enabled && adjustment.method === "ratio" ? adjustment.denominator : null,
       billing_adjustment_note: adjustment.note.trim() || null,
+      billing_adjustment_order: adjustment.order,
     })
     .eq("asset_meter_id", meterId);
   fail("メーター補正設定を保存できませんでした", error);
@@ -479,7 +481,7 @@ export async function loadMeterReadings(
     client
       .from("asset_meter")
       .select(
-        `asset_meter_id, use_reading_input, parent_asset_meter_id, childMeters:asset_meter_child_meter!parent_asset_meter_id(child_asset_meter_id), is_rate_source, sort_order, meter_code, meter_label, billing_adjustment_enabled, billing_adjustment_method, billing_adjustment_percent, billing_adjustment_numerator, billing_adjustment_denominator, billing_adjustment_note, tag:asset_meter_tag(asset_meter_tag_id, asset_id, tag_name, color), subItem:asset_meter_sub_item!inner(asset_meter_sub_item_id, category, sub_item_name, input_mode, input_decimal_digits, aggregation_decimal_digits, usage_rounding_mode), assignments:asset_meter_unit_assignment!asset_meter_unit_assignment_asset_meter_id_fkey(asset_meter_unit_assignment_id, unit_id, lease_contract_billing_unit_id, effective_from, effective_to, allocation_method, allocation_weight, area_sqm_snapshot, allocation_source_meter_id, unit:unit_master(unit_id, unit_code, unit_name, floor_label, rentable_area_sqm), billingUnit:lease_contract_billing_unit(billing_unit_name, members:lease_contract_billing_unit_member(contractUnit:lease_contract_unit(unit:unit_master(floor_label)))))`,
+        `asset_meter_id, use_reading_input, parent_asset_meter_id, childMeters:asset_meter_child_meter!parent_asset_meter_id(child_asset_meter_id), is_rate_source, sort_order, meter_code, meter_label, billing_adjustment_enabled, billing_adjustment_method, billing_adjustment_percent, billing_adjustment_numerator, billing_adjustment_denominator, billing_adjustment_note, billing_adjustment_order, tag:asset_meter_tag(asset_meter_tag_id, asset_id, tag_name, color), subItem:asset_meter_sub_item!inner(asset_meter_sub_item_id, category, sub_item_name, input_mode, input_decimal_digits, aggregation_decimal_digits, usage_rounding_mode), assignments:asset_meter_unit_assignment!asset_meter_unit_assignment_asset_meter_id_fkey(asset_meter_unit_assignment_id, unit_id, lease_contract_billing_unit_id, effective_from, effective_to, allocation_method, allocation_weight, area_sqm_snapshot, allocation_source_meter_id, unit:unit_master(unit_id, unit_code, unit_name, floor_label, rentable_area_sqm), billingUnit:lease_contract_billing_unit(billing_unit_name, members:lease_contract_billing_unit_member(contractUnit:lease_contract_unit(unit:unit_master(floor_label)))))`,
       )
       .eq("asset_id", assetId)
       .eq("is_active", true)
@@ -608,7 +610,7 @@ export async function loadMeterManagement(
     client
       .from("asset_meter")
       .select(
-        `asset_meter_id, use_reading_input, parent_asset_meter_id, childMeters:asset_meter_child_meter!parent_asset_meter_id(child_asset_meter_id), is_rate_source, sort_order, meter_code, meter_label, billing_adjustment_enabled, billing_adjustment_method, billing_adjustment_percent, billing_adjustment_numerator, billing_adjustment_denominator, billing_adjustment_note, tag:asset_meter_tag(asset_meter_tag_id, asset_id, tag_name, color), subItem:asset_meter_sub_item!inner(asset_meter_sub_item_id, category, sub_item_name, input_mode, input_decimal_digits, aggregation_decimal_digits, usage_rounding_mode), assignments:asset_meter_unit_assignment!asset_meter_unit_assignment_asset_meter_id_fkey(asset_meter_unit_assignment_id, unit_id, lease_contract_billing_unit_id, effective_from, effective_to, allocation_method, allocation_weight, area_sqm_snapshot, allocation_source_meter_id, unit:unit_master(unit_id, unit_code, unit_name, floor_label, rentable_area_sqm), billingUnit:lease_contract_billing_unit(billing_unit_name, members:lease_contract_billing_unit_member(contractUnit:lease_contract_unit(unit:unit_master(floor_label)))))`,
+        `asset_meter_id, use_reading_input, parent_asset_meter_id, childMeters:asset_meter_child_meter!parent_asset_meter_id(child_asset_meter_id), is_rate_source, sort_order, meter_code, meter_label, billing_adjustment_enabled, billing_adjustment_method, billing_adjustment_percent, billing_adjustment_numerator, billing_adjustment_denominator, billing_adjustment_note, billing_adjustment_order, tag:asset_meter_tag(asset_meter_tag_id, asset_id, tag_name, color), subItem:asset_meter_sub_item!inner(asset_meter_sub_item_id, category, sub_item_name, input_mode, input_decimal_digits, aggregation_decimal_digits, usage_rounding_mode), assignments:asset_meter_unit_assignment!asset_meter_unit_assignment_asset_meter_id_fkey(asset_meter_unit_assignment_id, unit_id, lease_contract_billing_unit_id, effective_from, effective_to, allocation_method, allocation_weight, area_sqm_snapshot, allocation_source_meter_id, unit:unit_master(unit_id, unit_code, unit_name, floor_label, rentable_area_sqm), billingUnit:lease_contract_billing_unit(billing_unit_name, members:lease_contract_billing_unit_member(contractUnit:lease_contract_unit(unit:unit_master(floor_label)))))`,
       )
       .eq("asset_id", assetId)
       .eq("is_active", true)

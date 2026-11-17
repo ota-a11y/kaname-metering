@@ -126,6 +126,7 @@ export type MeterReadingRow = {
   billing_adjustment_numerator: number | null;
   billing_adjustment_denominator: number | null;
   billing_adjustment_note: string | null;
+  billing_adjustment_order: "before_children" | "after_children";
   tag: MeterTag | null;
   subItem: {
     asset_meter_sub_item_id: string;
