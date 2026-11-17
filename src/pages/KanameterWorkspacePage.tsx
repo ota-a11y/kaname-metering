@@ -91,10 +91,27 @@ import {
 const categories: UtilityCategory[] = ["electric", "water", "gas"];
 const rateSourceUnitValue = "__rate_source__";
 const combinedPositionLabelPrefix = "__kanameter_combined_position__:";
-const meterTermFor = (contract: ContractUnit, item: MeterSubItem) =>
+const meterTermFor = (contract: ContractUnit, item: Pick<MeterSubItem, "asset_meter_sub_item_id">) =>
   contract.meterTerms?.find((term) => term.asset_meter_sub_item_id === item.asset_meter_sub_item_id);
-const usesVariablePrice = (contract: ContractUnit, item: MeterSubItem) =>
+const usesVariablePrice = (
+  contract: ContractUnit,
+  item: Pick<MeterSubItem, "asset_meter_sub_item_id" | "price_mode">,
+) =>
   (meterTermFor(contract, item)?.price_mode ?? item.price_mode) !== "fixed";
+const resolvedUnitPrice = (
+  contract: ContractUnit,
+  item: Pick<MeterSubItem, "asset_meter_sub_item_id" | "price_mode" | "variable_price_for_unpriced_only">,
+  contractPrice: number | null,
+  defaultPrice: number | null,
+  calculatedPrice: number | null,
+) => {
+  const contractMode = meterTermFor(contract, item)?.price_mode;
+  if (contractMode) return contractMode === "fixed" ? contractPrice ?? defaultPrice : calculatedPrice;
+  if (item.variable_price_for_unpriced_only) return contractPrice ?? calculatedPrice ?? defaultPrice;
+  return item.price_mode === "fixed"
+    ? contractPrice ?? defaultPrice
+    : calculatedPrice ?? contractPrice ?? defaultPrice;
+};
 // KANAMEに適用税率設定を追加するまでは標準税率10%を使用する。
 // 将来は契約・請求設定から取得した税率をexclusiveAmountFromInclusiveへ渡す。
 const DEFAULT_CONSUMPTION_TAX_RATE = 0.1;
@@ -286,7 +303,7 @@ function buildConfirmedMeterAmounts({
     const contractPrice = contractUnitPriceForBillingMonth(itemPrice, billingMonth)
       ?? contractUnitPriceForBillingMonth(categoryPrice, billingMonth);
     const defaultPrice = utilitySetting?.price_scope === "category" ? utilitySetting.default_unit_price : item.default_unit_price;
-    const price = usesVariablePrice(contract, item) ? calculatedPrice : contractPrice ?? defaultPrice;
+    const price = resolvedUnitPrice(contract, item, contractPrice, defaultPrice, calculatedPrice ?? null);
     const taxMode = meterTermFor(contract, item)?.tax_mode
       ?? itemPrice?.tax_mode
       ?? categoryPrice?.tax_mode
@@ -2128,6 +2145,7 @@ export function KanameterWorkspacePage({
                     defaultUnitPrice={selectedUtilitySetting?.price_scope === "category"
                       ? selectedUtilitySetting.default_unit_price
                       : selectedSubItem.default_unit_price}
+                    defaultPriceMode={selectedSubItem.price_mode}
                     variablePriceForUnpricedOnly={selectedSubItem.variable_price_for_unpriced_only ?? false}
                     taxMode={selectedTableTaxMode}
                     amountCalculationScope={selectedSubItem.amount_calculation_scope}
@@ -3960,6 +3978,7 @@ function CustomItemTable({
   lineItemId,
   unitPriceOverride,
   defaultUnitPrice,
+  defaultPriceMode,
   variablePriceForUnpricedOnly,
   taxMode,
   amountCalculationScope,
@@ -3981,6 +4000,7 @@ function CustomItemTable({
   lineItemId: string | null;
   unitPriceOverride?: number;
   defaultUnitPrice: number | null;
+  defaultPriceMode: MeterSubItem["price_mode"];
   variablePriceForUnpricedOnly: boolean;
   taxMode: TaxMode;
   amountCalculationScope: AmountCalculationScope;
@@ -4092,10 +4112,18 @@ function CustomItemTable({
         billingMonth,
       )
     ) : null;
-    const contractMode = contract?.meterTerms?.find((term) => term.asset_meter_sub_item_id === meter.subItem.asset_meter_sub_item_id)?.price_mode;
-    if (contractMode) return contractMode === "fixed" ? contractPrice ?? defaultUnitPrice : unitPriceOverride ?? null;
-    if (variablePriceForUnpricedOnly) return contractPrice ?? unitPriceOverride ?? defaultUnitPrice;
-    return unitPriceOverride ?? contractPrice ?? defaultUnitPrice;
+    if (!contract) return unitPriceOverride ?? defaultUnitPrice;
+    return resolvedUnitPrice(
+      contract,
+      {
+        asset_meter_sub_item_id: meter.subItem.asset_meter_sub_item_id,
+        price_mode: defaultPriceMode,
+        variable_price_for_unpriced_only: variablePriceForUnpricedOnly,
+      },
+      contractPrice,
+      defaultUnitPrice,
+      unitPriceOverride ?? null,
+    );
   };
   const allAllocationResults = meters.flatMap((parent) => {
     if (!isAllocationDisplayParent(parent)) return [];
@@ -4866,14 +4894,18 @@ function SurchargeWorkspace({
       const usage = usageForMeters(itemMeters, new Set([unitId]));
       const contractItemPrice = contract.prices.find((row) => row.asset_billing_line_item_id === item.asset_billing_line_item_id);
       const contractCategoryPrice = contract.categoryPrices.find((row) => row.category === "electric");
-      const unitPrice = unitPriceCalculations[item.asset_meter_sub_item_id]?.unit_price
-        ?? contractUnitPriceForBillingMonth(
-          contractItemPrice,
-          billingMonth,
-        ) ?? contractUnitPriceForBillingMonth(
-          contractCategoryPrice,
-          billingMonth,
-        ) ?? (electricUtilitySetting?.price_scope === "category" ? electricUtilitySetting.default_unit_price : item.default_unit_price);
+      const contractPrice = contractUnitPriceForBillingMonth(contractItemPrice, billingMonth)
+        ?? contractUnitPriceForBillingMonth(contractCategoryPrice, billingMonth);
+      const defaultPrice = electricUtilitySetting?.price_scope === "category"
+        ? electricUtilitySetting.default_unit_price
+        : item.default_unit_price;
+      const unitPrice = resolvedUnitPrice(
+        contract,
+        item,
+        contractPrice,
+        defaultPrice,
+        unitPriceCalculations[item.asset_meter_sub_item_id]?.unit_price ?? null,
+      );
       if (unitPrice == null) return itemTotals;
       // 既存データでは分類共通の税区分が未設定でも、小分類に税込設定が保存されている。
       // 税込小分類を税抜金額として誤集計しないよう、小分類の税込設定を優先する。

@@ -123,7 +123,7 @@ const positions = ['40', '60'].map((ratio, i) => ({
 const meters = [parent, ...members, ...positions];
 const props = {
   billingMonth: '2026-11', meters, contracts, category: 'electric', lineItemId: null,
-  defaultUnitPrice: 10, variablePriceForUnpricedOnly: false, taxMode: 'exclusive', subItemTaxMode: 'exclusive', amountCalculationScope: 'unit', taxRoundingMode: 'round',
+  defaultUnitPrice: 10, defaultPriceMode: 'amount', variablePriceForUnpricedOnly: false, taxMode: 'exclusive', subItemTaxMode: 'exclusive', amountCalculationScope: 'unit', taxRoundingMode: 'round',
   values: Object.fromEntries(meters.map((m) => [m.asset_meter_id, '100'])),
   saveStates: {}, confirmed: false, usageHistory: { previous: {}, previousYear: {} },
   rolloverValues: {}, columnStorageUserId: 'test', usageOnly: false, onChange() {},
@@ -211,6 +211,17 @@ assert.ok(bodyRows(html).find((row) => row.includes('Tenant 202')).includes('>�
 assert.ok(bodyRows(html).find((row) => row.includes('Tenant 201')).includes('>18.19 円<'), 'inclusive contract displays its rounded tax-exclusive unit price');
 assert.match(html, /<th colSpan="2"[^>]*>単価.*?<\/tr><tr><th[^>]*>税込.*?<\/th><th[^>]*>税抜/s, 'inclusive billing uses a two-row, two-column unit-price header');
 verifyGrid(html, 15);
+const defaultFixedMeters = meters.map((row) => ({ ...row, subItem: { ...row.subItem, price_mode: 'fixed' } }));
+const oneVariableContract = contracts.map((row) => ({
+  ...row,
+  prices: [{ asset_billing_line_item_id: null, unit_price: 12, tax_mode: 'exclusive', billing_month_prices: [] }],
+  meterTerms: row.unit.unit_id === '202'
+    ? [{ asset_meter_sub_item_id: 'electric', price_mode: 'amount', tax_mode: 'exclusive' }]
+    : [],
+}));
+const oneVariableHtml = render({ meters: defaultFixedMeters, contracts: oneVariableContract, defaultPriceMode: 'fixed', unitPriceOverride: 30.62 });
+assert.ok(bodyRows(oneVariableHtml).find((row) => row.includes('Tenant 202')).includes('>30.62 円<'), 'explicitly variable tenant receives the calculated price');
+assert.ok(bodyRows(oneVariableHtml).find((row) => row.includes('Tenant 201')).includes('>12 円<'), 'tenant without an override keeps the fixed contract price');
 const categoryInclusiveContracts = contracts.map((row, index) => ({
   ...row,
   prices: [],
