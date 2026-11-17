@@ -15,11 +15,15 @@ assert.match(source, /item\.calculation_mode === "allocated_amount" \|\|/, 'each
 assert.match(source, /_deduct_sub_item_id: allocationDraft\.deductionSubItemId/, 'selected deduction subitem is persisted with allocation settings');
 const outfile = resolve('.tmp-runtime/verify-combined-allocation-component.mjs');
 await build({
-  stdin: { contents: `${source}\nexport { BasicChargeTable, CustomItemTable, SurchargeWorkspace, adjustedMeterUsage, allocationDeductionAmount, billableContractsForSubItem, buildConfirmedMeterAmounts, calculateMonthAllocation, calculateSurchargeCharge, calculateUsageCharge, netAllocationSourceAmount, summaryExclusiveUnitPrice, VariableUnitPriceCalculator };`, loader: 'tsx', resolveDir: resolve('src/pages') },
+  stdin: { contents: `${source}\nexport { BasicChargeTable, CustomItemTable, SurchargeWorkspace, adjustedMeterUsage, allocationDeductionAmount, billableContractsForSubItem, buildConfirmedMeterAmounts, calculateMonthAllocation, calculateSurchargeCharge, calculateUsageCharge, isContractAnyCategoryBillable, netAllocationSourceAmount, summaryExclusiveUnitPrice, VariableUnitPriceCalculator };`, loader: 'tsx', resolveDir: resolve('src/pages') },
   bundle: true, packages: 'external', platform: 'node', format: 'esm', jsx: 'automatic',
   define: { 'import.meta.env': '{}' }, outfile,
 });
-const { BasicChargeTable, CustomItemTable, SurchargeWorkspace, adjustedMeterUsage, allocationDeductionAmount, billableContractsForSubItem, buildConfirmedMeterAmounts, calculateMonthAllocation, calculateSurchargeCharge, calculateUsageCharge, netAllocationSourceAmount, summaryExclusiveUnitPrice, VariableUnitPriceCalculator } = await import(pathToFileURL(outfile).href);
+const { BasicChargeTable, CustomItemTable, SurchargeWorkspace, adjustedMeterUsage, allocationDeductionAmount, billableContractsForSubItem, buildConfirmedMeterAmounts, calculateMonthAllocation, calculateSurchargeCharge, calculateUsageCharge, isContractAnyCategoryBillable, netAllocationSourceAmount, summaryExclusiveUnitPrice, VariableUnitPriceCalculator } = await import(pathToFileURL(outfile).href);
+const allCategoriesOff = { meterBilling: [{ electric_billable: false, water_billable: false, gas_billable: false, items: [] }] };
+assert.equal(isContractAnyCategoryBillable(allCategoriesOff), false, 'tenant with every category disabled is hidden from the summary');
+assert.equal(isContractAnyCategoryBillable({ meterBilling: [{ ...allCategoriesOff.meterBilling[0], water_billable: true }] }), true, 'tenant with any enabled category remains in the summary');
+assert.equal(isContractAnyCategoryBillable({ meterBilling: [] }), true, 'legacy tenant without billing settings remains billable');
 const deductionRows = [{ source_kind: 'subItem', source_id: 'fuji-water', amount: 1000 }];
 assert.equal(allocationDeductionAmount(deductionRows, 'fuji-water', 'exclusive'), 1000, 'net allocation source deducts the selected subitem net amount');
 assert.equal(allocationDeductionAmount(deductionRows, 'fuji-water', 'inclusive'), 1100, 'gross allocation source converts the selected subitem to the same tax basis');

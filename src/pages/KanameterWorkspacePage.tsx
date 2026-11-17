@@ -1408,6 +1408,20 @@ export function KanameterWorkspacePage({
   const billableSubItemContracts = selectedSubItem
     ? billableContractsForSubItem(billableCategoryContracts, selectedSubItem.asset_meter_sub_item_id)
     : billableCategoryContracts;
+  const selectedSubItemLinkedUnitIds = new Set(selectedSubItem
+    ? meters
+        .filter((meter) => meter.subItem.asset_meter_sub_item_id === selectedSubItem.asset_meter_sub_item_id)
+        .flatMap((meter) => meter.assignments.map((assignment) => assignment.unit_id))
+    : []);
+  // 請求フラグは集計・請求対象の判定に使う。検針画面では、請求対象外でも
+  // メーターが紐づいている契約を残し、入力済みの検針値を確認できるようにする。
+  const readingSubItemContracts = selectedSubItem
+    ? periodContracts.filter((contract) => (
+        Boolean(contract.unit?.unit_id && selectedSubItemLinkedUnitIds.has(contract.unit.unit_id))
+        || (isContractCategoryBillable(contract, selectedSubItem.category)
+          && isContractSubItemBillable(contract, selectedSubItem.asset_meter_sub_item_id))
+      ))
+    : billableSubItemContracts;
   const allocationContracts = selectedSubItem
     ? billableSubItemContracts.filter((contract) => contract.contract?.tenant_id && contract.unit?.unit_id)
     : [];
@@ -1622,15 +1636,15 @@ export function KanameterWorkspacePage({
     ? utilitySettings.find((setting) => setting.category === selectedSubItem.category)
     : undefined;
   const selectedUnitPriceTaxMode: TaxMode = selectedSubItem
-    ? billableSubItemContracts.some((contract) => usesVariablePrice(contract, selectedSubItem) && meterTermFor(contract, selectedSubItem)?.tax_mode === "inclusive")
+    ? readingSubItemContracts.some((contract) => usesVariablePrice(contract, selectedSubItem) && meterTermFor(contract, selectedSubItem)?.tax_mode === "inclusive")
       ? "inclusive"
       : selectedUtilitySetting?.price_scope === "category"
       ? selectedUtilitySetting.default_tax_mode
-      : billableSubItemContracts.flatMap((contract) => contract.prices.filter(
+      : readingSubItemContracts.flatMap((contract) => contract.prices.filter(
           (price) => price.asset_billing_line_item_id === selectedSubItem.asset_billing_line_item_id,
         ))[0]?.tax_mode ?? selectedSubItem.tax_mode
     : "exclusive";
-  const selectedTableTaxMode: TaxMode = selectedSubItem && billableSubItemContracts.some((contract) => {
+  const selectedTableTaxMode: TaxMode = selectedSubItem && readingSubItemContracts.some((contract) => {
     if (usesVariablePrice(contract, selectedSubItem)) return false;
     const itemPrice = contract.prices.find((price) => price.asset_billing_line_item_id === selectedSubItem.asset_billing_line_item_id);
     const categoryPrice = contract.categoryPrices.find((price) => price.category === selectedSubItem.category);
@@ -1640,7 +1654,7 @@ export function KanameterWorkspacePage({
       ?? (selectedUtilitySetting?.price_scope === "category" ? selectedUtilitySetting.default_tax_mode : selectedSubItem.tax_mode);
     return fixedTaxMode === "inclusive";
   }) ? "inclusive" : "exclusive";
-  const billableCategoryUnitIds = new Set(billableSubItemContracts.map((contract) => contract.unit?.unit_id).filter(Boolean));
+  const displayedCategoryUnitIds = new Set(readingSubItemContracts.map((contract) => contract.unit?.unit_id).filter(Boolean));
   const occupiedUnitIds = new Set(periodContracts.map((contract) => contract.unit?.unit_id).filter(Boolean));
   const displayedReadingMeters = selectedSubItem
     ? meters.filter(
@@ -1648,7 +1662,7 @@ export function KanameterWorkspacePage({
           const unitIds = meter.assignments.map((assignment) => assignment.unit_id);
           return meter.subItem.asset_meter_sub_item_id === selectedSubItem.asset_meter_sub_item_id &&
             (!meterTagFilter || (meterTagFilter === "__untagged__" ? !meter.tag : meter.tag?.asset_meter_tag_id === meterTagFilter)) &&
-            (meter.is_rate_source || meter.is_allocation_source || unitIds.some((unitId) => !occupiedUnitIds.has(unitId) || billableCategoryUnitIds.has(unitId)));
+            (meter.is_rate_source || meter.is_allocation_source || unitIds.some((unitId) => !occupiedUnitIds.has(unitId) || displayedCategoryUnitIds.has(unitId)));
         },
       )
     : [];
@@ -2138,7 +2152,7 @@ export function KanameterWorkspacePage({
                   <CustomItemTable
                     billingMonth={billingMonth}
                     meters={displayedReadingMeters}
-                    contracts={billableSubItemContracts}
+                    contracts={readingSubItemContracts}
                     category={mainTab as UtilityCategory}
                     lineItemId={selectedSubItem.asset_billing_line_item_id}
                     unitPriceOverride={calculatedUnitPrices[selectedSubItem.asset_meter_sub_item_id]}
@@ -2643,7 +2657,8 @@ function SummaryView({
   columnStorageUserId: string;
 }) {
   const eligibleContracts = contracts.filter((row) =>
-    ["office", "warehouse", "storage"].includes((row.unit?.unit_type ?? "").toLowerCase()),
+    ["office", "warehouse", "storage"].includes((row.unit?.unit_type ?? "").toLowerCase())
+    && isContractAnyCategoryBillable(row),
   );
   const categoryColumns = categories.map((category) => {
     const setting = categorySettings.find((row) => row.category === category);
@@ -5509,6 +5524,10 @@ function isContractCategoryBillable(contract: ContractUnit, category: UtilityCat
   if (!contract.meterBilling.length) return true;
   const key = `${category}_billable` as "electric_billable" | "water_billable" | "gas_billable";
   return contract.meterBilling.some((setting) => setting[key]);
+}
+
+function isContractAnyCategoryBillable(contract: ContractUnit) {
+  return categories.some((category) => isContractCategoryBillable(contract, category));
 }
 
 function isContractSubItemBillable(contract: ContractUnit, subItemId: string) {
