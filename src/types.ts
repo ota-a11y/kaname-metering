@@ -114,6 +114,7 @@ export type MeterReadingRow = {
   use_reading_input: boolean;
   rollover_digits?: number | null;
   parent_meter_id: string | null;
+  child_meter_ids: string[];
   is_rate_source: boolean;
   is_allocation_source: boolean;
   sort_order: number;

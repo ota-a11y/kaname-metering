@@ -47,7 +47,7 @@ const unit = (id) => ({ unit_id: id, unit_code: id, unit_name: id, floor_label: 
 const assignment = (id, weight = 1, method = 'single') => ({ unit_id: id, unit: unit(id), allocation_method: method, allocation_weight: weight });
 const meter = (id, name, order, assignments) => ({
   asset_meter_id: id, meter_code: name, meter_label: null, sort_order: order,
-  parent_meter_id: null, is_rate_source: false, is_allocation_source: false,
+  parent_meter_id: null, child_meter_ids: [], is_rate_source: false, is_allocation_source: false,
   billing_adjustment_enabled: false, allocation_common_source_meter_ids: [], assignments,
   subItem: { asset_meter_sub_item_id: 'electric', category: 'electric', input_mode: 'usage', input_decimal_digits: 1, aggregation_decimal_digits: 1, usage_rounding_mode: 'round' },
   entry: { previous_reading: 100, current_reading: 200, usage_amount: 100 },
@@ -58,6 +58,10 @@ const contract = (id) => ({
   prices: [], categoryPrices: [], basics: [], meterBilling: [],
 });
 const contracts = [contract('202'), contract('201')];
+const childB = { ...meter('child-b', '子B', 2, [assignment('202')]), subItem: { ...meter('child-b', '子B', 2, [assignment('202')]).subItem, input_mode: 'reading' } };
+const childC = { ...meter('child-c', '子C', 3, [assignment('202')]), subItem: { ...meter('child-c', '子C', 3, [assignment('202')]).subItem, input_mode: 'reading' } };
+const multiChildParent = { ...meter('parent-a', '親A', 1, [assignment('202')]), child_meter_ids: ['child-b', 'child-c'], subItem: { ...meter('parent-a', '親A', 1, [assignment('202')]).subItem, input_mode: 'reading' } };
+assert.equal(adjustedMeterUsage(multiChildParent, [multiChildParent, childB, childC], (row) => row.asset_meter_id === 'parent-a' ? 1500 : row.asset_meter_id === 'child-b' ? 300 : 200), 1000, 'parent usage subtracts every selected child meter');
 const subItemFlags = contracts.map((row) => ({ ...row, meterBilling: [{ water_billable: true, items: [{ asset_meter_sub_item_id: 'water-usage', is_billable: row.unit.unit_id === '202' }] }] }));
 assert.deepEqual(billableContractsForSubItem(subItemFlags, 'water-usage').map((row) => row.unit.unit_id), ['202'], 'a tenant with the subitem billing flag off is omitted');
 const allocatedItem = { asset_meter_sub_item_id: 'allocated-basic', sub_item_name: '基本料', category: 'electric', calculation_mode: 'allocated_amount', tax_mode: 'inclusive', tax_rounding_mode: 'none' };

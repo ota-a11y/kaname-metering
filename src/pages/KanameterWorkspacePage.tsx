@@ -30,7 +30,7 @@ import {
   loadAllocationSourceMeterIds,
   reorderMeters,
   releaseMeterReadingMonth,
-  saveMeterParent,
+  saveMeterChildren,
   saveMeterBillingAdjustment,
   saveMeterName,
   saveMeterTag,
@@ -550,13 +550,18 @@ function adjustedMeterUsage(
   usageFor: (row: MeterReadingRow) => number,
 ) {
   const ownUsage = usageFor(meter);
-  const parent = meter.parent_meter_id
-    ? meters.find((row) => row.asset_meter_id === meter.parent_meter_id)
-    : undefined;
-  // 親を設定したメーターは、自分の使用量から親メーターの使用量を差し引く。
-  // 例: 親A=500、子B=1,500 の場合、Bの処理後使用量は1,000。
-  const parentUsage = effectiveInputMode(meter) === "reading" && parent ? usageFor(parent) : 0;
-  const adjustedOwnUsage = ownUsage - parentUsage;
+  const childIds = meter.child_meter_ids?.length
+    ? meter.child_meter_ids
+    : meter.parent_meter_id ? [meter.parent_meter_id] : [];
+  // 親メーターの実測使用量から、設定したすべての子メーター使用量を差し引く。
+  // 例: 親A=1,500、子B=300、子C=200の場合、Aの処理後使用量は1,000。
+  const childUsage = effectiveInputMode(meter) === "reading"
+    ? childIds.reduce((sum, childId) => {
+        const child = meters.find((row) => row.asset_meter_id === childId);
+        return sum + (child ? usageFor(child) : 0);
+      }, 0)
+    : 0;
+  const adjustedOwnUsage = ownUsage - childUsage;
   if (!meter.allocation_common_source_meter_ids.length || meter.assignments.some((row) => row.allocation_method === "meter_usage")) {
     return adjustedOwnUsage;
   }
@@ -2852,6 +2857,8 @@ function SettingsView({
   const [tagDraft, setTagDraft] = useState({ name: "", color: "#8eaadb" });
   const allowsRateSource = activeSubItem?.price_mode === "master_meter" || Boolean(activeSubItem && contracts.some((contract) => meterTermFor(contract, activeSubItem)?.price_mode === "master_meter"));
   const [adjustmentMeterId, setAdjustmentMeterId] = useState<string | null>(null);
+  const [childMeterId, setChildMeterId] = useState<string | null>(null);
+  const [childMeterDraft, setChildMeterDraft] = useState<string[]>([]);
   const [allocationMeterId, setAllocationMeterId] = useState<string | null>(null);
   const [allocationMethod, setAllocationMethod] = useState<"area" | "ratio" | "meter_usage">("area");
   const [allocationWeights, setAllocationWeights] = useState<Record<string, string>>({});
@@ -3136,19 +3143,37 @@ function SettingsView({
       setSaving(false);
     }
   };
-  const changeParent = async (meterId: string, parentMeterId: string) => {
+  const saveChildren = async () => {
+    if (!childMeterId) return;
     onError("");
+    setSaving(true);
     try {
-      await saveMeterParent(supabase!, meterId, parentMeterId || null);
+      await saveMeterChildren(supabase!, childMeterId, childMeterDraft);
       setOrderedMeters((current) => current.map((meter) =>
-        meter.asset_meter_id === meterId
-          ? { ...meter, parent_meter_id: parentMeterId || null }
+        meter.asset_meter_id === childMeterId
+          ? { ...meter, parent_meter_id: null, child_meter_ids: childMeterDraft }
           : meter,
       ));
       await onChanged();
-      onNotice(parentMeterId ? "親メーターを設定しました。" : "親メーター設定を解除しました。");
+      setChildMeterId(null);
+      onNotice("子メーター設定を保存しました。");
     } catch (reason) {
       onError((reason as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
+  const disableChildren = async (meter: MeterReadingRow) => {
+    setSaving(true);
+    onError("");
+    try {
+      await saveMeterChildren(supabase!, meter.asset_meter_id, []);
+      await onChanged();
+      onNotice("子メーター設定を解除しました。");
+    } catch (reason) {
+      onError((reason as Error).message);
+    } finally {
+      setSaving(false);
     }
   };
   const remove = async (meter: MeterReadingRow) => {
@@ -3420,13 +3445,16 @@ function SettingsView({
       setSaving(false);
     }
   };
-  const wouldCreateParentCycle = (meterId: string, candidateId: string) => {
-    let currentId: string | null = candidateId;
+  const wouldCreateChildCycle = (meterId: string, candidateId: string) => {
+    const pending = [candidateId];
     const visited = new Set<string>();
-    while (currentId && !visited.has(currentId)) {
+    while (pending.length) {
+      const currentId = pending.pop()!;
       if (currentId === meterId) return true;
+      if (visited.has(currentId)) continue;
       visited.add(currentId);
-      currentId = orderedMeters.find((row) => row.asset_meter_id === currentId)?.parent_meter_id ?? null;
+      const current = orderedMeters.find((row) => row.asset_meter_id === currentId);
+      pending.push(...(current?.child_meter_ids ?? (current?.parent_meter_id ? [current.parent_meter_id] : [])));
     }
     return false;
   };
@@ -3515,7 +3543,7 @@ function SettingsView({
       </div>
       <div className="table-wrap">
         <ResizableTable className="workspace-data-table meter-settings-table" storageKey="meter-settings-common-v2" columnGroups={["drag", "category", "sub-item", "tag", "meter", "unit", "input-method", "parent-meter", "adjustment", "action"]}>
-          <thead><tr><ColumnHeader columnGroup="drag" /><ColumnHeader columnGroup="category">分類</ColumnHeader><ColumnHeader columnGroup="sub-item">小分類</ColumnHeader><ColumnHeader columnGroup="tag">タグ</ColumnHeader><ColumnHeader columnGroup="meter">メーター名</ColumnHeader><ColumnHeader columnGroup="unit">設置区画</ColumnHeader><ColumnHeader columnGroup="input-method">読取値入力</ColumnHeader><ColumnHeader columnGroup="parent-meter">親メーター</ColumnHeader><ColumnHeader columnGroup="adjustment">補正設定</ColumnHeader><ColumnHeader columnGroup="action" /></tr></thead>
+          <thead><tr><ColumnHeader columnGroup="drag" /><ColumnHeader columnGroup="category">分類</ColumnHeader><ColumnHeader columnGroup="sub-item">小分類</ColumnHeader><ColumnHeader columnGroup="tag">タグ</ColumnHeader><ColumnHeader columnGroup="meter">メーター名</ColumnHeader><ColumnHeader columnGroup="unit">設置区画</ColumnHeader><ColumnHeader columnGroup="input-method">読取値入力</ColumnHeader><ColumnHeader columnGroup="parent-meter">子メーター</ColumnHeader><ColumnHeader columnGroup="adjustment">補正設定</ColumnHeader><ColumnHeader columnGroup="action" /></tr></thead>
           <tbody>
             {settingsVisibleMeters.map((meter) => {
               const assignment = activeAssignment(meter);
@@ -3563,7 +3591,7 @@ function SettingsView({
                   ) : <>
                   <td>
                     <div className="meter-name-editor">
-                      {meter.parent_meter_id && <span className="child-meter-mark">↳ 子</span>}
+                      {(meter.child_meter_ids?.length > 0 || meter.parent_meter_id) && <span className="child-meter-mark">↳ 親</span>}
                       <input
                         aria-label={`${meter.meter_code}のメーター名`}
                         value={combinedAllocation ? meter.meter_label ?? meter.meter_code : meterNameDrafts[meter.asset_meter_id] ?? meter.meter_code}
@@ -3601,20 +3629,10 @@ function SettingsView({
                     ) : activeAssignments(meter).length > 1 && !meter.is_allocation_source ? (
                       <div className="allocation-settings-cell"><button type="button" onClick={() => void changeUnit(meter.asset_meter_id, "__multiple__")}>按分設定</button></div>
                     ) : effectiveInputMode(meter) === "reading" && !meter.is_rate_source && activeAssignments(meter).length <= 1 ? (
-                      <select disabled={meter.is_allocation_source} title={meter.is_allocation_source ? "按分用メーターでは編集できません" : undefined} value={meter.parent_meter_id ?? ""} onChange={(event) => void changeParent(meter.asset_meter_id, event.target.value)}>
-                        <option value="">なし（親として集計）</option>
-                        {orderedMeters
-                          .filter((candidate) =>
-                            !candidate.is_rate_source &&
-                            candidate.asset_meter_id !== meter.asset_meter_id &&
-                            !wouldCreateParentCycle(meter.asset_meter_id, candidate.asset_meter_id)
-                          )
-                          .map((candidate) => (
-                            <option key={candidate.asset_meter_id} value={candidate.asset_meter_id}>
-                              {candidate.meter_code} / {activeAssignment(candidate)?.unit?.unit_name || activeAssignment(candidate)?.unit?.unit_code || "区画未設定"}
-                            </option>
-                          ))}
-                      </select>
+                      <div className="meter-adjustment-control">
+                        <input type="checkbox" aria-label={`${meter.meter_code}の子メーター設定`} checked={(meter.child_meter_ids?.length ?? 0) > 0 || Boolean(meter.parent_meter_id)} disabled={saving || meter.is_allocation_source} onChange={(event) => event.target.checked ? (setChildMeterDraft(meter.child_meter_ids?.length ? meter.child_meter_ids : meter.parent_meter_id ? [meter.parent_meter_id] : []), setChildMeterId(meter.asset_meter_id)) : void disableChildren(meter)} />
+                        {((meter.child_meter_ids?.length ?? 0) > 0 || meter.parent_meter_id) && <button type="button" onClick={() => { setChildMeterDraft(meter.child_meter_ids?.length ? meter.child_meter_ids : meter.parent_meter_id ? [meter.parent_meter_id] : []); setChildMeterId(meter.asset_meter_id); }}>設定</button>}
+                      </div>
                     ) : null}
                   </td>
                   <td>
@@ -3752,6 +3770,36 @@ function SettingsView({
             <button type="button" className="meter-source-add" onClick={() => setCombinedPositionRows((current) => [...current, emptyCombinedPositionRow()])}>＋ 表示位置用の行を追加</button>
           </div>
           <footer><button type="button" className="primary" disabled={saving} onClick={() => void saveCombinedAllocationMeters()}>{saving ? "保存中…" : "メーターと按分設定を保存"}</button></footer>
+        </section>
+      </div>
+    )}
+    {childMeterId && (
+      <div className="rollover-modal-backdrop" role="presentation" onMouseDown={() => !saving && setChildMeterId(null)}>
+        <section className="rollover-modal meter-adjustment-modal" role="dialog" aria-modal="true" aria-labelledby="child-meter-title" onMouseDown={(event) => event.stopPropagation()}>
+          <header>
+            <div><span>メーター設定</span><h2 id="child-meter-title">子メーター設定</h2></div>
+            <button type="button" className="rollover-modal-close" aria-label="閉じる" disabled={saving} onClick={() => setChildMeterId(null)}>×</button>
+          </header>
+          <p>親メーターの実測使用量から、選択したすべての子メーターの使用量を差し引きます。</p>
+          <div className="meter-adjustment-form">
+            {orderedMeters
+              .filter((candidate) => candidate.asset_meter_id !== childMeterId && !wouldCreateChildCycle(childMeterId, candidate.asset_meter_id))
+              .map((candidate) => (
+                <label className="checkbox-label" key={candidate.asset_meter_id}>
+                  <input
+                    type="checkbox"
+                    checked={childMeterDraft.includes(candidate.asset_meter_id)}
+                    onChange={(event) => setChildMeterDraft((current) => event.target.checked
+                      ? [...new Set([...current, candidate.asset_meter_id])]
+                      : current.filter((id) => id !== candidate.asset_meter_id))}
+                  />
+                  {candidate.meter_code} / {activeAssignment(candidate)?.unit?.unit_name || activeAssignment(candidate)?.unit?.unit_code || "区画未設定"}
+                </label>
+              ))}
+          </div>
+          <footer>
+            <button type="button" className="primary" disabled={saving || childMeterDraft.length === 0} onClick={() => void saveChildren()}>{saving ? "保存中…" : "子メーターを保存"}</button>
+          </footer>
         </section>
       </div>
     )}
@@ -4622,7 +4670,7 @@ function CustomItemTable({
                     <td className={`unit-identity ${unitEndsTenant ? "tenant-boundary" : ""}`} rowSpan={unitMeterCount + unitAllocationResultCount}><span className="merged-value">{allocationOwner ? "—" : meter.is_rate_source ? "大元メーター" : unit?.unit_name || unit?.unit_code || "未割当"}</span></td>
                   </>
                 )}
-                <td><strong className="meter-code-with-tag">{combinedResult ? <span>└{combinedResult.parent.meter_label ?? combinedResult.parent.meter_code} 按分</span> : allocationParent ? <>{meter.tag && <span className="meter-tag-badge" style={{ backgroundColor: meter.tag.color, color: readableTextColor(meter.tag.color) }}>{meter.tag.tag_name}</span>}{isCombinedAllocationParent(meter) ? meter.meter_code : "按分用親メーター"}</> : allocationSource ? <span className="allocation-source-meter-code">{meter.meter_label ?? meter.meter_code}</span> : <>{meter.tag && <span className="meter-tag-badge" style={{ backgroundColor: meter.tag.color, color: readableTextColor(meter.tag.color) }}>{meter.tag.tag_name}</span>}{meter.parent_meter_id && <span className="child-meter-mark">↳ 子</span>}{meter.meter_code}</>}</strong></td>
+                <td><strong className="meter-code-with-tag">{combinedResult ? <span>└{combinedResult.parent.meter_label ?? combinedResult.parent.meter_code} 按分</span> : allocationParent ? <>{meter.tag && <span className="meter-tag-badge" style={{ backgroundColor: meter.tag.color, color: readableTextColor(meter.tag.color) }}>{meter.tag.tag_name}</span>}{isCombinedAllocationParent(meter) ? meter.meter_code : "按分用親メーター"}</> : allocationSource ? <span className="allocation-source-meter-code">{meter.meter_label ?? meter.meter_code}</span> : <>{meter.tag && <span className="meter-tag-badge" style={{ backgroundColor: meter.tag.color, color: readableTextColor(meter.tag.color) }}>{meter.tag.tag_name}</span>}{((meter.child_meter_ids?.length ?? 0) > 0 || meter.parent_meter_id) && <span className="child-meter-mark">↳ 親</span>}{meter.meter_code}</>}</strong></td>
                 {showsInclusiveAndExclusiveAmounts && <td className={`numeric unit-price-cell ${calculationOnly ? "" : unitPriceClass(price)}`}>{calculationOnly || displayPrices.inclusive == null ? "—" : formatYen(displayPrices.inclusive)}</td>}
                 <td className={`numeric unit-price-cell ${calculationOnly ? "" : unitPriceClass(price)}`}>{calculationOnly ? "—" : formatYen(displayPrices.exclusive)}</td>
                 {showReadings && (
