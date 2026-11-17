@@ -3631,7 +3631,7 @@ function SettingsView({
                     ) : effectiveInputMode(meter) === "reading" && !meter.is_rate_source && activeAssignments(meter).length <= 1 ? (
                       <div className="meter-adjustment-control">
                         <input type="checkbox" aria-label={`${meter.meter_code}の子メーター設定`} checked={(meter.child_meter_ids?.length ?? 0) > 0 || Boolean(meter.parent_meter_id)} disabled={saving || meter.is_allocation_source} onChange={(event) => event.target.checked ? (setChildMeterDraft(meter.child_meter_ids?.length ? meter.child_meter_ids : meter.parent_meter_id ? [meter.parent_meter_id] : []), setChildMeterId(meter.asset_meter_id)) : void disableChildren(meter)} />
-                        {((meter.child_meter_ids?.length ?? 0) > 0 || meter.parent_meter_id) && <button type="button" onClick={() => { setChildMeterDraft(meter.child_meter_ids?.length ? meter.child_meter_ids : meter.parent_meter_id ? [meter.parent_meter_id] : []); setChildMeterId(meter.asset_meter_id); }}>設定</button>}
+                        {((meter.child_meter_ids?.length ?? 0) > 0 || meter.parent_meter_id) && <button type="button" className="meter-adjustment-status" disabled={meter.is_allocation_source} onClick={() => { setChildMeterDraft(meter.child_meter_ids?.length ? meter.child_meter_ids : meter.parent_meter_id ? [meter.parent_meter_id] : []); setChildMeterId(meter.asset_meter_id); }}>設定済み</button>}
                       </div>
                     ) : null}
                   </td>
