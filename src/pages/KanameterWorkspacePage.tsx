@@ -2115,7 +2115,9 @@ export function KanameterWorkspacePage({
                   assetId={assetId}
                   billingMonth={billingMonth}
                   unit={categorySettings.find((row) => row.category === activeCategory)?.usage_unit ?? ""}
-                  contracts={billableCategoryContracts}
+                  // 増額分は請求フラグとは別に対象・除外を確認する画面なので、
+                  // 請求対象外のテナントも検針期間内であれば一覧に残す。
+                  contracts={periodContracts}
                   meters={meters}
                   subItems={categorySubItems}
                   categorySettings={categorySettings}
