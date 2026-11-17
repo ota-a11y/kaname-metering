@@ -190,6 +190,8 @@ export async function saveMeterBillingAdjustment(
     denominator: number | null;
     note: string;
     order: "before_children" | "after_children";
+    roundingDigits: number | null;
+    roundingMode: "floor" | "round" | "ceil" | null;
   },
 ) {
   const { error } = await client
@@ -202,6 +204,8 @@ export async function saveMeterBillingAdjustment(
       billing_adjustment_denominator: adjustment.enabled && adjustment.method === "ratio" ? adjustment.denominator : null,
       billing_adjustment_note: adjustment.note.trim() || null,
       billing_adjustment_order: adjustment.order,
+      billing_adjustment_rounding_digits: adjustment.roundingDigits,
+      billing_adjustment_rounding_mode: adjustment.roundingMode,
     })
     .eq("asset_meter_id", meterId);
   fail("メーター補正設定を保存できませんでした", error);
@@ -503,7 +507,7 @@ export async function loadMeterReadings(
     client
       .from("asset_meter")
       .select(
-        `asset_meter_id, use_reading_input, parent_asset_meter_id, childMeters:asset_meter_child_meter!parent_asset_meter_id(child_asset_meter_id), is_rate_source, sort_order, meter_code, meter_label, reading_decimal_digits, usage_input_decimal_digits, billing_adjustment_enabled, billing_adjustment_method, billing_adjustment_percent, billing_adjustment_numerator, billing_adjustment_denominator, billing_adjustment_note, billing_adjustment_order, tag:asset_meter_tag(asset_meter_tag_id, asset_id, tag_name, color), subItem:asset_meter_sub_item!inner(asset_meter_sub_item_id, category, sub_item_name, input_mode, input_decimal_digits, aggregation_decimal_digits, usage_rounding_mode), assignments:asset_meter_unit_assignment!asset_meter_unit_assignment_asset_meter_id_fkey(asset_meter_unit_assignment_id, unit_id, lease_contract_billing_unit_id, effective_from, effective_to, allocation_method, allocation_weight, area_sqm_snapshot, allocation_source_meter_id, unit:unit_master(unit_id, unit_code, unit_name, floor_label, rentable_area_sqm), billingUnit:lease_contract_billing_unit(billing_unit_name, members:lease_contract_billing_unit_member(contractUnit:lease_contract_unit(unit:unit_master(floor_label)))))`,
+        `asset_meter_id, use_reading_input, parent_asset_meter_id, childMeters:asset_meter_child_meter!parent_asset_meter_id(child_asset_meter_id), is_rate_source, sort_order, meter_code, meter_label, reading_decimal_digits, usage_input_decimal_digits, billing_adjustment_enabled, billing_adjustment_method, billing_adjustment_percent, billing_adjustment_numerator, billing_adjustment_denominator, billing_adjustment_note, billing_adjustment_order, billing_adjustment_rounding_digits, billing_adjustment_rounding_mode, allocation_rounding_digits, allocation_rounding_mode, tag:asset_meter_tag(asset_meter_tag_id, asset_id, tag_name, color), subItem:asset_meter_sub_item!inner(asset_meter_sub_item_id, category, sub_item_name, input_mode, input_decimal_digits, aggregation_decimal_digits, usage_rounding_mode), assignments:asset_meter_unit_assignment!asset_meter_unit_assignment_asset_meter_id_fkey(asset_meter_unit_assignment_id, unit_id, lease_contract_billing_unit_id, effective_from, effective_to, allocation_method, allocation_weight, area_sqm_snapshot, allocation_source_meter_id, unit:unit_master(unit_id, unit_code, unit_name, floor_label, rentable_area_sqm), billingUnit:lease_contract_billing_unit(billing_unit_name, members:lease_contract_billing_unit_member(contractUnit:lease_contract_unit(unit:unit_master(floor_label)))))`,
       )
       .eq("asset_id", assetId)
       .eq("is_active", true)
@@ -631,7 +635,7 @@ export async function loadMeterManagement(
     client
       .from("asset_meter")
       .select(
-        `asset_meter_id, use_reading_input, parent_asset_meter_id, childMeters:asset_meter_child_meter!parent_asset_meter_id(child_asset_meter_id), is_rate_source, sort_order, meter_code, meter_label, reading_decimal_digits, usage_input_decimal_digits, billing_adjustment_enabled, billing_adjustment_method, billing_adjustment_percent, billing_adjustment_numerator, billing_adjustment_denominator, billing_adjustment_note, billing_adjustment_order, tag:asset_meter_tag(asset_meter_tag_id, asset_id, tag_name, color), subItem:asset_meter_sub_item!inner(asset_meter_sub_item_id, category, sub_item_name, input_mode, input_decimal_digits, aggregation_decimal_digits, usage_rounding_mode), assignments:asset_meter_unit_assignment!asset_meter_unit_assignment_asset_meter_id_fkey(asset_meter_unit_assignment_id, unit_id, lease_contract_billing_unit_id, effective_from, effective_to, allocation_method, allocation_weight, area_sqm_snapshot, allocation_source_meter_id, unit:unit_master(unit_id, unit_code, unit_name, floor_label, rentable_area_sqm), billingUnit:lease_contract_billing_unit(billing_unit_name, members:lease_contract_billing_unit_member(contractUnit:lease_contract_unit(unit:unit_master(floor_label)))))`,
+        `asset_meter_id, use_reading_input, parent_asset_meter_id, childMeters:asset_meter_child_meter!parent_asset_meter_id(child_asset_meter_id), is_rate_source, sort_order, meter_code, meter_label, reading_decimal_digits, usage_input_decimal_digits, billing_adjustment_enabled, billing_adjustment_method, billing_adjustment_percent, billing_adjustment_numerator, billing_adjustment_denominator, billing_adjustment_note, billing_adjustment_order, billing_adjustment_rounding_digits, billing_adjustment_rounding_mode, allocation_rounding_digits, allocation_rounding_mode, tag:asset_meter_tag(asset_meter_tag_id, asset_id, tag_name, color), subItem:asset_meter_sub_item!inner(asset_meter_sub_item_id, category, sub_item_name, input_mode, input_decimal_digits, aggregation_decimal_digits, usage_rounding_mode), assignments:asset_meter_unit_assignment!asset_meter_unit_assignment_asset_meter_id_fkey(asset_meter_unit_assignment_id, unit_id, lease_contract_billing_unit_id, effective_from, effective_to, allocation_method, allocation_weight, area_sqm_snapshot, allocation_source_meter_id, unit:unit_master(unit_id, unit_code, unit_name, floor_label, rentable_area_sqm), billingUnit:lease_contract_billing_unit(billing_unit_name, members:lease_contract_billing_unit_member(contractUnit:lease_contract_unit(unit:unit_master(floor_label)))))`,
       )
       .eq("asset_id", assetId)
       .eq("is_active", true)
@@ -761,6 +765,19 @@ export async function assignMeterUnits(
     p_effective_from: effectiveFrom,
   });
   fail("複数区画の按分設定を保存できませんでした", error);
+}
+
+export async function saveMeterAllocationRounding(
+  client: SupabaseClient,
+  meterId: string,
+  digits: number,
+  mode: "floor" | "round" | "ceil",
+) {
+  const { error } = await client.from("asset_meter").update({
+    allocation_rounding_digits: digits,
+    allocation_rounding_mode: mode,
+  }).eq("asset_meter_id", meterId);
+  fail("按分結果の小数点処理を保存できませんでした", error);
 }
 
 export async function deleteMeter(client: SupabaseClient, meterId: string) {
@@ -1118,16 +1135,17 @@ export async function loadMeteringConfiguration(
     { category: "gas", usage_unit: "m³", is_billable: true, is_basic_billable: false, basic_charge_method: "fixed", basic_charge_fixed_amount: null, basic_charge_area_unit_price: null },
   ];
   const defaultPeriods = [
-    { pattern_name: "前月分", start_month_offset: -1, start_day_type: "first", start_meter_day_offset: 0, end_month_offset: -1, end_day_type: "last", end_meter_day_offset: 0, sort_order: 0 },
-    { pattern_name: "当月分", start_month_offset: 0, start_day_type: "first", start_meter_day_offset: 0, end_month_offset: 0, end_day_type: "last", end_meter_day_offset: 0, sort_order: 1 },
-    { pattern_name: "翌月分", start_month_offset: 1, start_day_type: "first", start_meter_day_offset: 0, end_month_offset: 1, end_day_type: "last", end_meter_day_offset: 0, sort_order: 2 },
-    { pattern_name: "検針期間（前月検針日を含める）", start_month_offset: -1, start_day_type: "meter", start_meter_day_offset: 0, end_month_offset: 0, end_day_type: "meter", end_meter_day_offset: 0, sort_order: 3 },
-    { pattern_name: "検針期間（前月検針日を含めない）", start_month_offset: -1, start_day_type: "meter", start_meter_day_offset: 1, end_month_offset: 0, end_day_type: "meter", end_meter_day_offset: 0, sort_order: 4 },
-    { pattern_name: "前々月から2か月分", start_month_offset: -2, start_day_type: "first", start_meter_day_offset: 0, end_month_offset: -1, end_day_type: "last", end_meter_day_offset: 0, sort_order: 5 },
-    { pattern_name: "前月から2か月分", start_month_offset: -1, start_day_type: "first", start_meter_day_offset: 0, end_month_offset: 0, end_day_type: "last", end_meter_day_offset: 0, sort_order: 6 },
-    { pattern_name: "当月から2か月分", start_month_offset: 0, start_day_type: "first", start_meter_day_offset: 0, end_month_offset: 1, end_day_type: "last", end_meter_day_offset: 0, sort_order: 7 },
-    { pattern_name: "検針期間（前々月検針日を含める）", start_month_offset: -2, start_day_type: "meter", start_meter_day_offset: 0, end_month_offset: 0, end_day_type: "meter", end_meter_day_offset: 0, sort_order: 8 },
-    { pattern_name: "検針期間（前々月検針日を含めない）", start_month_offset: -2, start_day_type: "meter", start_meter_day_offset: 1, end_month_offset: 0, end_day_type: "meter", end_meter_day_offset: 0, sort_order: 9 },
+    { pattern_name: "前々月分", start_month_offset: -2, start_day_type: "first", start_meter_day_offset: 0, end_month_offset: -2, end_day_type: "last", end_meter_day_offset: 0, sort_order: 0 },
+    { pattern_name: "前月分", start_month_offset: -1, start_day_type: "first", start_meter_day_offset: 0, end_month_offset: -1, end_day_type: "last", end_meter_day_offset: 0, sort_order: 1 },
+    { pattern_name: "当月分", start_month_offset: 0, start_day_type: "first", start_meter_day_offset: 0, end_month_offset: 0, end_day_type: "last", end_meter_day_offset: 0, sort_order: 2 },
+    { pattern_name: "翌月分", start_month_offset: 1, start_day_type: "first", start_meter_day_offset: 0, end_month_offset: 1, end_day_type: "last", end_meter_day_offset: 0, sort_order: 3 },
+    { pattern_name: "検針期間（前月検針日を含める）", start_month_offset: -1, start_day_type: "meter", start_meter_day_offset: 0, end_month_offset: 0, end_day_type: "meter", end_meter_day_offset: 0, sort_order: 4 },
+    { pattern_name: "検針期間（前月検針日を含めない）", start_month_offset: -1, start_day_type: "meter", start_meter_day_offset: 1, end_month_offset: 0, end_day_type: "meter", end_meter_day_offset: 0, sort_order: 5 },
+    { pattern_name: "前々月から2か月分", start_month_offset: -2, start_day_type: "first", start_meter_day_offset: 0, end_month_offset: -1, end_day_type: "last", end_meter_day_offset: 0, sort_order: 6 },
+    { pattern_name: "前月から2か月分", start_month_offset: -1, start_day_type: "first", start_meter_day_offset: 0, end_month_offset: 0, end_day_type: "last", end_meter_day_offset: 0, sort_order: 7 },
+    { pattern_name: "当月から2か月分", start_month_offset: 0, start_day_type: "first", start_meter_day_offset: 0, end_month_offset: 1, end_day_type: "last", end_meter_day_offset: 0, sort_order: 8 },
+    { pattern_name: "検針期間（前々月検針日を含める）", start_month_offset: -2, start_day_type: "meter", start_meter_day_offset: 0, end_month_offset: 0, end_day_type: "meter", end_meter_day_offset: 0, sort_order: 9 },
+    { pattern_name: "検針期間（前々月検針日を含めない）", start_month_offset: -2, start_day_type: "meter", start_meter_day_offset: 1, end_month_offset: 0, end_day_type: "meter", end_meter_day_offset: 0, sort_order: 10 },
   ];
   const currentPeriods = await client
     .from("asset_billing_period_pattern")

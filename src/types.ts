@@ -129,6 +129,10 @@ export type MeterReadingRow = {
   billing_adjustment_denominator: number | null;
   billing_adjustment_note: string | null;
   billing_adjustment_order: "before_children" | "after_children";
+  billing_adjustment_rounding_digits: number | null;
+  billing_adjustment_rounding_mode: "floor" | "round" | "ceil" | null;
+  allocation_rounding_digits: number | null;
+  allocation_rounding_mode: "floor" | "round" | "ceil" | null;
   tag: MeterTag | null;
   subItem: {
     asset_meter_sub_item_id: string;
@@ -294,6 +298,8 @@ export type ConfirmedMeterAmount = {
   usage_amount: number;
   usage_unit: string;
   unit_price: number | null;
+  show_unit_price_on_invoice: boolean;
+  show_usage_on_invoice: boolean;
   amount: number;
   amount_rounding_mode: "floor" | "round" | "ceil";
   usage_rounding_digits: number | null;
