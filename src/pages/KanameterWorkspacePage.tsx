@@ -239,6 +239,14 @@ function summaryExclusiveUnitPrice(price: number | null, taxMode: TaxMode) {
   return taxMode === "inclusive" ? exclusiveUnitPriceFromInclusive(price) : price;
 }
 
+function calculateSurchargeCharge(usage: number, unitPrice: number | null, excluded: boolean) {
+  return excluded || unitPrice == null ? 0 : roundUtilityAmount(usage * unitPrice);
+}
+
+function contractIsSurchargeExcluded(contract: ContractUnit) {
+  return contract.meterBilling.some((setting) => setting.surcharge_excluded === true);
+}
+
 function buildConfirmedMeterAmounts({
   contracts,
   meters,
@@ -428,14 +436,22 @@ function buildConfirmedMeterAmounts({
         ? surcharges.find((item) => item.category === category && item.is_billable)
         : undefined;
       const surchargePrice = surcharge ? surchargePrices[surcharge.asset_meter_surcharge_id] : null;
-      const surchargeAmount = surcharge && surchargePrice != null
-        ? surcharge.calculation_scope === "unit"
-          ? Array.from(categoryUsageByUnit.values()).reduce(
-              (sum, row) => sum + roundUtilityAmount(row.usage * surchargePrice),
+      const excludedUnitIds = new Set(billableContracts.flatMap((contract) =>
+        contractIsSurchargeExcluded(contract) && contract.unit?.unit_id ? [contract.unit.unit_id] : [],
+      ));
+      const surchargeUsage = !surcharge
+        ? 0
+        : surcharge.calculation_scope === "unit"
+          ? Array.from(categoryUsageByUnit.entries()).reduce((sum, [unitId, row]) => sum + (excludedUnitIds.has(unitId) ? 0 : row.usage), 0)
+          : billableContracts.some(contractIsSurchargeExcluded) ? 0 : categoryUsage;
+      const surchargeAmount = !surcharge
+        ? 0
+        : surcharge.calculation_scope === "unit"
+          ? Array.from(categoryUsageByUnit.entries()).reduce(
+              (sum, [unitId, row]) => sum + calculateSurchargeCharge(row.usage, surchargePrice ?? null, excludedUnitIds.has(unitId)),
               0,
             )
-          : roundUtilityAmount(categoryUsage * surchargePrice)
-        : 0;
+          : calculateSurchargeCharge(categoryUsage, surchargePrice ?? null, billableContracts.some(contractIsSurchargeExcluded));
       if (surcharge) rows.push({
         ...shared,
         category,
@@ -444,7 +460,7 @@ function buildConfirmedMeterAmounts({
         source_name: surcharge.surcharge_name,
         asset_billing_line_item_id: surcharge.asset_billing_line_item_id,
         line_item_name: lineItemName(surcharge.asset_billing_line_item_id),
-        usage_amount: categoryUsage,
+        usage_amount: surchargeUsage,
         usage_unit: categorySetting.usage_unit,
         unit_price: surchargePrice,
         amount: surchargeAmount,
@@ -4798,8 +4814,10 @@ function SurchargeWorkspace({
       excluded: tenantContracts.some(isSurchargeExcluded),
     };
   });
-  const excludedBillingGroups = new Set(tenantRows.flatMap((row) => row.excluded ? [billingGroupKey(row.tenantContracts[0])] : []));
-  const recoveryContracts = eligibleContracts.filter((contract) => !excludedBillingGroups.has(billingGroupKey(contract)));
+  // 除外は増額分の配賦先と、その分母となる使用量だけに適用する。
+  // 既に回収している電気代・基本料は除外テナント分も仕入から差し引き、
+  // 残った回収不足額を除外していないテナントの使用量だけで割り振る。
+  const recoveryContracts = eligibleContracts;
   const recoveryUsage = tenantRows.reduce((total, row) => total + (row.excluded ? 0 : row.usage), 0);
   const electricUtilitySetting = utilitySettings.find((setting) => setting.category === "electric");
   const electricBasicItem = subItems.find((item) => item.category === "electric" && item.sub_item_kind === "basic");
@@ -4925,9 +4943,9 @@ function SurchargeWorkspace({
     }, 500);
     return () => window.clearTimeout(timer);
   }, [assetId, billingMonth, evidenceLoaded, periodFrom, periodTo, purchaseInvoice, purchaseUsage, surcharge.asset_meter_surcharge_id, tenantUnitPriceExcludingTax]);
-  const surchargeAmountFor = (tenantContracts: ContractUnit[], usage: number, excluded = false) => excluded || tenantUnitPriceExcludingTax == null
+  const surchargeAmountFor = (_tenantContracts: ContractUnit[], usage: number, excluded = false) => excluded || tenantUnitPriceExcludingTax == null
     ? null
-    : roundUtilityAmount(usage * tenantUnitPriceExcludingTax);
+    : calculateSurchargeCharge(usage, tenantUnitPriceExcludingTax, false);
   const rows = tenantRows.map(({ tenantContracts, usage, excluded }, index) => {
     const amount = surchargeAmountFor(tenantContracts, usage, excluded);
     const tenantId = surchargeTenantKey(tenantContracts[0]);

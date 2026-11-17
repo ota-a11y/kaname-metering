@@ -15,11 +15,11 @@ assert.match(source, /item\.calculation_mode === "allocated_amount" \|\|/, 'each
 assert.match(source, /_deduct_sub_item_id: allocationDraft\.deductionSubItemId/, 'selected deduction subitem is persisted with allocation settings');
 const outfile = resolve('.tmp-runtime/verify-combined-allocation-component.mjs');
 await build({
-  stdin: { contents: `${source}\nexport { BasicChargeTable, CustomItemTable, SurchargeWorkspace, adjustedMeterUsage, allocationDeductionAmount, billableContractsForSubItem, calculateMonthAllocation, calculateUsageCharge, netAllocationSourceAmount, summaryExclusiveUnitPrice, VariableUnitPriceCalculator };`, loader: 'tsx', resolveDir: resolve('src/pages') },
+  stdin: { contents: `${source}\nexport { BasicChargeTable, CustomItemTable, SurchargeWorkspace, adjustedMeterUsage, allocationDeductionAmount, billableContractsForSubItem, buildConfirmedMeterAmounts, calculateMonthAllocation, calculateSurchargeCharge, calculateUsageCharge, netAllocationSourceAmount, summaryExclusiveUnitPrice, VariableUnitPriceCalculator };`, loader: 'tsx', resolveDir: resolve('src/pages') },
   bundle: true, packages: 'external', platform: 'node', format: 'esm', jsx: 'automatic',
   define: { 'import.meta.env': '{}' }, outfile,
 });
-const { BasicChargeTable, CustomItemTable, SurchargeWorkspace, adjustedMeterUsage, allocationDeductionAmount, billableContractsForSubItem, calculateMonthAllocation, calculateUsageCharge, netAllocationSourceAmount, summaryExclusiveUnitPrice, VariableUnitPriceCalculator } = await import(pathToFileURL(outfile).href);
+const { BasicChargeTable, CustomItemTable, SurchargeWorkspace, adjustedMeterUsage, allocationDeductionAmount, billableContractsForSubItem, buildConfirmedMeterAmounts, calculateMonthAllocation, calculateSurchargeCharge, calculateUsageCharge, netAllocationSourceAmount, summaryExclusiveUnitPrice, VariableUnitPriceCalculator } = await import(pathToFileURL(outfile).href);
 const deductionRows = [{ source_kind: 'subItem', source_id: 'fuji-water', amount: 1000 }];
 assert.equal(allocationDeductionAmount(deductionRows, 'fuji-water', 'exclusive'), 1000, 'net allocation source deducts the selected subitem net amount');
 assert.equal(allocationDeductionAmount(deductionRows, 'fuji-water', 'inclusive'), 1100, 'gross allocation source converts the selected subitem to the same tax basis');
@@ -78,6 +78,18 @@ const surchargeWithAllocatedBasic = renderToStaticMarkup(React.createElement(Sur
 }));
 assert.match(surchargeWithAllocatedBasic, /金額（税抜）<\/dt><dd>1,100 円<\/dd>/, 'recovery uses the stored tax-exclusive allocated amount');
 const meteredRecoveryItem = { ...allocatedItem, asset_meter_sub_item_id: 'metered', sub_item_name: '電気代', sub_item_kind: 'custom', is_monthly_fixed: false, calculation_mode: 'meter', price_mode: 'fixed', tax_mode: 'exclusive', default_unit_price: 10, asset_billing_line_item_id: null, amount_calculation_scope: 'unit', aggregation_decimal_digits: 1, usage_rounding_mode: 'round' };
+const excludedBillingContract = { ...allocatedContracts[0], meterBilling: [{ meter_reading_contract_id: 'excluded', electric_billable: true, surcharge_excluded: true, items: [] }] };
+const excludedConfirmedRows = buildConfirmedMeterAmounts({
+  contracts: [excludedBillingContract],
+  meters: [{ ...meter('excluded-confirmed-meter', '電灯', 1, [assignment('202')]), subItem: meteredRecoveryItem }],
+  categorySettings: [{ category: 'electric', is_billable: true, is_basic_billable: false, usage_unit: 'kWh' }],
+  utilitySettings: [], subItems: [meteredRecoveryItem],
+  surcharges: [{ asset_meter_surcharge_id: 'increase', category: 'electric', surcharge_name: '電気増額分', is_billable: true, calculation_scope: 'tenant', asset_billing_line_item_id: null }],
+  surchargePrices: { increase: 2 }, unitPriceCalculations: {}, billingLineItems: [], monthlyFixedCharges: {}, billingMonth: '2026-11',
+});
+assert.equal(excludedConfirmedRows.find((row) => row.source_kind === 'subItem')?.amount, 1000, 'excluded tenant original electric charge remains in confirmed details');
+assert.equal(excludedConfirmedRows.find((row) => row.source_kind === 'surcharge')?.amount, 0, 'excluded tenant surcharge is copied to summary as zero');
+assert.equal(excludedConfirmedRows.find((row) => row.source_kind === 'surcharge')?.usage_amount, 0, 'excluded tenant surcharge usage is copied to summary as zero');
 const surchargeWithTwoSubitems = renderToStaticMarkup(React.createElement(SurchargeWorkspace, {
   surcharge: { asset_meter_surcharge_id: 'increase', category: 'electric', surcharge_name: '電気増額分', calculation_scope: 'tenant', recovery_inclusive_mode: 'from_exclusive' },
   assetId: 'asset', billingMonth: '2026-11', unit: 'kWh', contracts: [allocatedContracts[0]],
@@ -87,6 +99,17 @@ const surchargeWithTwoSubitems = renderToStaticMarkup(React.createElement(Surcha
   utilitySettings: [], unitPriceCalculations: {}, monthlyFixedCharges: { '202|allocated-basic': 1100 }, onSettingsSaved() {},
 }));
 assert.match(surchargeWithTwoSubitems, /金額（税抜）<\/dt><dd>2,100 円<\/dd>/, 'recovery net amount sums allocated amounts and metered charges');
+const excludedSurchargeRecovery = renderToStaticMarkup(React.createElement(SurchargeWorkspace, {
+  surcharge: { asset_meter_surcharge_id: 'increase', category: 'electric', surcharge_name: '電気増額分', calculation_scope: 'tenant', recovery_inclusive_mode: 'from_exclusive' },
+  assetId: 'asset', billingMonth: '2026-11', unit: 'kWh',
+  contracts: [{ ...allocatedContracts[0], meterBilling: [{ meter_reading_contract_id: 'excluded', electric_billable: true, surcharge_excluded: true, items: [] }] }],
+  meters: [{ ...meter('excluded-meter', '電灯', 1, [assignment('202')]), subItem: meteredRecoveryItem }],
+  subItems: [meteredRecoveryItem],
+  categorySettings: [{ category: 'electric', is_billable: true, is_basic_billable: false, usage_unit: 'kWh' }],
+  utilitySettings: [], unitPriceCalculations: {}, monthlyFixedCharges: {}, onSettingsSaved() {}, onSurchargeExclusionChange() {},
+}));
+assert.match(excludedSurchargeRecovery, /<dt>使用量<\/dt><dd>0\.0 kWh<\/dd>/, 'excluded tenant usage is removed from the surcharge allocation denominator');
+assert.match(excludedSurchargeRecovery, /金額（税抜）<\/dt><dd>1,000 円<\/dd>/, 'excluded tenant recovered amount remains included in recovery');
 const parent = meter('light', '電灯', 10, [assignment('202', 2, 'ratio'), assignment('201', 3, 'ratio')]);
 parent.meter_label = '2F按分用';
 parent.allocation_common_source_meter_ids = ['power1', 'power2', 'power3', 'position40', 'position60'];
