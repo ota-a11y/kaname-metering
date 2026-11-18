@@ -836,6 +836,7 @@ td ul {
 .configuration-table { width: 100%; border-collapse: collapse; font-size: 12px; }
 .configuration-table th, .configuration-table td { padding: 8px; border-bottom: 1px solid #e2e9e6; text-align: center; }
 .configuration-table td.align-left { text-align: left; }
+.billing-period-setting { display: grid; gap: 6px; }
 .configuration-table th { color: #5d716a; background: #eef4f1; }
 .configuration-table input:not([type="checkbox"]), .configuration-table select { min-width: 110px; padding: 7px 8px; font-size: 12px; }
 .configuration-table input:disabled { color: #89938f; background: #e1e5e3; cursor: not-allowed; }
@@ -848,6 +849,9 @@ td ul {
 .resizable-configuration-table td.align-left select { text-align: left; text-align-last: left; }
 .configuration-table input[type="checkbox"] { width: auto; }
 .surcharge-setting-row { background: #fff9e8; }
+.configuration-table th:first-child,
+.configuration-table td.sub-item-drag-cell { width: 44px; padding-inline: 8px; }
+.configuration-table tr.is-dragging { opacity: .42; }
 .danger-link { border: 0; color: #b34a40; background: transparent; font-size: 11px; }
 .workspace-top {
   display: flex;
@@ -857,7 +861,8 @@ td ul {
   padding: 14px 0;
   border-bottom: 1px solid #d9e2de;
 }
-.workspace-selectors { display: flex; align-items: center; gap: 18px; }
+.workspace-selectors { display: flex; flex-wrap: wrap; align-items: center; gap: 18px; }
+.meter-date-pickers { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
 .building-picker,
 .month-picker,
 .meter-date-picker {
@@ -1886,6 +1891,7 @@ td ul {
     gap: 18px;
   }
   .workspace-selectors { align-items: stretch; flex-direction: column; gap: 10px; }
+  .meter-date-pickers { align-items: stretch; flex-direction: column; gap: 10px; }
   .building-picker, .month-picker, .meter-date-picker { justify-content: space-between; }
   .building-picker select { width: min(100%, 420px); }
   .inspection-navigation { align-items: stretch; flex-direction: column; gap: 8px; }

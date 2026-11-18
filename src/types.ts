@@ -166,6 +166,12 @@ export type MeterReadingRow = {
     previous_reading: number | null;
     current_reading: number | null;
   } | null;
+  periodEntries?: Array<{
+    service_month: string;
+    usage_amount: number | null;
+    previous_reading: number | null;
+    current_reading: number | null;
+  }>;
 };
 
 export type MeterUnitOption = {
@@ -202,6 +208,8 @@ export type MeterSubItem = {
   aggregation_decimal_digits: number;
   usage_rounding_mode: "floor" | "round" | "ceil";
   billing_period_pattern_id: string | null;
+  invoice_display_unit: "period_total" | "monthly_lines";
+  monthly_period_start_offset: -3 | -2 | -1 | 0;
   asset_meter_date_setting_id: string | null;
   price_mode: "fixed" | "amount" | "master_meter";
   default_unit_price: number | null;
@@ -306,4 +314,7 @@ export type ConfirmedMeterAmount = {
   usage_rounding_mode: "floor" | "round" | "ceil" | null;
   tax_mode: TaxMode | null;
   tax_rate: number | null;
+  service_month?: string | null;
+  source_meter_id?: string | null;
+  line_sequence?: number;
 };
