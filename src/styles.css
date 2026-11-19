@@ -772,6 +772,63 @@ td ul {
   padding: 14px 12px 20px;
   border-top: 1px solid #244e44;
 }
+.sidebar-bottom > .sidebar-main-link { margin-bottom: 12px; }
+.hotel-allocation { padding: 28px; max-width: 1040px; }
+.hotel-allocation-heading { display: flex; justify-content: space-between; align-items: end; gap: 20px; }
+.hotel-allocation-heading h2 { margin: 0 0 8px; }
+.hotel-allocation-heading p, .hotel-allocation-month, .hotel-allocation-note { color: #64746f; }
+.hotel-allocation-heading label { display: grid; gap: 6px; min-width: 160px; font-weight: 700; }
+.hotel-allocation-heading-actions { display: grid; grid-template-columns: 160px max-content; grid-template-rows: auto 38px; column-gap: 12px; row-gap: 6px; align-items: stretch; }
+.hotel-allocation-heading-actions .hotel-allocation-building-picker { grid-column: 1; grid-row: 1 / 3; display: grid; grid-template-rows: auto 38px; gap: 6px; min-width: 0; }
+.hotel-allocation-heading-actions select { height: 38px; box-sizing: border-box; }
+.hotel-allocation-heading-actions .hotel-allocation-open-metering { grid-column: 2; grid-row: 2; }
+.hotel-allocation-open-metering { align-self: flex-end; height: 38px; box-sizing: border-box; padding: 0 14px; border: 1px solid #17604f; border-radius: 5px; color: #17604f; background: white; cursor: pointer; white-space: nowrap; }
+.hotel-allocation-open-metering:hover { background: #e9f5f0; }
+.hotel-allocation-open-metering:disabled { opacity: .5; cursor: default; }
+.hotel-allocation select, .hotel-allocation input { padding: 9px 11px; border: 1px solid #cbd8d3; border-radius: 5px; background: white; color: #183b32; }
+.hotel-allocation-card { margin: 18px 0; padding: 22px; border: 1px solid #d9e3df; border-radius: 8px; background: white; }
+.hotel-allocation-card h3 { margin: 0 0 18px; }
+.hotel-allocation-card-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.hotel-allocation-card-heading h3 { margin: 0; }
+.hotel-allocation-card-heading button { padding: 7px 12px; border: 1px solid #17604f; border-radius: 4px; color: #17604f; background: white; cursor: pointer; }
+.hotel-allocation-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 16px; }
+.hotel-allocation-fields label { display: grid; gap: 7px; font-weight: 600; }
+.hotel-allocation-fields label span { display: flex; align-items: center; gap: 6px; }
+.hotel-allocation-fields input { width: 100%; min-width: 0; text-align: right; }
+.hotel-allocation-results { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 22px; }
+.hotel-allocation-results > div { display: grid; gap: 6px; padding: 16px; border-radius: 6px; background: #eef7f3; }
+.hotel-allocation-results strong { font-size: 24px; color: #164c3d; }
+.hotel-allocation-results small { color: #64746f; }
+.hotel-allocation-note { margin: 15px 0 0; font-size: 12px; }
+.hotel-allocation-error { color: #b84136; }
+.hotel-allocation-switches { display: flex; gap: 2px; margin: 20px 0; border-bottom: 1px solid #d9e2de; }
+.hotel-allocation-switches button { min-width: 72px; padding: 10px 14px; border: 0; border-bottom: 3px solid transparent; background: transparent; color: #65756f; font-weight: 700; cursor: pointer; }
+.hotel-allocation-switches button.utility-electric.active { border-color: #d4a600; color: #795f00; }
+.hotel-allocation-switches button.utility-water.active { border-color: #2584c4; color: #176a9f; }
+.hotel-allocation-switches button.utility-gas.active { border-color: #c94a43; color: #a63530; }
+.hotel-allocation-month-picker { display: flex; align-items: center; gap: 12px; font-weight: 700; }
+.hotel-allocation-month-picker .month-arrow { border: 0; background: transparent; }
+.hotel-allocation-unit-price { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin-top: 18px; padding: 14px 16px; border-radius: 5px; background: #f1f6f4; }
+.hotel-allocation-unit-price strong { font-size: 20px; color: #164c3d; }
+.hotel-allocation-meter-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; margin-top: 16px; }
+.hotel-allocation-meter { display: grid; gap: 7px; font-weight: 600; }
+.hotel-allocation-meter select { width: 100%; min-width: 0; }
+.hotel-allocation-meter-section { margin-top: 24px; padding: 16px 0 12px; border-top: 1px solid #d9e3df; overflow: visible; }
+.hotel-allocation-meter-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.hotel-allocation-meter-heading h4 { margin: 0; }
+.hotel-allocation-meter-heading button { padding: 6px 10px; border: 1px solid #17604f; border-radius: 4px; background: white; color: #17604f; cursor: pointer; }
+.hotel-allocation-meter-row, .hotel-allocation-meter-columns { display: grid; grid-template-columns: minmax(150px, 1fr) minmax(250px, 2fr) minmax(100px, auto) auto; align-items: center; gap: 10px; }
+.hotel-allocation-meter-row { min-height: 42px; margin: 10px 0; padding: 2px 0; }
+.hotel-allocation-meter-row.with-method, .hotel-allocation-meter-columns.with-method { grid-template-columns: minmax(140px, 1fr) minmax(185px, 1.25fr) minmax(240px, 2fr) minmax(100px, auto) auto; }
+.hotel-allocation-meter-columns { color: #64746f; font-size: 12px; font-weight: 700; }
+.hotel-allocation-meter-row input, .hotel-allocation-meter-row select { width: 100%; min-width: 0; height: 38px; box-sizing: border-box; }
+.hotel-allocation-meter-value { text-align: right; white-space: nowrap; }
+.hotel-allocation-remove { height: 38px; padding: 0 9px; border: 0; background: transparent; color: #a63530; cursor: pointer; }
+.hotel-allocation-meter-summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 2px; border-bottom: 1px solid #e6eeea; }
+.hotel-allocation-meter-summary strong { color: #164c3d; white-space: nowrap; }
+@media (max-width: 800px) { .hotel-allocation-meter-row, .hotel-allocation-meter-row.with-method, .hotel-allocation-meter-columns, .hotel-allocation-meter-columns.with-method { grid-template-columns: 1fr 1fr; } .hotel-allocation-meter-value { text-align: left; } }
+@media (max-width: 650px) { .hotel-allocation { padding: 16px; } .hotel-allocation-heading { align-items: stretch; flex-direction: column; } }
+.surcharge-hotel-note { margin: -4px 0 12px; color: #a63530; font-size: 11px; line-height: 1.5; }
 .sidebar-settings {
   width: 100%;
   padding: 11px;

@@ -103,6 +103,29 @@ const excludedConfirmedRows = buildConfirmedMeterAmounts({
 assert.equal(excludedConfirmedRows.find((row) => row.source_kind === 'subItem')?.amount, 1000, 'excluded tenant original electric charge remains in confirmed details');
 assert.equal(excludedConfirmedRows.find((row) => row.source_kind === 'surcharge')?.amount, 0, 'excluded tenant surcharge is copied to summary as zero');
 assert.equal(excludedConfirmedRows.find((row) => row.source_kind === 'surcharge')?.usage_amount, 0, 'excluded tenant surcharge usage is copied to summary as zero');
+const sharedSurchargeMeter = { ...meter('shared-surcharge', '共用電灯', 1, [assignment('202'), assignment('201')]), subItem: meteredRecoveryItem };
+const surchargeFixture = (mode) => buildConfirmedMeterAmounts({
+  contracts,
+  meters: [{ ...sharedSurchargeMeter, surcharge_exclusion_mode: mode }],
+  categorySettings: [{ category: 'electric', is_billable: true, is_basic_billable: false, usage_unit: 'kWh' }],
+  utilitySettings: [], subItems: [meteredRecoveryItem],
+  surcharges: [{ asset_meter_surcharge_id: 'increase', category: 'electric', surcharge_name: '電気増額分', is_billable: true, calculation_scope: 'tenant', asset_billing_line_item_id: null }],
+  surchargePrices: { increase: 2 }, unitPriceCalculations: {}, billingLineItems: [], monthlyFixedCharges: {}, billingMonth: '2026-11',
+});
+for (const mode of ['exclude_all', 'exclude_billing']) {
+  const rows = surchargeFixture(mode);
+  assert.equal(rows.filter((row) => row.source_kind === 'subItem').reduce((sum, row) => sum + row.amount, 0), 1000, `${mode}: ordinary electric recovery remains billable`);
+  assert.equal(rows.filter((row) => row.source_kind === 'surcharge').reduce((sum, row) => sum + row.amount, 0), 0, `${mode}: both allocation destinations receive no surcharge`);
+}
+const surchargeDenominatorFor = (mode) => renderToStaticMarkup(React.createElement(SurchargeWorkspace, {
+  surcharge: { asset_meter_surcharge_id: 'increase', category: 'electric', surcharge_name: '電気増額分', calculation_scope: 'tenant', recovery_inclusive_mode: 'from_exclusive' },
+  assetId: 'asset', billingMonth: '2026-11', unit: 'kWh', contracts,
+  meters: [{ ...sharedSurchargeMeter, surcharge_exclusion_mode: mode }], subItems: [meteredRecoveryItem],
+  categorySettings: [{ category: 'electric', is_billable: true, is_basic_billable: false, usage_unit: 'kWh' }],
+  utilitySettings: [], unitPriceCalculations: {}, monthlyFixedCharges: {}, onSettingsSaved() {}, onSurchargeExclusionChange() {},
+}));
+assert.match(surchargeDenominatorFor('exclude_all'), /<dt>使用量<\/dt><dd>0\.0 kWh<\/dd>/, 'pattern 1 removes every allocation share from the unit-price denominator');
+assert.match(surchargeDenominatorFor('exclude_billing'), /<dt>使用量<\/dt><dd>100\.0 kWh<\/dd>/, 'pattern 2 includes every allocation share in the unit-price denominator');
 const surchargeWithTwoSubitems = renderToStaticMarkup(React.createElement(SurchargeWorkspace, {
   surcharge: { asset_meter_surcharge_id: 'increase', category: 'electric', surcharge_name: '電気増額分', calculation_scope: 'tenant', recovery_inclusive_mode: 'from_exclusive' },
   assetId: 'asset', billingMonth: '2026-11', unit: 'kWh', contracts: [allocatedContracts[0]],

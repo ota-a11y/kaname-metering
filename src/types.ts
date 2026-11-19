@@ -111,6 +111,7 @@ export type ContractUnit = {
 
 export type MeterReadingRow = {
   asset_meter_id: string;
+  surcharge_exclusion_mode: "exclude_all" | "exclude_billing" | null;
   use_reading_input: boolean;
   rollover_digits?: number | null;
   reading_decimal_digits: number | null;
@@ -192,7 +193,7 @@ export type MeterUnitOption = {
   unit_name: string | null;
   floor_label: string | null;
   rentable_area_sqm: number | null;
-  unit_type: "office" | "warehouse" | "storage" | "equipment" | "other";
+  unit_type: "office" | "warehouse" | "storage" | "signage" | "equipment" | "other";
   billing_unit_id?: string;
   tenant_name?: string | null;
   source_sort_order?: number;
