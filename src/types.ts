@@ -122,6 +122,17 @@ export type MeterReadingRow = {
   sort_order: number;
   meter_code: string;
   meter_label: string | null;
+  specialCalculation?: {
+    id: string;
+    name: string;
+    amountMode: "fixed_unit_price" | "special";
+    billedAmount: number | null;
+  } | null;
+  fixedValue?: {
+    mode: "usage" | "usage_amount";
+    usage: number;
+    amount: number | null;
+  } | null;
   billing_adjustment_enabled: boolean;
   billing_adjustment_method: "ratio" | "percent" | null;
   billing_adjustment_percent: number | null;
@@ -146,6 +157,7 @@ export type MeterReadingRow = {
   assignments: Array<{
     asset_meter_unit_assignment_id: string;
     unit_id: string;
+    tenant_id?: string | null;
     effective_from: string;
     effective_to: string | null;
     allocation_method: "single" | "area" | "ratio" | "meter_usage";

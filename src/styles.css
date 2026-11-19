@@ -1998,3 +1998,47 @@ td ul {
 .workspace-data-table tbody tr.allocation-source-input-row + tr.allocation-result-row > td {
   border-top: 1px dashed #64748b;
 }
+.special-calculations { padding: 8px 16px; }
+.special-calculations > span > button, .special-calculations > button { box-sizing: border-box; min-height: 38px; padding: 9px 14px; border: 1px solid #0d7058; border-radius: 5px; color: #0d7058; background: #fff; font-weight: 700; line-height: 1; cursor: pointer; }
+.meter-settings-actions > .special-calculations { display: flex; align-items: center; gap: 8px; padding: 0; }
+.sub-navigation-actions > .special-calculations { display: flex; align-items: center; gap: 8px; padding: 0; }
+.sub-navigation-actions > .special-calculations > span { display: contents; }
+.meter-settings-actions { flex-wrap: wrap; }
+.special-calculation-modal { width: min(1120px, 96vw); }
+.special-calculation-modal label { display: inline-flex; flex-direction: column; gap: 7px; color: #52635d; font-size: 12px; font-weight: 700; }
+.special-calculation-modal input, .special-calculation-modal select { box-sizing: border-box; min-height: 40px; padding: 0 12px; border: 1px solid #bccbc5; border-radius: 5px; background: #fff; }
+.special-calculation-modal input:focus, .special-calculation-modal select:focus { border-color: #2584c4; outline: 2px solid #d8eefb; }
+.special-calculation-modal table { width: 100%; border-collapse: collapse; }
+.special-calculation-modal td, .special-calculation-modal th { padding: 6px; border-bottom: 1px solid #ddd; text-align: left; }
+.special-calculation-heading-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: end; gap: 18px; padding: 18px 20px; border: 1px solid #d5dfdb; border-radius: 6px; background: #f8faf9; }
+.special-calculation-heading-fields input, .special-calculation-heading-fields select { width: 100%; max-width: none; }
+.special-monthly-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-top: 20px; }
+.special-monthly-fields fieldset { grid-column: 1 / -1; margin: 0; padding: 16px; border: 1px solid #d5dfdb; border-radius: 6px; background: #f8faf9; }
+.special-monthly-fields legend { padding: 0 6px; color: #26342f; font-weight: 800; }
+.special-reading-inputs { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); align-items: end; gap: 16px; }
+.special-reading-inputs > label,
+.special-reading-inputs > .calculator-result-field { display: grid; grid-template-rows: 18px 42px; align-items: stretch; gap: 7px; margin: 0; }
+.special-reading-inputs input,
+.special-reading-inputs .calculator-result-field strong { box-sizing: border-box; width: 100%; height: 42px; min-height: 42px; }
+.special-reading-inputs input, .special-direct-input input { width: 100%; max-width: none; }
+.special-direct-input { padding: 14px; border: 1px solid #d5dfdb; border-radius: 6px; background: #f8faf9; }
+.special-calculation-details { margin-top: 18px; padding: 12px 14px; border: 1px solid #cbd8d3; border-radius: 6px; background: #f8faf9; }
+.special-calculation-details summary { cursor: pointer; color: #176a9f; font-weight: 700; }
+.special-calculation-details table { margin-top: 12px; }
+.special-calculation-manager-modal { width: min(560px, 100%); }
+.special-calculation-manager-list { display: grid; gap: 10px; margin-top: 18px; }
+.special-calculation-manager-list button { min-height: 42px; padding: 9px 14px; border: 1px solid #168168; border-radius: 5px; color: #0d7058; background: #fff; font-weight: 800; text-align: left; }
+.special-calculation-manager-list button.primary { color: #fff; background: #0d7058; }
+.special-calculation-modal > p[role="status"], .special-calculation-modal > p[role="alert"] { padding: 10px 13px; border-radius: 5px; background: #fff6dc; }
+.special-definition-table { table-layout: fixed; min-width: 980px; }
+.special-definition-table col[data-special-column="key"] { width: 150px; }
+.special-definition-table col[data-special-column="label"] { width: 180px; }
+.special-definition-table col[data-special-column="source"] { width: 190px; }
+.special-definition-table col[data-special-column="expression"] { width: 260px; }
+.special-definition-table col[data-special-column="multiplier"] { width: 86px; }
+.special-definition-table col[data-special-column="rounding"] { width: 170px; }
+.special-definition-table col[data-special-column="digits"] { width: 86px; }
+.special-definition-table col[data-special-column="action"] { width: 90px; }
+.special-definition-table th { position: relative; }
+.special-definition-table .column-resizer { position: absolute; top: 0; right: -4px; bottom: 0; width: 9px; cursor: col-resize; touch-action: none; z-index: 2; }
+.special-definition-table input, .special-definition-table select { box-sizing: border-box; width: 100%; max-width: none; }
