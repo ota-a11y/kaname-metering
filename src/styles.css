@@ -2099,3 +2099,4 @@ td ul {
 .special-definition-table th { position: relative; }
 .special-definition-table .column-resizer { position: absolute; top: 0; right: -4px; bottom: 0; width: 9px; cursor: col-resize; touch-action: none; z-index: 2; }
 .special-definition-table input, .special-definition-table select { box-sizing: border-box; width: 100%; max-width: none; }
+.turnover-period-note { color: #c62828; font-weight: 700; }
