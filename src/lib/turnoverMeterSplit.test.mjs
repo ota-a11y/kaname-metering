@@ -30,3 +30,18 @@ test('10月15日退去・16日入居では同じ境界で二つの請求期間�
     { start: '2026-10-16', end: '2026-10-31', label: '※10/16～', usage: 55 },
   ]);
 });
+
+test('10月10日退去・21日入居では空室を挟む三つの請求期間に分かれる', () => {
+  const period = { start: '2026-10-01', end: '2026-10-31' };
+  const breaks = [
+    { date: turnoverBoundary('2026-10-10', 'move_out'), reading: 120, usage: null },
+    { date: turnoverBoundary('2026-10-21', 'move_in'), reading: 140, usage: null },
+  ];
+  assert.deepEqual(splitMeterReading('reading', period, 100, 170, breaks).map(({ start, end, usage }) => ({ start, end, usage })), [
+    { start: '2026-10-01', end: '2026-10-10', usage: 20 },
+    { start: '2026-10-11', end: '2026-10-20', usage: 20 },
+    { start: '2026-10-21', end: '2026-10-31', usage: 30 },
+  ]);
+  assert.deepEqual(splitMeterReading('usage', period, null, 30, breaks.map((row) => ({ ...row, reading: null, usage: 20 }))).map((row) => row.usage), [20, 20, 30]);
+  assert.throws(() => splitMeterReading('reading', period, 100, 170, breaks.slice(0, 1).concat({ ...breaks[1], reading: null })), /中間検針値/);
+});

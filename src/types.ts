@@ -110,7 +110,7 @@ export type ContractUnit = {
 };
 
 export type MeterReadingRow = {
-  turnoverPart?: { originalMeterId: string; index: 0 | 1; boundary: string };
+  turnoverPart?: { originalMeterId: string; index: number; start: string; end: string; boundary: string | null };
   turnoverBreaks?: Array<{ date: string; reading: number | null; usage: number | null }>;
   asset_meter_id: string;
   surcharge_exclusion_mode: "exclude_all" | "exclude_billing" | null;

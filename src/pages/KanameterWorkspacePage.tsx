@@ -68,6 +68,7 @@ import { includesSurchargeBilling, includesSurchargeDenominator, type SurchargeE
 import { allocationRatioValue, calculateMonthAllocation, evaluateAllocationAmountExpression, formatAllocationAmountInput, ratioForAllocationMode, type MonthAllocationMode, type MonthAllocationRatio } from "../lib/monthAllocation";
 import { contractBasicChargeAmount, isBasicChargeBillable, prorateUtilityFixedAmount } from "../lib/basicCharge";
 import { splitMeterReading, turnoverBoundary } from "../lib/turnoverMeterSplit";
+import { contractOccupancyDates, contractOccupiesUnitAt, turnoverOwnerForDate } from "../lib/turnoverContract";
 import type { UnitPriceAdjustment } from "../lib/unitPriceAdjustment";
 import type {
   Asset,
@@ -459,7 +460,7 @@ function buildConfirmedMeterAmounts({
                 ? splitMeterReading(mode, itemPeriod, meter.entry?.previous_reading ?? null, finalValue, breaks)
                 : [];
               const ownedSegments = segments.map((segment, index) => ({ segment, index })).filter(({ segment }) => {
-                const owner = eligibleContracts.find((candidate) => contractOccupiesUnitAt(candidate, assignment.unit_id, segment.start));
+                const owner = turnoverOwnerForDate(eligibleContracts, assignment.unit_id, segment.start);
                 return owner?.lease_contract_unit_id === contract.lease_contract_unit_id;
               });
               const values = segments.length
@@ -940,7 +941,7 @@ export function KanameterWorkspacePage({
   const [previousUnitPriceAdjustments, setPreviousUnitPriceAdjustments] = useState<Record<string, UnitPriceAdjustment>>({});
   const [utilityTariff, setUtilityTariff] = useState<UtilityTariffVersion | null>(null);
   const [values, setValues] = useState<Record<string, string>>({});
-  const [turnoverDrafts, setTurnoverDrafts] = useState<Record<string, { first: string; second: string }>>({});
+  const [turnoverDrafts, setTurnoverDrafts] = useState<Record<string, Record<string, string>>>({});
   const [monthlyFixedCharges, setMonthlyFixedCharges] = useState<Record<string, number>>({});
   const [calculatedAllocationCharges, setCalculatedAllocationCharges] = useState<Record<string, number>>({});
   const [allocationDraft, setAllocationDraft] = useState<{ subItemId: string; amount: string; amountSource: "manual" | "import"; sourceReference: string | null; deductionSubItemId: string | null; mode: MonthAllocationMode; ratios: Record<string, MonthAllocationRatio> } | null>(null);
@@ -959,11 +960,11 @@ export function KanameterWorkspacePage({
   const [confirming, setConfirming] = useState(false);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
-  const turnoverDemo = import.meta.env.DEV
-    && new URLSearchParams(window.location.search).get("turnover-demo") === "nihonbashi"
+  const turnoverDemoMode = import.meta.env.DEV ? new URLSearchParams(window.location.search).get("turnover-demo") : null;
+  const turnoverDemo = (turnoverDemoMode === "nihonbashi" || turnoverDemoMode === "nihonbashi-3")
     && assets.find((asset) => asset.asset_id === assetId)?.asset_code === 14
     && billingMonth === "2026-11";
-  const turnoverDemoContracts = turnoverDemo ? nihonbashiTurnoverContracts(contracts) : contracts;
+  const turnoverDemoContracts = turnoverDemo ? nihonbashiTurnoverContracts(contracts, turnoverDemoMode === "nihonbashi-3") : contracts;
   const [sidebarPinned, setSidebarPinned] = useState(() => localStorage.getItem("kanameter-sidebar-pinned") !== "false");
   const timers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   const allocationAmountTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1404,8 +1405,8 @@ export function KanameterWorkspacePage({
         if (frequency !== "monthly" && item?.invoice_display_unit === "monthly_lines") {
           throw new Error(`${meter.meter_label || meter.meter_code}の入退去分割は月別2行表示に対応していません。個別確認してください。`);
         }
-        if (boundaries.length !== 1 || meter.parent_meter_id || meter.child_meter_ids.length || meter.assignments.length !== 1) {
-          throw new Error(`${meter.meter_label || meter.meter_code}の入退去分割は複数境界・親子メーター・複数区画に対応していません。個別確認してください。`);
+        if (meter.parent_meter_id || meter.child_meter_ids.length || meter.assignments.length !== 1) {
+          throw new Error(`${meter.meter_label || meter.meter_code}の入退去分割は親子メーター・複数区画に対応していません。個別確認してください。`);
         }
         const breaks = (meter.turnoverBreaks ?? []).filter((row) => boundaries.includes(row.date));
         if (breaks.length !== boundaries.length) throw new Error(`${meter.meter_label || meter.meter_code}の入退去時の中間検針を入力してください。`);
@@ -1627,7 +1628,7 @@ export function KanameterWorkspacePage({
   const periodContracts = turnoverDemoContracts.filter((contract) => periodContractIds.has(contract.lease_contract_unit_id));
   const displayMeterRows = expandTurnoverMeterRows(meters, turnoverDemoContracts, turnoverPeriod, turnoverDrafts, turnoverDemo);
   const displayValues = { ...values, ...Object.fromEntries(displayMeterRows.flatMap((meter) => meter.turnoverPart
-    ? [[meter.asset_meter_id, turnoverDrafts[meter.turnoverPart.originalMeterId]?.[meter.turnoverPart.index === 0 ? "first" : "second"]
+    ? [[meter.asset_meter_id, turnoverDrafts[meter.turnoverPart.originalMeterId]?.[meter.turnoverPart.boundary ?? "final"]
       ?? String((effectiveInputMode(meter) === "reading" ? meter.entry?.current_reading : meter.entry?.usage_amount) ?? "")]] : [])) };
   const billableCategoryContracts = activeCategory
     ? periodContracts.filter((contract) => isContractCategoryBillable(contract, activeCategory))
@@ -2444,30 +2445,47 @@ export function KanameterWorkspacePage({
                     usageOnly={usageOnly && selectedSubItem.amount_calculation_scope === "unit"}
                     onChange={(meter, value) => {
                       if (!meter.turnoverPart) { queueSave(meter, value); return; }
-                      const { originalMeterId, index } = meter.turnoverPart;
-                      const original = meters.find((row) => row.asset_meter_id === originalMeterId);
-                      const saved = original?.turnoverBreaks?.find((row) => row.date === meter.turnoverPart?.boundary);
-                      const mode = original ? effectiveInputMode(original) : "reading";
-                      const initial = {
-                        first: String((mode === "reading" ? saved?.reading : saved?.usage) ?? ""),
-                        second: String((mode === "reading" ? original?.entry?.current_reading : saved?.usage == null || original?.entry?.usage_amount == null ? null : Number(original.entry.usage_amount) - Number(saved.usage)) ?? ""),
-                      };
-                      setTurnoverDrafts((current) => ({ ...current, [originalMeterId]: { ...(current[originalMeterId] ?? initial), [index === 0 ? "first" : "second"]: value } }));
+                      const { originalMeterId, boundary } = meter.turnoverPart;
+                      setTurnoverDrafts((current) => ({ ...current, [originalMeterId]: { ...current[originalMeterId], [boundary ?? "final"]: value } }));
                     }}
                     onBlur={(meter) => {
                       if (!meter.turnoverPart) { validateReadingAfterInput(meter); return; }
                       if (turnoverDemo) return;
                       const { originalMeterId, boundary } = meter.turnoverPart;
                       const original = meters.find((row) => row.asset_meter_id === originalMeterId);
-                      const draft = turnoverDrafts[originalMeterId];
-                      if (!original || !draft?.first.trim() || !draft.second.trim()) return;
+                      if (!original) return;
                       const mode = effectiveInputMode(original);
+                      const value = turnoverDrafts[originalMeterId]?.[boundary ?? "final"];
+                      if (value == null || value.trim() === "") return;
                       try {
-                        const segments = splitMeterReading(mode, turnoverPeriod, original.entry?.previous_reading ?? null, Number(draft.second), [{ date: boundary, reading: mode === "reading" ? Number(draft.first) : null, usage: mode === "usage" ? Number(draft.first) : null }]);
+                        if (!Number.isFinite(Number(value)) || Number(value) < 0) throw new Error("中間検針値・使用量は0以上で入力してください。");
                         void (async () => {
                           try {
-                            await saveMeterReading(supabase!, assetId, billingMonth, originalMeterId, mode === "reading" ? Number(draft.second) : segments.reduce((sum, segment) => sum + segment.usage, 0));
-                            await saveTurnoverMeterBreak(supabase!, assetId, billingMonth, originalMeterId, boundary, mode, Number(draft.first));
+                            if (boundary) {
+                              await saveTurnoverMeterBreak(supabase!, assetId, billingMonth, originalMeterId, boundary, mode, Number(value));
+                            } else {
+                              const dates = turnoverDatesForMeter(original, turnoverDemoContracts, turnoverPeriod);
+                              const breakValues = dates.map((date) => {
+                                const saved = original.turnoverBreaks?.find((row) => row.date === date);
+                                const input = turnoverDrafts[originalMeterId]?.[date];
+                                return { date, reading: mode === "reading" ? input == null ? saved?.reading ?? null : Number(input) : null,
+                                  usage: mode === "usage" ? input == null ? saved?.usage ?? null : Number(input) : null };
+                              });
+                              if (mode === "usage" && breakValues.some((row) => row.usage == null)) {
+                                throw new Error("各区間の使用量を入力してください。");
+                              }
+                              if (breakValues.every((row) => (mode === "reading" ? row.reading : row.usage) != null)) {
+                                splitMeterReading(mode, turnoverPeriod, original.entry?.previous_reading ?? null, Number(value), breakValues);
+                              }
+                              for (const row of breakValues) {
+                                const input = turnoverDrafts[originalMeterId]?.[row.date];
+                                if (input != null && input.trim() !== "") {
+                                  await saveTurnoverMeterBreak(supabase!, assetId, billingMonth, originalMeterId, row.date, mode, Number(input));
+                                }
+                              }
+                              const total = mode === "reading" ? Number(value) : Number(value) + breakValues.reduce((sum, row) => sum + Number(row.usage ?? 0), 0);
+                              await saveMeterReading(supabase!, assetId, billingMonth, originalMeterId, total);
+                            }
                             await refreshMeterData();
                           } catch (reason) { setError((reason as Error).message); }
                         })();
@@ -4684,20 +4702,22 @@ function MonthlyMeterReadingTable({
   />;
 }
 
-function nihonbashiTurnoverContracts(contracts: ContractUnit[]): ContractUnit[] {
+function nihonbashiTurnoverContracts(contracts: ContractUnit[], withVacancy = false): ContractUnit[] {
   const target = contracts.find((contract) => contract.unit?.unit_code.trim() === "601");
   if (!target?.contract) return contracts;
+  const moveOut = withVacancy ? "2026-10-10" : "2026-10-15";
+  const moveIn = withVacancy ? "2026-10-21" : "2026-10-16";
   const former: ContractUnit = {
     ...target,
-    lease_end_date: "2026-10-15",
-    contract: { ...target.contract, tenant_id: "local-demo-former", tenant: { tenant_name: "【検証】退去テナント" }, actual_end_date: "2026-10-15" },
+    lease_end_date: moveOut,
+    contract: { ...target.contract, tenant_id: "local-demo-former", tenant: { tenant_name: "【検証】退去テナント" }, actual_end_date: moveOut },
   };
   const incoming: ContractUnit = {
     ...target,
     lease_contract_unit_id: "local-demo-incoming",
-    lease_start_date: "2026-10-16",
+    lease_start_date: moveIn,
     lease_end_date: null,
-    contract: { ...target.contract, lease_contract_id: "local-demo-incoming", tenant_id: "local-demo-incoming", tenant: { tenant_name: "【検証】入居テナント" }, contract_start_date: "2026-10-16", actual_end_date: null },
+    contract: { ...target.contract, lease_contract_id: "local-demo-incoming", tenant_id: "local-demo-incoming", tenant: { tenant_name: "【検証】入居テナント" }, contract_start_date: moveIn, actual_end_date: null },
   };
   return contracts.flatMap((contract) => contract === target ? [former, incoming] : [contract]);
 }
@@ -4709,43 +4729,41 @@ function turnoverDatesForMeter(meter: MeterReadingRow, contracts: ContractUnit[]
   const dates = new Set<string>();
   for (const contract of contracts) {
     if (!contract.unit?.unit_id || !unitIds.has(contract.unit.unit_id)) continue;
-    const start = contract.lease_start_date ?? contract.contract?.contract_start_date;
-    const end = contract.lease_end_date ?? contract.contract?.actual_end_date ?? contract.contract?.contract_end_date;
+    const { start, end } = contractOccupancyDates(contract);
     if (start && start > period.start && start <= period.end) dates.add(turnoverBoundary(start, "move_in"));
     if (end && end >= period.start && end < period.end) dates.add(turnoverBoundary(end, "move_out"));
   }
   return [...dates].filter((date) => date >= period.start && date < period.end).sort();
 }
 
-function contractOccupiesUnitAt(contract: ContractUnit, unitId: string, date: string) {
-  const memberIndex = contract.member_unit_ids?.indexOf(unitId) ?? -1;
-  const period = memberIndex >= 0 ? contract.member_periods?.[memberIndex] : null;
-  if (memberIndex < 0 && contract.unit?.unit_id !== unitId) return false;
-  const start = period?.start ?? contract.lease_start_date ?? contract.contract?.contract_start_date;
-  const end = period?.end ?? contract.lease_end_date ?? contract.contract?.actual_end_date ?? contract.contract?.contract_end_date;
-  return (!start || start <= date) && (!end || end >= date);
-}
-
 function expandTurnoverMeterRows(
   meters: MeterReadingRow[], contracts: ContractUnit[], period: { start: string; end: string },
-  drafts: Record<string, { first: string; second: string }>, demo: boolean,
+  drafts: Record<string, Record<string, string>>, demo: boolean,
 ): MeterReadingRow[] {
   const nextDay = (date: string) => new Date(Date.parse(`${date}T00:00:00Z`) + 86_400_000).toISOString().slice(0, 10);
   return meters.flatMap((meter) => {
     const dates = turnoverDatesForMeter(meter, contracts, period);
-    if (dates.length !== 1 || meter.assignments.length !== 1 || meter.parent_meter_id || meter.child_meter_ids.length) return [meter];
-    const boundary = dates[0];
-    const saved = meter.turnoverBreaks?.find((row) => row.date === boundary);
+    if (!dates.length || meter.assignments.length !== 1 || meter.parent_meter_id || meter.child_meter_ids.length) return [meter];
     const mode = effectiveInputMode(meter);
-    const midpoint = demo && mode === "reading" && meter.entry?.previous_reading != null && meter.entry.current_reading != null
-      ? String(Number(((Number(meter.entry.previous_reading) + Number(meter.entry.current_reading)) / 2).toFixed(2))) : "";
-    const first = drafts[meter.asset_meter_id]?.first ?? String((mode === "reading" ? saved?.reading : saved?.usage) ?? midpoint);
-    const second = drafts[meter.asset_meter_id]?.second ?? String((mode === "reading" ? meter.entry?.current_reading : saved?.usage == null || meter.entry?.usage_amount == null ? null : Number(meter.entry.usage_amount) - Number(saved.usage)) ?? "");
+    const values = dates.map((date, index) => {
+      const saved = meter.turnoverBreaks?.find((row) => row.date === date);
+      const demoValue = demo && mode === "reading" && meter.entry?.previous_reading != null && meter.entry.current_reading != null
+        ? Number((Number(meter.entry.previous_reading) + (Number(meter.entry.current_reading) - Number(meter.entry.previous_reading)) * (index + 1) / (dates.length + 1)).toFixed(meter.reading_decimal_digits ?? 0)) : null;
+      return drafts[meter.asset_meter_id]?.[date] ?? String((mode === "reading" ? saved?.reading : saved?.usage) ?? demoValue ?? "");
+    });
+    const finalValue = drafts[meter.asset_meter_id]?.final ?? String((mode === "reading" ? meter.entry?.current_reading
+      : meter.entry?.usage_amount == null || dates.some((date, index) => values[index].trim() === "") ? null
+        : Number(meter.entry.usage_amount) - values.reduce((sum, value) => sum + Number(value), 0)) ?? "");
     const unitId = meter.assignments[0].unit_id;
-    return ([0, 1] as const).map((index) => {
-      const owner = contracts.find((contract) => contractOccupiesUnitAt(contract, unitId, index === 0 ? period.start : nextDay(boundary)));
-      const current = (index === 0 ? first : second).trim() === "" ? null : Number(index === 0 ? first : second);
-      const previous = mode === "reading" ? index === 0 ? meter.entry?.previous_reading ?? null : first.trim() === "" ? null : Number(first) : null;
+    return Array.from({ length: dates.length + 1 }, (_, index) => {
+      const start = index === 0 ? period.start : nextDay(dates[index - 1]);
+      const end = dates[index] ?? period.end;
+      const boundary = dates[index] ?? null;
+      const owner = turnoverOwnerForDate(contracts, unitId, start);
+      const value = boundary ? values[index] : finalValue;
+      const current = value.trim() === "" ? null : Number(value);
+      const previousValue = index === 0 ? meter.entry?.previous_reading ?? null : values[index - 1].trim() === "" ? null : Number(values[index - 1]);
+      const previous = mode === "reading" ? previousValue : null;
       const usage = current == null || !Number.isFinite(current) ? null : mode === "reading" ? previous == null ? null : current - previous : current;
       return {
         ...meter,
@@ -4755,17 +4773,17 @@ function expandTurnoverMeterRows(
         sort_order: meter.sort_order + index / 10,
         assignments: [{ ...meter.assignments[0], tenant_id: owner?.contract?.tenant_id ?? null }],
         entry: { previous_reading: previous, current_reading: mode === "reading" ? current : null, usage_amount: usage },
-        turnoverPart: { originalMeterId: meter.asset_meter_id, index, boundary },
+        turnoverPart: { originalMeterId: meter.asset_meter_id, index, start, end, boundary },
       };
     });
   });
 }
 
 function turnoverTenantSuffix(part: NonNullable<MeterReadingRow["turnoverPart"]>) {
-  const date = part.index === 0 ? part.boundary
-    : new Date(Date.parse(`${part.boundary}T00:00:00Z`) + 86_400_000).toISOString().slice(0, 10);
-  const short = `${Number(date.slice(5, 7))}/${Number(date.slice(8, 10))}`;
-  return part.index === 0 ? ` ※～${short}` : ` ※${short}～`;
+  const short = (date: string) => `${Number(date.slice(5, 7))}/${Number(date.slice(8, 10))}`;
+  if (part.index === 0) return ` ※～${short(part.end)}`;
+  if (!part.boundary) return ` ※${short(part.start)}～`;
+  return ` ※${short(part.start)}～${short(part.end)}`;
 }
 
 function CustomItemTable({
@@ -4849,7 +4867,7 @@ function CustomItemTable({
   };
   const toExclusiveAmount = (amount: number, _contract?: ContractUnit) => amount;
   const contractFor = (meter: MeterReadingRow) =>
-    contracts.find(
+    meter.turnoverPart && !meter.assignments[0]?.tenant_id ? undefined : contracts.find(
       (contract) =>
         meter.assignments[0]?.tenant_id
           ? contract.contract?.tenant_id === meter.assignments[0].tenant_id
@@ -4897,6 +4915,7 @@ function CustomItemTable({
           : `unassigned-${meter.asset_meter_id}`);
   const rawMeterUsage = (meter: MeterReadingRow) => {
     if (meter.fixedValue) return meter.fixedValue.usage;
+    if (meter.turnoverPart && effectiveInputMode(meter) === "reading" && meter.entry?.usage_amount == null) return 0;
     const raw = values[meter.asset_meter_id];
     if (raw !== undefined && raw.trim() === "") return 0;
     const entered = raw !== undefined && raw !== "" ? Number(raw) : null;
@@ -4918,6 +4937,7 @@ function CustomItemTable({
   const unitPrice = (meter: MeterReadingRow, targetContract?: ContractUnit) => {
     if (meter.specialCalculation?.amountMode === "special" || meter.fixedValue?.mode === "usage_amount") return null;
     const contract = targetContract ?? contractFor(meter);
+    if (meter.turnoverPart && !contract) return null;
     const contractPrice = contract ? (
       contractUnitPriceForBillingMonth(contract.prices.find(
         (item) => item.asset_billing_line_item_id === lineItemId,
@@ -5002,6 +5022,13 @@ function CustomItemTable({
   }
   const displayOrder = new Map(displayEntries.map((entry, index) => [entry.key, index]));
   const displayOrderKeyForMeter = (meter: MeterReadingRow) => {
+    if (meter.turnoverPart) {
+      const unitId = meter.assignments[0]?.unit_id;
+      const owner = unitId && turnoverPeriod
+        ? turnoverOwnerForDate(turnoverContracts ?? contracts, unitId, turnoverPeriod.start)
+        : undefined;
+      if (owner?.contract?.tenant_id) return `tenant:${owner.contract.tenant_id}`;
+    }
     const tenantId = contractFor(meter)?.contract?.tenant_id;
     if (tenantId) return `tenant:${tenantId}`;
     const unitId = meter.assignments[0]?.unit?.unit_id;
@@ -5011,6 +5038,8 @@ function CustomItemTable({
   const orderedMeters = orderAllocationMeterBlocks([...meters].sort((left, right) =>
     Number(right.is_rate_source) - Number(left.is_rate_source) ||
     billingOrderForMeter(left) - billingOrderForMeter(right) ||
+    (left.turnoverPart && right.turnoverPart && left.assignments[0]?.unit_id === right.assignments[0]?.unit_id
+      ? left.turnoverPart.index - right.turnoverPart.index : 0) ||
     left.sort_order - right.sort_order ||
     left.meter_code.localeCompare(right.meter_code, "ja-JP", { numeric: true }),
   ));
@@ -5198,10 +5227,12 @@ function CustomItemTable({
             const allocationOwner = allocationOwnerFor(meter);
             const displayUnitKey = (candidate: MeterReadingRow) => {
               const owner = allocationOwnerFor(candidate);
+              if (candidate.turnoverPart) return `turnover-unit:${candidate.assignments[0]?.unit_id}:${candidate.turnoverPart.index}`;
               return owner ? `allocation-block-${owner.asset_meter_id}` : unitKey(candidate);
             };
             const displayTenantKey = (candidate: MeterReadingRow) => {
               const owner = allocationOwnerFor(candidate);
+              if (candidate.turnoverPart) return `turnover-tenant:${candidate.assignments[0]?.unit_id}:${candidate.turnoverPart.index}`;
               return owner ? `allocation-block-${owner.asset_meter_id}` : tenantKey(candidate);
             };
             const displayFloorKey = (candidate: MeterReadingRow) => {
@@ -5291,9 +5322,10 @@ function CustomItemTable({
               ? undefined
               : calculatedMeterUsage(meter, meters, previousYearUsageFor);
             const currentUsage = combinedResult?.usage ?? (isCombinedAllocationParent(meter) ? roundedMeterUsage(meter, rawMeterUsage(meter)) : meterUsage(meter));
-            const specialResultMissing = Boolean(meter.specialCalculation && meter.entry?.usage_amount == null);
+            const specialResultMissing = Boolean((meter.specialCalculation || meter.turnoverPart) && meter.entry?.usage_amount == null);
             const meterUsesReading = !combinedResult && !meter.specialCalculation && !meter.fixedValue && effectiveInputMode(meter) === "reading";
-            const isUnentered = (values[meter.asset_meter_id] ?? "").trim() === "";
+            const isUnentered = (values[meter.asset_meter_id] ?? "").trim() === ""
+              || Boolean(meter.turnoverPart && meter.entry?.usage_amount == null);
             const allocationParent = isAllocationDisplayParent(meter);
             const combinedInputParent = isCombinedAllocationParent(meter);
             const allocationSource = Boolean(allocationOwner) && !allocationParent;
@@ -5357,9 +5389,9 @@ function CustomItemTable({
                   <td className="tenant-cell tenant-identity" rowSpan={tenantMeters.length + tenantAllocationResultCount}>
                     <span className="merged-value">
                       {allocationOwner ? allocationOwner.meter_label ?? allocationOwner.meter_code : <TenantNameWithRounding
-                        name={`${contract?.contract?.tenant?.tenant_name ?? "空室"}${meter.turnoverPart ? turnoverTenantSuffix(meter.turnoverPart) : ""}`}
+                        name={contract?.contract?.tenant?.tenant_name ?? "空室"}
                         contracts={tenantMeters.map((tenantMeter) => contractFor(tenantMeter)).filter((item): item is ContractUnit => Boolean(item))}
-                      />}
+                      />}{!allocationOwner && meter.turnoverPart && <span className="turnover-period-note">{turnoverTenantSuffix(meter.turnoverPart)}</span>}
                     </span>
                   </td>
                 )}
@@ -5371,7 +5403,7 @@ function CustomItemTable({
                 )}
                 <td><strong className="meter-code-with-tag">{combinedResult ? <span>└{combinedResult.parent.meter_label ?? combinedResult.parent.meter_code} 按分</span> : allocationParent ? <>{meter.tag && <span className="meter-tag-badge" style={{ backgroundColor: meter.tag.color, color: readableTextColor(meter.tag.color) }}>{meter.tag.tag_name}</span>}{isDirectMultiUnitAllocationParent(meter) ? meter.meter_code : "按分用親メーター"}</> : allocationSource ? <span className="allocation-source-meter-code">{meter.meter_label ?? meter.meter_code}</span> : <>{meter.tag && <span className="meter-tag-badge" style={{ backgroundColor: meter.tag.color, color: readableTextColor(meter.tag.color) }}>{meter.tag.tag_name}</span>}{((meter.child_meter_ids?.length ?? 0) > 0 || meter.parent_meter_id) && <span className="child-meter-mark">↳ 親</span>}{meter.meter_code}</>}</strong></td>
                 {showsInclusiveAndExclusiveAmounts && <td className={`numeric unit-price-cell ${calculationOnly || hideDisplayedUnitPrice ? "" : unitPriceClass(price)}`}>{calculationOnly || hideDisplayedUnitPrice || displayPrices.inclusive == null ? "—" : formatYen(displayPrices.inclusive)}</td>}
-                <td className={`numeric unit-price-cell ${calculationOnly || hideDisplayedUnitPrice ? "" : unitPriceClass(price)}`}>{calculationOnly || hideDisplayedUnitPrice ? "—" : formatYen(displayPrices.exclusive)}</td>
+                <td className={`numeric unit-price-cell ${calculationOnly || hideDisplayedUnitPrice ? "" : unitPriceClass(price)}`}>{calculationOnly || hideDisplayedUnitPrice || isVacant && meter.turnoverPart ? "—" : formatYen(displayPrices.exclusive)}</td>
                 {showReadings && (
                   <td className="numeric reading-value">
                     {!meterUsesReading || meter.entry?.previous_reading == null ? "—" : formatUsage(Number(meter.entry.previous_reading), meterReadingDecimalDigits(meter))}
@@ -5398,7 +5430,7 @@ function CustomItemTable({
                   <td className="numeric">—</td>
                 ) : firstInDisplayedUnitTotal ? (
                   <td className={`numeric unit-amount ${unitEndsTenant ? "tenant-boundary" : ""}`} rowSpan={displayedUnitTotalRowSpan}>
-                    <span className="merged-value">{specialResultMissing ? "" : usesUnitTotalsForBilling ? displayedUnitHasPrice ? formatYen(toExclusiveAmount(displayedUnitAmount, contract)) : "未設定" : "—"}</span>
+                    <span className="merged-value">{specialResultMissing ? "" : isVacant && meter.turnoverPart ? "—" : usesUnitTotalsForBilling ? displayedUnitHasPrice ? formatYen(toExclusiveAmount(displayedUnitAmount, contract)) : "未設定" : "—"}</span>
                   </td>
                 ) : null)}
                 {calculationOnly ? (
@@ -5406,7 +5438,7 @@ function CustomItemTable({
                 ) : firstBillableInTenant && (
                   <>
                     <td className="numeric tenant-total" rowSpan={tenantEndIndex - index + 1 + allocationResultsForTenant.length}><span className="merged-value">{specialResultMissing ? "" : formatUsage(tenantUsage, tenantDigits)}</span></td>
-                    <td className="numeric tenant-total" rowSpan={tenantEndIndex - index + 1 + allocationResultsForTenant.length}><span className="merged-value">{specialResultMissing ? "" : formatYen(tenantAmount)}</span></td>
+                    <td className="numeric tenant-total" rowSpan={tenantEndIndex - index + 1 + allocationResultsForTenant.length}><span className="merged-value">{specialResultMissing ? "" : isVacant && meter.turnoverPart ? "—" : formatYen(tenantAmount)}</span></td>
                   </>
                 )}
                 <td className="numeric">{calculationOnly || previousUsage == null ? "—" : formatUsage(previousUsage, aggregationDigits)}</td>
