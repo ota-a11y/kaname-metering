@@ -531,7 +531,7 @@ export async function loadMeterReadings(
   _comparisonMonthOffset = 1,
 ): Promise<{ rows: MeterReadingRow[]; status: "draft" | "confirmed" | null }> {
   const month = `${billingMonth}-01`;
-  const [metersResult, entriesResult, periodEntriesResult, previousEntriesResult, monthResult, allocationSourcesResult, commonSourcesResult, specialCalculationsResult, fixedValuesResult] = await Promise.all([
+  const [metersResult, entriesResult, periodEntriesResult, previousEntriesResult, monthResult, allocationSourcesResult, commonSourcesResult, specialCalculationsResult, fixedValuesResult, breaksResult] = await Promise.all([
     client
       .from("asset_meter")
       .select(
@@ -572,6 +572,7 @@ export async function loadMeterReadings(
     client.from("asset_meter_allocation_common_source").select("asset_meter_id, source_asset_meter_id"),
     client.from("asset_meter_special_calculation").select("id,name,amount_mode,output_asset_meter_id,result:meter_reading_month_special_calculation(billed_amount)").eq("asset_id", assetId).eq("result.billing_month", month),
     client.from("asset_meter").select("asset_meter_id,fixed_value_mode,fixed_usage_amount,fixed_billed_amount").eq("asset_id", assetId).not("fixed_value_mode", "is", null),
+    client.from("meter_reading_break").select("asset_meter_id, break_date, reading, usage_amount").eq("asset_id", assetId).eq("billing_month", month).order("break_date"),
   ]);
   fail("メーターを読み込めませんでした", metersResult.error);
   fail("保存済みの検針値を読み込めませんでした", entriesResult.error);
@@ -582,6 +583,12 @@ export async function loadMeterReadings(
   fail("共用部の按分用メーターを読み込めませんでした", commonSourcesResult.error);
   fail("特殊計算を読み込めませんでした", specialCalculationsResult.error);
   fail("固定値設定を読み込めませんでした", fixedValuesResult.error);
+  fail("中間検針を読み込めませんでした", breaksResult.error);
+  const breaksByMeter = new Map<string, Array<{ date: string; reading: number | null; usage: number | null }>>();
+  for (const row of breaksResult.data ?? []) breaksByMeter.set(row.asset_meter_id, [
+    ...(breaksByMeter.get(row.asset_meter_id) ?? []),
+    { date: row.break_date, reading: row.reading == null ? null : Number(row.reading), usage: row.usage_amount == null ? null : Number(row.usage_amount) },
+  ]);
   const fixedValues = new Map((fixedValuesResult.data ?? []).map((row) => [row.asset_meter_id, { mode: row.fixed_value_mode as "usage" | "usage_amount", usage: Number(row.fixed_usage_amount), amount: row.fixed_billed_amount == null ? null : Number(row.fixed_billed_amount) }]));
   const specialCalculations = new Map((specialCalculationsResult.data ?? []).filter((row) => row.output_asset_meter_id).map((row) => {
     const savedResult = Array.isArray(row.result) ? row.result[0] : row.result;
@@ -619,6 +626,7 @@ export async function loadMeterReadings(
       );
       return withDatabaseMeterParent({
         ...meter,
+        turnoverBreaks: breaksByMeter.get(meter.asset_meter_id) ?? [],
         specialCalculation: specialCalculations.get(meter.asset_meter_id) ?? null,
         fixedValue: fixedValues.get(meter.asset_meter_id) ?? null,
         is_allocation_source: allocationSourceIds.has(meter.asset_meter_id),
@@ -1539,6 +1547,31 @@ export async function clearMeterReading(
   fail("検針値を未入力に戻せませんでした", error);
 }
 
+export async function saveTurnoverMeterBreak(
+  client: SupabaseClient,
+  assetId: string,
+  billingMonth: string,
+  meterId: string,
+  date: string,
+  mode: "reading" | "usage",
+  value: number,
+) {
+  if (!Number.isFinite(value) || value < 0) throw new Error("中間検針値・使用量は0以上で入力してください。");
+  const monthState = await client.from("meter_reading_month").select("status")
+    .eq("asset_id", assetId).eq("billing_month", `${billingMonth}-01`).maybeSingle();
+  fail("検針月の状態を確認できませんでした", monthState.error);
+  if (monthState.data?.status === "confirmed") throw new Error("確定済みの検針データは変更できません。");
+  const { error } = await client.from("meter_reading_break").upsert({
+    asset_id: assetId,
+    billing_month: `${billingMonth}-01`,
+    asset_meter_id: meterId,
+    break_date: date,
+    reading: mode === "reading" ? value : null,
+    usage_amount: mode === "usage" ? value : null,
+  }, { onConflict: "asset_id,billing_month,asset_meter_id,break_date" });
+  fail("中間検針を保存できませんでした", error);
+}
+
 export async function saveMeterPeriodReading(
   client: SupabaseClient,
   assetId: string,
@@ -1573,7 +1606,26 @@ export async function clearMeterPeriodReading(
   billingMonth: string,
   serviceMonth: string,
   meterId: string,
+  preservePreviousReading = false,
 ) {
+  if (preservePreviousReading) {
+    const existing = await client.from("meter_reading_period_entry")
+      .select("previous_reading, current_reading")
+      .eq("asset_id", assetId).eq("billing_month", `${billingMonth}-01`)
+      .eq("service_month", `${serviceMonth}-01`).eq("asset_meter_id", meterId)
+      .maybeSingle();
+    fail("月別の前月検針値を確認できませんでした", existing.error);
+    if (existing.data?.previous_reading != null) {
+      if (existing.data.current_reading == null) return;
+      const cleared = await client.from("meter_reading_period_entry")
+        .update({ current_reading: null, usage_amount: null, updated_at: new Date().toISOString() })
+        .eq("asset_id", assetId).eq("billing_month", `${billingMonth}-01`)
+        .eq("service_month", `${serviceMonth}-01`).eq("asset_meter_id", meterId);
+      fail("月別の検針値を未入力に戻せませんでした", cleared.error);
+      await syncMeterPeriodTotal(client, assetId, billingMonth, meterId);
+      return;
+    }
+  }
   const { error } = await client.from("meter_reading_period_entry").delete()
     .eq("asset_id", assetId).eq("billing_month", `${billingMonth}-01`)
     .eq("service_month", `${serviceMonth}-01`).eq("asset_meter_id", meterId);
