@@ -38,6 +38,7 @@ import {
   saveMeterName,
   saveMeterTag,
   saveMeterReading,
+  saveTurnoverMeterBreak,
   saveMeterPeriodReading,
   saveMeterReadingDate,
   saveSharedMeterReadingDate,
@@ -65,7 +66,8 @@ import { calculateHotelAllocation, type HotelAllocationBuilding, type HotelAlloc
 import { surchargeAssignmentIncluded } from '../lib/surchargeAssignment';
 import { includesSurchargeBilling, includesSurchargeDenominator, type SurchargeExclusionMode } from '../lib/surchargeExclusion';
 import { allocationRatioValue, calculateMonthAllocation, evaluateAllocationAmountExpression, formatAllocationAmountInput, ratioForAllocationMode, type MonthAllocationMode, type MonthAllocationRatio } from "../lib/monthAllocation";
-import { contractBasicChargeAmount, isBasicChargeBillable } from "../lib/basicCharge";
+import { contractBasicChargeAmount, isBasicChargeBillable, prorateUtilityFixedAmount } from "../lib/basicCharge";
+import { splitMeterReading, turnoverBoundary } from "../lib/turnoverMeterSplit";
 import type { UnitPriceAdjustment } from "../lib/unitPriceAdjustment";
 import type {
   Asset,
@@ -286,6 +288,8 @@ function buildConfirmedMeterAmounts({
   billingLineItems,
   monthlyFixedCharges,
   billingMonth,
+  turnoverPeriod,
+  chargePeriods,
 }: {
   contracts: ContractUnit[];
   meters: MeterReadingRow[];
@@ -298,7 +302,13 @@ function buildConfirmedMeterAmounts({
   billingLineItems: BillingLineItem[];
   monthlyFixedCharges: Record<string, number>;
   billingMonth: string;
+  turnoverPeriod?: { start: string; end: string };
+  chargePeriods?: Record<string, { start: string; end: string }>;
 }): ConfirmedMeterAmount[] {
+  const splitPeriod = turnoverPeriod ?? {
+    start: `${billingMonth}-01`,
+    end: new Date(Date.UTC(Number(billingMonth.slice(0, 4)), Number(billingMonth.slice(5, 7)), 0)).toISOString().slice(0, 10),
+  };
   const eligibleContracts = contracts.filter((row) =>
     ["office", "warehouse", "storage", "signage"].includes((row.unit?.unit_type ?? "").toLowerCase()),
   );
@@ -366,7 +376,7 @@ function buildConfirmedMeterAmounts({
         : [];
       if (basic && basicContracts.length > 0) {
         // 契約基本料は契約側の税区分を区画ごとに適用し、常に税抜額で受け取る。
-        const amount = contractBasicChargeAmount(basicContracts, category);
+        const amount = contractBasicChargeAmount(basicContracts, category, chargePeriods?.[basic.asset_meter_sub_item_id] ?? splitPeriod);
         rows.push({
           ...shared,
           category,
@@ -388,10 +398,11 @@ function buildConfirmedMeterAmounts({
       let surchargeBillableUsage = 0;
       const surchargeBillableUsageByUnit = new Map<string, number>();
       for (const item of subItems.filter((candidate) => candidate.category === category && candidate.sub_item_kind === "custom")) {
+        const itemPeriod = chargePeriods?.[item.asset_meter_sub_item_id] ?? splitPeriod;
         if (item.is_monthly_fixed) {
           const unitAmounts = billableContracts.flatMap((contract) => {
             const unitAmount = monthlyFixedCharges[`${contract.lease_contract_unit_id}|${item.asset_meter_sub_item_id}`];
-            return unitAmount == null ? [] : [unitAmount];
+            return unitAmount == null ? [] : [prorateUtilityFixedAmount(unitAmount, contract, chargePeriods?.[item.asset_meter_sub_item_id] ?? splitPeriod)];
           });
           if (!unitAmounts.length) continue;
           const amount = unitAmounts.reduce((sum, unitAmount) => sum + unitAmount, 0);
@@ -430,30 +441,52 @@ function buildConfirmedMeterAmounts({
             if (meter.is_allocation_source || isCombinedAllocationSource(meter, calculationMeters)) return [];
             const totalUsage = calculatedMeterUsage(meter, calculationMeters, storedMeterUsage);
             return meter.assignments.flatMap((assignment) => {
-              const contract = assignment.tenant_id
-                ? billableContracts.find((candidate) => candidate.contract?.tenant_id === assignment.tenant_id)
-                : contractByUnitId.get(assignment.unit_id);
+              const hasTurnoverBreak = (meter.turnoverBreaks ?? []).some((row) => row.date >= itemPeriod.start && row.date < itemPeriod.end);
+              const contract = hasTurnoverBreak
+                ? contractByUnitId.get(assignment.unit_id)
+                : assignment.tenant_id
+                  ? billableContracts.find((candidate) => candidate.contract?.tenant_id === assignment.tenant_id)
+                  : contractByUnitId.get(assignment.unit_id);
               if (!contract) return [];
               const price = priceFor(contract, item);
               const usage = allocatedMeterUsage(meter, assignment.unit_id, calculationMeters, totalUsage);
-              return [{
+              const breaks = (meter.turnoverBreaks ?? []).filter((row) => row.date >= itemPeriod.start && row.date < itemPeriod.end);
+              const mode = effectiveInputMode(meter);
+              const finalValue = mode === "reading"
+                ? meter.entry?.current_reading ?? null
+                : meter.entry?.usage_amount == null ? null : Number(meter.entry.usage_amount) - breaks.reduce((sum, row) => sum + Number(row.usage ?? 0), 0);
+              const segments = breaks.length
+                ? splitMeterReading(mode, itemPeriod, meter.entry?.previous_reading ?? null, finalValue, breaks)
+                : [];
+              const ownedSegments = segments.map((segment, index) => ({ segment, index })).filter(({ segment }) => {
+                const owner = eligibleContracts.find((candidate) => contractOccupiesUnitAt(candidate, assignment.unit_id, segment.start));
+                return owner?.lease_contract_unit_id === contract.lease_contract_unit_id;
+              });
+              const values = segments.length
+                ? ownedSegments.map(({ segment, index }) => ({ usage: totalUsage ? usage * segment.usage / totalUsage : 0, segmentLabel: segment.label, segmentIndex: index + 1 }))
+                : [{ usage, segmentLabel: "", segmentIndex: 1 }];
+              return values.map((part) => ({
                 meterId: `${meter.asset_meter_id}:${assignment.unit_id}`,
                 sourceMeterId: meter.asset_meter_id,
                 sourceMeterName: meter.meter_label || meter.meter_code,
                 unitId: assignment.unit_id,
-                usage,
+                usage: part.usage,
+                segmentLabel: part.segmentLabel,
+                segmentIndex: part.segmentIndex,
                 surchargeExclusionMode: meter.surcharge_exclusion_mode,
                 usageDigits: meter.fixedValue ? Math.max(item.aggregation_decimal_digits, fractionDigits(meter.fixedValue.usage)) : undefined,
                 directAmount: meter.specialCalculation?.amountMode === "special"
                   ? meter.specialCalculation.billedAmount
                   : meter.fixedValue?.mode === "usage_amount" ? meter.fixedValue.amount : null,
                 ...price,
-              }];
+              }));
             });
           });
           const meterGroups = splitMonthly
             ? Array.from(new Set(chargeRows.map((row) => row.sourceMeterId))).map((meterId) => chargeRows.filter((row) => row.sourceMeterId === meterId))
-            : [chargeRows];
+            : chargeRows.some((row) => row.segmentLabel)
+              ? [chargeRows.filter((row) => !row.segmentLabel), ...chargeRows.filter((row) => row.segmentLabel).map((row) => [row])]
+              : [chargeRows];
           meterGroups.filter((group) => group.length).forEach((group) => {
             const directRows = group.filter((row) => row.directAmount != null);
             const calculatedRows = group.filter((row) => row.directAmount == null);
@@ -478,7 +511,7 @@ function buildConfirmedMeterAmounts({
               category,
               source_kind: "subItem",
               source_id: item.asset_meter_sub_item_id,
-              source_name: serviceMonth == null ? item.sub_item_name : `${group[0].sourceMeterName}（${Number(serviceMonth.slice(5, 7))}月分）`,
+              source_name: group[0].segmentLabel ? `${group[0].sourceMeterName} ${group[0].segmentLabel}` : serviceMonth == null ? item.sub_item_name : `${group[0].sourceMeterName}（${Number(serviceMonth.slice(5, 7))}月分）`,
               asset_billing_line_item_id: item.asset_billing_line_item_id,
               line_item_name: lineItemName(item.asset_billing_line_item_id),
               usage_amount: calculation.usage,
@@ -490,8 +523,8 @@ function buildConfirmedMeterAmounts({
               usage_rounding_mode: item.usage_rounding_mode,
               tax_mode: confirmedTaxMode,
               service_month: serviceMonth == null ? null : `${serviceMonth}-01`,
-              source_meter_id: serviceMonth == null ? null : group[0].sourceMeterId,
-              line_sequence: monthIndex + 1,
+              source_meter_id: serviceMonth == null && !group[0].segmentLabel ? null : group[0].sourceMeterId,
+              line_sequence: group[0].segmentLabel ? group[0].segmentIndex : monthIndex + 1,
             });
           });
         });
@@ -907,6 +940,7 @@ export function KanameterWorkspacePage({
   const [previousUnitPriceAdjustments, setPreviousUnitPriceAdjustments] = useState<Record<string, UnitPriceAdjustment>>({});
   const [utilityTariff, setUtilityTariff] = useState<UtilityTariffVersion | null>(null);
   const [values, setValues] = useState<Record<string, string>>({});
+  const [turnoverDrafts, setTurnoverDrafts] = useState<Record<string, { first: string; second: string }>>({});
   const [monthlyFixedCharges, setMonthlyFixedCharges] = useState<Record<string, number>>({});
   const [calculatedAllocationCharges, setCalculatedAllocationCharges] = useState<Record<string, number>>({});
   const [allocationDraft, setAllocationDraft] = useState<{ subItemId: string; amount: string; amountSource: "manual" | "import"; sourceReference: string | null; deductionSubItemId: string | null; mode: MonthAllocationMode; ratios: Record<string, MonthAllocationRatio> } | null>(null);
@@ -925,6 +959,11 @@ export function KanameterWorkspacePage({
   const [confirming, setConfirming] = useState(false);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
+  const turnoverDemo = import.meta.env.DEV
+    && new URLSearchParams(window.location.search).get("turnover-demo") === "nihonbashi"
+    && assets.find((asset) => asset.asset_id === assetId)?.asset_code === 14
+    && billingMonth === "2026-11";
+  const turnoverDemoContracts = turnoverDemo ? nihonbashiTurnoverContracts(contracts) : contracts;
   const [sidebarPinned, setSidebarPinned] = useState(() => localStorage.getItem("kanameter-sidebar-pinned") !== "false");
   const timers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   const allocationAmountTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1341,6 +1380,42 @@ export function KanameterWorkspacePage({
         loadContractUnits(supabase!, assetId),
       ]);
       const freshMeters = readingResults.flatMap((result) => result.rows);
+      const monthStart = `${billingMonth}-01`;
+      const monthEnd = new Date(Date.UTC(Number(billingMonth.slice(0, 4)), Number(billingMonth.slice(5, 7)), 0)).toISOString().slice(0, 10);
+      const chargePeriods = Object.fromEntries(subItems.flatMap((item) => {
+        const pattern = periodPatterns.find((candidate) => candidate.billing_period_pattern_id === item.billing_period_pattern_id);
+        if (!pattern) return [];
+        const previousMonth = new Date(Date.UTC(Number(billingMonth.slice(0, 4)), Number(billingMonth.slice(5, 7)) - 1 - comparisonMonthOffsetFor(item.category), 1)).toISOString().slice(0, 7);
+        const range = billingPeriodRange(billingMonth, pattern,
+          meterDateForMonth(billingMonth, item.category, item.asset_meter_date_setting_id),
+          meterDateForMonth(previousMonth, item.category, item.asset_meter_date_setting_id));
+        if (!range) return [];
+        const iso = (date: Date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+        return [[item.asset_meter_sub_item_id, { start: iso(range.start), end: iso(range.end) }]];
+      })) as Record<string, { start: string; end: string }>;
+      const splitUnitIds = new Set<string>();
+      const splitPeriods: Array<{ start: string; end: string }> = [];
+      for (const meter of freshMeters) {
+        const period = chargePeriods[meter.subItem.asset_meter_sub_item_id] ?? { start: monthStart, end: monthEnd };
+        const boundaries = turnoverDatesForMeter(meter, freshContracts, period);
+        if (!boundaries.length) continue;
+        const item = subItems.find((candidate) => candidate.asset_meter_sub_item_id === meter.subItem.asset_meter_sub_item_id);
+        const frequency = utilitySettings.find((setting) => setting.category === meter.subItem.category)?.billing_frequency ?? "monthly";
+        if (frequency !== "monthly" && item?.invoice_display_unit === "monthly_lines") {
+          throw new Error(`${meter.meter_label || meter.meter_code}の入退去分割は月別2行表示に対応していません。個別確認してください。`);
+        }
+        if (boundaries.length !== 1 || meter.parent_meter_id || meter.child_meter_ids.length || meter.assignments.length !== 1) {
+          throw new Error(`${meter.meter_label || meter.meter_code}の入退去分割は複数境界・親子メーター・複数区画に対応していません。個別確認してください。`);
+        }
+        const breaks = (meter.turnoverBreaks ?? []).filter((row) => boundaries.includes(row.date));
+        if (breaks.length !== boundaries.length) throw new Error(`${meter.meter_label || meter.meter_code}の入退去時の中間検針を入力してください。`);
+        const mode = effectiveInputMode(meter);
+        const finalValue = mode === "reading" ? meter.entry?.current_reading ?? null
+          : meter.entry?.usage_amount == null ? null : Number(meter.entry.usage_amount) - breaks.reduce((sum, row) => sum + Number(row.usage ?? 0), 0);
+        splitMeterReading(mode, period, meter.entry?.previous_reading ?? null, finalValue, breaks);
+        splitUnitIds.add(meter.assignments[0].unit_id);
+        splitPeriods.push(period);
+      }
       for (const item of subItems.filter((candidate) => {
         const frequency = utilitySettings.find((setting) => setting.category === candidate.category)?.billing_frequency ?? "monthly";
         return frequency !== "monthly" && candidate.invoice_display_unit === "monthly_lines" && candidate.calculation_mode === "meter";
@@ -1362,7 +1437,16 @@ export function KanameterWorkspacePage({
       const freshCalculations = Object.fromEntries(
         calculationRows.map((row) => [row.asset_meter_sub_item_id, row]),
       );
-      const freshPeriodContracts = contractsForBillingPeriod(freshContracts, contractPeriodStartDate, contractReferenceDate);
+      const regularContracts = contractsForBillingPeriod(freshContracts, contractPeriodStartDate, contractReferenceDate);
+      const splitStart = splitPeriods.reduce((start, period) => period.start < start ? period.start : start, monthStart);
+      const splitEnd = splitPeriods.reduce((end, period) => period.end > end ? period.end : end, monthEnd);
+      const turnoverContracts = freshContracts.filter((contract) =>
+        contract.unit?.unit_id && splitUnitIds.has(contract.unit.unit_id)
+        && (contractOccupiesUnitAt(contract, contract.unit.unit_id, splitStart)
+          || contractOccupiesUnitAt(contract, contract.unit.unit_id, splitEnd)
+          || [contract.lease_start_date, contract.contract?.contract_start_date, contract.lease_end_date, contract.contract?.actual_end_date].some((date) => date && date >= splitStart && date <= splitEnd)),
+      );
+      const freshPeriodContracts = [...regularContracts, ...turnoverContracts.filter((contract) => !regularContracts.some((regular) => regular.lease_contract_unit_id === contract.lease_contract_unit_id))];
       const { data: savedAllocations, error: allocationLoadError } = await supabase!
         .from("meter_reading_month_allocation")
         .select("asset_meter_sub_item_id, billed_amount, source_reference, allocation_ratios")
@@ -1385,6 +1469,8 @@ export function KanameterWorkspacePage({
         billingLineItems: [],
         monthlyFixedCharges: fixedChargesWithoutAllocations,
         billingMonth,
+        turnoverPeriod: { start: monthStart, end: monthEnd },
+        chargePeriods,
       });
       for (const item of subItems.filter((candidate) => candidate.calculation_mode === "allocated_amount")) {
         const saved = savedAllocations?.find((row) => row.asset_meter_sub_item_id === item.asset_meter_sub_item_id);
@@ -1421,6 +1507,8 @@ export function KanameterWorkspacePage({
           ...calculatedAllocationAmounts,
         },
         billingMonth,
+        turnoverPeriod: { start: monthStart, end: monthEnd },
+        chargePeriods,
       });
       await confirmMeterReadingMonth(supabase!, assetId, billingMonth, amounts);
       setSummaryMeters(freshMeters);
@@ -1527,7 +1615,20 @@ export function KanameterWorkspacePage({
   const contractDate = mainTab === "summary" ? fallbackPeriodEnd : selectedBillingPeriod?.end ?? fallbackPeriodEnd;
   const contractPeriodStartDate = `${contractPeriodStart.getFullYear()}-${String(contractPeriodStart.getMonth() + 1).padStart(2, "0")}-${String(contractPeriodStart.getDate()).padStart(2, "0")}`;
   const contractReferenceDate = `${contractDate.getFullYear()}-${String(contractDate.getMonth() + 1).padStart(2, "0")}-${String(contractDate.getDate()).padStart(2, "0")}`;
-  const periodContracts = contractsForBillingPeriod(contracts, contractPeriodStartDate, contractReferenceDate);
+  const turnoverPeriod = { start: contractPeriodStartDate, end: contractReferenceDate };
+  const turnoverUnitIds = new Set(meters.flatMap((meter) => turnoverDatesForMeter(meter, turnoverDemoContracts, turnoverPeriod).length
+    ? meter.assignments.map((assignment) => assignment.unit_id) : []));
+  const regularPeriodContracts = contractsForBillingPeriod(turnoverDemoContracts, contractPeriodStartDate, contractReferenceDate);
+  const extraPeriodContracts = turnoverDemoContracts.filter((contract) =>
+    contract.unit?.unit_id && turnoverUnitIds.has(contract.unit.unit_id)
+    && !regularPeriodContracts.some((regular) => regular.lease_contract_unit_id === contract.lease_contract_unit_id)
+    && [contractPeriodStartDate, contractReferenceDate].some((date) => contractOccupiesUnitAt(contract, contract.unit!.unit_id, date)));
+  const periodContractIds = new Set([...regularPeriodContracts, ...extraPeriodContracts].map((contract) => contract.lease_contract_unit_id));
+  const periodContracts = turnoverDemoContracts.filter((contract) => periodContractIds.has(contract.lease_contract_unit_id));
+  const displayMeterRows = expandTurnoverMeterRows(meters, turnoverDemoContracts, turnoverPeriod, turnoverDrafts, turnoverDemo);
+  const displayValues = { ...values, ...Object.fromEntries(displayMeterRows.flatMap((meter) => meter.turnoverPart
+    ? [[meter.asset_meter_id, turnoverDrafts[meter.turnoverPart.originalMeterId]?.[meter.turnoverPart.index === 0 ? "first" : "second"]
+      ?? String((effectiveInputMode(meter) === "reading" ? meter.entry?.current_reading : meter.entry?.usage_amount) ?? "")]] : [])) };
   const billableCategoryContracts = activeCategory
     ? periodContracts.filter((contract) => isContractCategoryBillable(contract, activeCategory))
     : periodContracts;
@@ -1535,7 +1636,7 @@ export function KanameterWorkspacePage({
     ? billableContractsForSubItem(billableCategoryContracts, selectedSubItem.asset_meter_sub_item_id)
     : billableCategoryContracts;
   const selectedSubItemLinkedUnitIds = new Set(selectedSubItem
-    ? meters
+    ? displayMeterRows
         .filter((meter) => meter.subItem.asset_meter_sub_item_id === selectedSubItem.asset_meter_sub_item_id)
         .flatMap((meter) => meter.assignments.map((assignment) => assignment.unit_id))
     : []);
@@ -1761,6 +1862,9 @@ export function KanameterWorkspacePage({
   const selectedUtilitySetting = selectedSubItem
     ? utilitySettings.find((setting) => setting.category === selectedSubItem.category)
     : undefined;
+  const selectedMonthlyServiceMonths = selectedSubItem && selectedUtilitySetting?.billing_frequency !== "monthly" && selectedSubItem.invoice_display_unit === "monthly_lines"
+    ? billingServiceMonths(billingMonth, selectedSubItem.monthly_period_start_offset)
+    : null;
   const selectedUnitPriceTaxMode: TaxMode = selectedSubItem
     ? readingSubItemContracts.some((contract) => usesVariablePrice(contract, selectedSubItem) && meterTermFor(contract, selectedSubItem)?.tax_mode === "inclusive")
       ? "inclusive"
@@ -1783,7 +1887,7 @@ export function KanameterWorkspacePage({
   const displayedCategoryUnitIds = new Set(readingSubItemContracts.map((contract) => contract.unit?.unit_id).filter(Boolean));
   const occupiedUnitIds = new Set(periodContracts.map((contract) => contract.unit?.unit_id).filter(Boolean));
   const displayedReadingMeters = selectedSubItem
-    ? meters.filter(
+    ? displayMeterRows.filter(
         (meter) => {
           const unitIds = meter.assignments.map((assignment) => assignment.unit_id);
           return meter.subItem.asset_meter_sub_item_id === selectedSubItem.asset_meter_sub_item_id &&
@@ -2059,13 +2163,13 @@ export function KanameterWorkspacePage({
           <div className="confirm-area">
             {hotelAllocationBuilding && <button type="button" className="hotel-allocation-open-metering" onClick={() => { setMainTab("hotelAllocation"); setMeterSettingsItemId(null); }}>按分画面へ移動</button>}
             <span className={`month-status ${status ?? "empty"}`}>
-              {status === "confirmed"
+              {turnoverDemo ? "ローカル検証（DB保存なし）" : status === "confirmed"
                 ? "KANAME連携済み"
                 : status === "draft"
                   ? "保存済み・未確定"
                   : "未入力"}
             </span>
-            <button
+            {!turnoverDemo && <button
               type="button"
               className={status === "confirmed" ? "secondary compact" : "primary compact"}
               disabled={confirming}
@@ -2076,7 +2180,7 @@ export function KanameterWorkspacePage({
                 : status === "confirmed"
                   ? "確定を解除"
                   : "確定"}
-            </button>
+            </button>}
           </div>
         </header>}
         {error && <div className="alert workspace-alert">{error}</div>}
@@ -2178,7 +2282,9 @@ export function KanameterWorkspacePage({
                 {(selectedSubItem || selectedSurcharge) && (
                   <div className="subitem-period-display">
                     <span>対象期間</span>
-                    <strong>{periodLabelFor(billingMonth, meterDate, activeDateCategory)}</strong>
+                    <strong>{selectedMonthlyServiceMonths
+                      ? selectedMonthlyServiceMonths.map((month) => `${Number(month.slice(0, 4))}年${Number(month.slice(5, 7))}月分`).join("・")
+                      : periodLabelFor(billingMonth, meterDate, activeDateCategory)}</strong>
                   </div>
                 )}
                 {selectedSubItem?.sub_item_kind === "custom" && !selectedSubItem.is_monthly_fixed && (
@@ -2294,16 +2400,29 @@ export function KanameterWorkspacePage({
                     billingMonth={billingMonth}
                     startOffset={selectedSubItem.monthly_period_start_offset}
                     meters={displayedReadingMeters}
+                    contracts={readingSubItemContracts}
+                    category={mainTab as UtilityCategory}
+                    lineItemId={selectedSubItem.asset_billing_line_item_id}
+                    unitPriceOverride={calculatedUnitPrices[selectedSubItem.asset_meter_sub_item_id]}
+                    defaultUnitPrice={selectedUtilitySetting?.price_scope === "category" ? selectedUtilitySetting.default_unit_price : selectedSubItem.default_unit_price}
+                    defaultPriceMode={selectedSubItem.price_mode}
+                    variablePriceForUnpricedOnly={selectedSubItem.variable_price_for_unpriced_only ?? false}
+                    taxMode={selectedTableTaxMode}
+                    amountCalculationScope={selectedSubItem.amount_calculation_scope}
+                    taxRoundingMode={selectedSubItem.tax_rounding_mode}
+                    columnStorageUserId={profile.user_id}
                     confirmed={status === "confirmed"}
                     onSaved={refreshMeterData}
                     onStatusChanged={() => setStatus((current) => current ?? "draft")}
                     onError={setError}
                   />
-                ) : selectedSubItem ? (
+                ) : selectedSubItem ? (<>
                   <CustomItemTable
                     billingMonth={billingMonth}
                     meters={displayedReadingMeters}
                     contracts={readingSubItemContracts}
+                    turnoverContracts={turnoverDemoContracts}
+                    turnoverPeriod={{ start: contractPeriodStartDate, end: contractReferenceDate }}
                     category={mainTab as UtilityCategory}
                     lineItemId={selectedSubItem.asset_billing_line_item_id}
                     unitPriceOverride={calculatedUnitPrices[selectedSubItem.asset_meter_sub_item_id]}
@@ -2315,16 +2434,47 @@ export function KanameterWorkspacePage({
                     taxMode={selectedTableTaxMode}
                     amountCalculationScope={selectedSubItem.amount_calculation_scope}
                     taxRoundingMode={selectedSubItem.tax_rounding_mode}
-                    values={values}
+                    values={displayValues}
                     saveStates={saveStates}
                     confirmed={status === "confirmed"}
+                    turnoverDemo={turnoverDemo}
                     usageHistory={usageHistory}
                     rolloverValues={rolloverValues}
                     columnStorageUserId={profile.user_id}
                     usageOnly={usageOnly && selectedSubItem.amount_calculation_scope === "unit"}
-                    onChange={queueSave}
-                    onBlur={validateReadingAfterInput}
+                    onChange={(meter, value) => {
+                      if (!meter.turnoverPart) { queueSave(meter, value); return; }
+                      const { originalMeterId, index } = meter.turnoverPart;
+                      const original = meters.find((row) => row.asset_meter_id === originalMeterId);
+                      const saved = original?.turnoverBreaks?.find((row) => row.date === meter.turnoverPart?.boundary);
+                      const mode = original ? effectiveInputMode(original) : "reading";
+                      const initial = {
+                        first: String((mode === "reading" ? saved?.reading : saved?.usage) ?? ""),
+                        second: String((mode === "reading" ? original?.entry?.current_reading : saved?.usage == null || original?.entry?.usage_amount == null ? null : Number(original.entry.usage_amount) - Number(saved.usage)) ?? ""),
+                      };
+                      setTurnoverDrafts((current) => ({ ...current, [originalMeterId]: { ...(current[originalMeterId] ?? initial), [index === 0 ? "first" : "second"]: value } }));
+                    }}
+                    onBlur={(meter) => {
+                      if (!meter.turnoverPart) { validateReadingAfterInput(meter); return; }
+                      if (turnoverDemo) return;
+                      const { originalMeterId, boundary } = meter.turnoverPart;
+                      const original = meters.find((row) => row.asset_meter_id === originalMeterId);
+                      const draft = turnoverDrafts[originalMeterId];
+                      if (!original || !draft?.first.trim() || !draft.second.trim()) return;
+                      const mode = effectiveInputMode(original);
+                      try {
+                        const segments = splitMeterReading(mode, turnoverPeriod, original.entry?.previous_reading ?? null, Number(draft.second), [{ date: boundary, reading: mode === "reading" ? Number(draft.first) : null, usage: mode === "usage" ? Number(draft.first) : null }]);
+                        void (async () => {
+                          try {
+                            await saveMeterReading(supabase!, assetId, billingMonth, originalMeterId, mode === "reading" ? Number(draft.second) : segments.reduce((sum, segment) => sum + segment.usage, 0));
+                            await saveTurnoverMeterBreak(supabase!, assetId, billingMonth, originalMeterId, boundary, mode, Number(draft.first));
+                            await refreshMeterData();
+                          } catch (reason) { setError((reason as Error).message); }
+                        })();
+                      } catch (reason) { setError((reason as Error).message); }
+                    }}
                   />
+                  </>
                 ) : (
                   <div className="empty-cell">小分類が設定されていません。</div>
                 )}
@@ -4425,6 +4575,17 @@ function MonthlyMeterReadingTable({
   billingMonth,
   startOffset,
   meters,
+  contracts,
+  category,
+  lineItemId,
+  unitPriceOverride,
+  defaultUnitPrice,
+  defaultPriceMode,
+  variablePriceForUnpricedOnly,
+  taxMode,
+  amountCalculationScope,
+  taxRoundingMode,
+  columnStorageUserId,
   confirmed,
   onSaved,
   onStatusChanged,
@@ -4434,6 +4595,17 @@ function MonthlyMeterReadingTable({
   billingMonth: string;
   startOffset: number;
   meters: MeterReadingRow[];
+  contracts: ContractUnit[];
+  category: UtilityCategory;
+  lineItemId: string | null;
+  unitPriceOverride?: number;
+  defaultUnitPrice: number | null;
+  defaultPriceMode: MeterSubItem["price_mode"];
+  variablePriceForUnpricedOnly: boolean;
+  taxMode: TaxMode;
+  amountCalculationScope: AmountCalculationScope;
+  taxRoundingMode: "none" | "floor" | "round" | "ceil";
+  columnStorageUserId: string;
   confirmed: boolean;
   onSaved: () => Promise<void>;
   onStatusChanged: () => void;
@@ -4446,7 +4618,6 @@ function MonthlyMeterReadingTable({
     return [`${meter.asset_meter_id}|${serviceMonth}`, value == null ? "" : String(value)];
   })));
   const [periodValues, setPeriodValues] = useState<Record<string, string>>(initialValues);
-  const [savingKey, setSavingKey] = useState("");
   useEffect(() => setPeriodValues(initialValues()), [meters, billingMonth, startOffset]);
   const entryFor = (meter: MeterReadingRow, serviceMonth: string) => meter.periodEntries?.find((row) => row.service_month.slice(0, 7) === serviceMonth);
   const previousFor = (meter: MeterReadingRow, index: number) => {
@@ -4457,11 +4628,10 @@ function MonthlyMeterReadingTable({
   const save = async (meter: MeterReadingRow, serviceMonth: string, index: number) => {
     const key = `${meter.asset_meter_id}|${serviceMonth}`;
     const raw = periodValues[key] ?? "";
-    setSavingKey(key);
     onError("");
     try {
       if (!raw.trim()) {
-        await clearMeterPeriodReading(supabase!, assetId, billingMonth, serviceMonth, meter.asset_meter_id);
+        await clearMeterPeriodReading(supabase!, assetId, billingMonth, serviceMonth, meter.asset_meter_id, index === 0 && effectiveInputMode(meter) === "reading");
         if (index === 0 && effectiveInputMode(meter) === "reading") {
           await clearMeterPeriodReading(supabase!, assetId, billingMonth, serviceMonths[1], meter.asset_meter_id);
           setPeriodValues((currentValues) => ({ ...currentValues, [`${meter.asset_meter_id}|${serviceMonths[1]}`]: "" }));
@@ -4478,22 +4648,133 @@ function MonthlyMeterReadingTable({
       onStatusChanged();
       await onSaved();
     } catch (reason) { onError((reason as Error).message); }
-    finally { setSavingKey(""); }
   };
-  return <div className="table-wrap monthly-meter-reading-table"><table><thead><tr><th>区画</th><th>メーター名</th><th>前月検針値</th><th>当月検針値／使用量</th><th>使用量</th></tr></thead><tbody>{meters.flatMap((meter) => serviceMonths.map((serviceMonth, index) => {
-    const key = `${meter.asset_meter_id}|${serviceMonth}`;
+  const monthlyMeters = meters.flatMap((meter) => serviceMonths.map((serviceMonth, index): MeterReadingRow => {
+    const entry = entryFor(meter, serviceMonth);
     const previous = previousFor(meter, index);
-    const raw = periodValues[key] ?? "";
-    const current = raw === "" ? null : Number(raw);
-    const usage = effectiveInputMode(meter) === "reading" ? current == null || previous == null ? null : current - previous : current;
-    return <tr key={key}><td>{meter.assignments[0]?.unit?.unit_name || meter.assignments[0]?.unit?.unit_code || "未割当"}</td><td><strong>{meter.meter_label || meter.meter_code}（{Number(serviceMonth.slice(5, 7))}月分）</strong></td><td className="numeric">{effectiveInputMode(meter) === "reading" && previous != null ? formatUsage(previous, meterReadingDecimalDigits(meter)) : "—"}</td><td><input type="number" min="0" step="any" disabled={confirmed} value={raw} onChange={(event) => setPeriodValues((currentValues) => ({ ...currentValues, [key]: event.target.value }))} onBlur={() => void save(meter, serviceMonth, index)} /></td><td className="numeric">{usage == null || usage < 0 ? "—" : formatUsage(usage, meter.subItem.aggregation_decimal_digits)}{savingKey === key ? <small> 保存中…</small> : null}</td></tr>;
-  }))}</tbody></table></div>;
+    return {
+      ...meter,
+      asset_meter_id: `${meter.asset_meter_id}|${serviceMonth}`,
+      meter_code: `${meter.meter_label || meter.meter_code}（${Number(serviceMonth.slice(5, 7))}月分）`,
+      meter_label: null,
+      entry: entry || previous != null ? {
+        previous_reading: previous,
+        current_reading: entry?.current_reading ?? null,
+        usage_amount: entry?.usage_amount ?? null,
+      } : null,
+      periodEntries: [],
+      parent_meter_id: null,
+      child_meter_ids: [],
+    };
+  }));
+  return <CustomItemTable
+    billingMonth={billingMonth} meters={monthlyMeters} contracts={contracts} category={category}
+    lineItemId={lineItemId} unitPriceOverride={unitPriceOverride} defaultUnitPrice={defaultUnitPrice}
+    defaultPriceMode={defaultPriceMode} variablePriceForUnpricedOnly={variablePriceForUnpricedOnly}
+    taxMode={taxMode} amountCalculationScope={amountCalculationScope} taxRoundingMode={taxRoundingMode}
+    values={periodValues} saveStates={{}} confirmed={confirmed}
+    usageHistory={{ previous: {}, previousYear: {} }} rolloverValues={{}}
+    columnStorageUserId={columnStorageUserId} usageOnly={false}
+    onChange={(meter, value) => setPeriodValues((current) => ({ ...current, [meter.asset_meter_id]: value }))}
+    onBlur={(meter) => {
+      const [meterId, serviceMonth] = meter.asset_meter_id.split("|");
+      const original = meters.find((row) => row.asset_meter_id === meterId);
+      if (original) void save(original, serviceMonth, serviceMonths.indexOf(serviceMonth));
+    }}
+  />;
+}
+
+function nihonbashiTurnoverContracts(contracts: ContractUnit[]): ContractUnit[] {
+  const target = contracts.find((contract) => contract.unit?.unit_code.trim() === "601");
+  if (!target?.contract) return contracts;
+  const former: ContractUnit = {
+    ...target,
+    lease_end_date: "2026-10-15",
+    contract: { ...target.contract, tenant_id: "local-demo-former", tenant: { tenant_name: "【検証】退去テナント" }, actual_end_date: "2026-10-15" },
+  };
+  const incoming: ContractUnit = {
+    ...target,
+    lease_contract_unit_id: "local-demo-incoming",
+    lease_start_date: "2026-10-16",
+    lease_end_date: null,
+    contract: { ...target.contract, lease_contract_id: "local-demo-incoming", tenant_id: "local-demo-incoming", tenant: { tenant_name: "【検証】入居テナント" }, contract_start_date: "2026-10-16", actual_end_date: null },
+  };
+  return contracts.flatMap((contract) => contract === target ? [former, incoming] : [contract]);
+}
+
+function turnoverDatesForMeter(meter: MeterReadingRow, contracts: ContractUnit[], period: { start: string; end: string }) {
+  if (meter.turnoverPart) return [];
+  if (meter.is_rate_source || meter.is_allocation_source || meter.specialCalculation || meter.fixedValue) return [];
+  const unitIds = new Set(meter.assignments.map((assignment) => assignment.unit_id));
+  const dates = new Set<string>();
+  for (const contract of contracts) {
+    if (!contract.unit?.unit_id || !unitIds.has(contract.unit.unit_id)) continue;
+    const start = contract.lease_start_date ?? contract.contract?.contract_start_date;
+    const end = contract.lease_end_date ?? contract.contract?.actual_end_date ?? contract.contract?.contract_end_date;
+    if (start && start > period.start && start <= period.end) dates.add(turnoverBoundary(start, "move_in"));
+    if (end && end >= period.start && end < period.end) dates.add(turnoverBoundary(end, "move_out"));
+  }
+  return [...dates].filter((date) => date >= period.start && date < period.end).sort();
+}
+
+function contractOccupiesUnitAt(contract: ContractUnit, unitId: string, date: string) {
+  const memberIndex = contract.member_unit_ids?.indexOf(unitId) ?? -1;
+  const period = memberIndex >= 0 ? contract.member_periods?.[memberIndex] : null;
+  if (memberIndex < 0 && contract.unit?.unit_id !== unitId) return false;
+  const start = period?.start ?? contract.lease_start_date ?? contract.contract?.contract_start_date;
+  const end = period?.end ?? contract.lease_end_date ?? contract.contract?.actual_end_date ?? contract.contract?.contract_end_date;
+  return (!start || start <= date) && (!end || end >= date);
+}
+
+function expandTurnoverMeterRows(
+  meters: MeterReadingRow[], contracts: ContractUnit[], period: { start: string; end: string },
+  drafts: Record<string, { first: string; second: string }>, demo: boolean,
+): MeterReadingRow[] {
+  const nextDay = (date: string) => new Date(Date.parse(`${date}T00:00:00Z`) + 86_400_000).toISOString().slice(0, 10);
+  return meters.flatMap((meter) => {
+    const dates = turnoverDatesForMeter(meter, contracts, period);
+    if (dates.length !== 1 || meter.assignments.length !== 1 || meter.parent_meter_id || meter.child_meter_ids.length) return [meter];
+    const boundary = dates[0];
+    const saved = meter.turnoverBreaks?.find((row) => row.date === boundary);
+    const mode = effectiveInputMode(meter);
+    const midpoint = demo && mode === "reading" && meter.entry?.previous_reading != null && meter.entry.current_reading != null
+      ? String(Number(((Number(meter.entry.previous_reading) + Number(meter.entry.current_reading)) / 2).toFixed(2))) : "";
+    const first = drafts[meter.asset_meter_id]?.first ?? String((mode === "reading" ? saved?.reading : saved?.usage) ?? midpoint);
+    const second = drafts[meter.asset_meter_id]?.second ?? String((mode === "reading" ? meter.entry?.current_reading : saved?.usage == null || meter.entry?.usage_amount == null ? null : Number(meter.entry.usage_amount) - Number(saved.usage)) ?? "");
+    const unitId = meter.assignments[0].unit_id;
+    return ([0, 1] as const).map((index) => {
+      const owner = contracts.find((contract) => contractOccupiesUnitAt(contract, unitId, index === 0 ? period.start : nextDay(boundary)));
+      const current = (index === 0 ? first : second).trim() === "" ? null : Number(index === 0 ? first : second);
+      const previous = mode === "reading" ? index === 0 ? meter.entry?.previous_reading ?? null : first.trim() === "" ? null : Number(first) : null;
+      const usage = current == null || !Number.isFinite(current) ? null : mode === "reading" ? previous == null ? null : current - previous : current;
+      return {
+        ...meter,
+        asset_meter_id: `${meter.asset_meter_id}:turnover:${index}`,
+        meter_code: meter.meter_code,
+        meter_label: meter.meter_label,
+        sort_order: meter.sort_order + index / 10,
+        assignments: [{ ...meter.assignments[0], tenant_id: owner?.contract?.tenant_id ?? null }],
+        entry: { previous_reading: previous, current_reading: mode === "reading" ? current : null, usage_amount: usage },
+        turnoverPart: { originalMeterId: meter.asset_meter_id, index, boundary },
+      };
+    });
+  });
+}
+
+function turnoverTenantSuffix(part: NonNullable<MeterReadingRow["turnoverPart"]>) {
+  const date = part.index === 0 ? part.boundary
+    : new Date(Date.parse(`${part.boundary}T00:00:00Z`) + 86_400_000).toISOString().slice(0, 10);
+  const short = `${Number(date.slice(5, 7))}/${Number(date.slice(8, 10))}`;
+  return part.index === 0 ? ` ※～${short}` : ` ※${short}～`;
 }
 
 function CustomItemTable({
   billingMonth,
   meters,
   contracts,
+  turnoverContracts,
+  turnoverPeriod,
+  turnoverDemo,
   category,
   lineItemId,
   unitPriceOverride,
@@ -4516,6 +4797,9 @@ function CustomItemTable({
   billingMonth: string;
   meters: MeterReadingRow[];
   contracts: ContractUnit[];
+  turnoverContracts?: ContractUnit[];
+  turnoverPeriod?: { start: string; end: string };
+  turnoverDemo?: boolean;
   category: UtilityCategory;
   lineItemId: string | null;
   unitPriceOverride?: number;
@@ -4538,6 +4822,7 @@ function CustomItemTable({
   onChange: (meter: MeterReadingRow, value: string) => void;
   onBlur: (meter: MeterReadingRow) => void;
 }) {
+  const turnoverMeterIds = new Set(meters.filter((meter) => turnoverContracts && turnoverPeriod && turnoverDatesForMeter(meter, turnoverContracts, turnoverPeriod).length > 0).map((meter) => meter.asset_meter_id));
   const splitBillingTenantIds = new Set(
     contracts.flatMap((contract) => {
       const tenantId = contract.contract?.tenant_id;
@@ -4908,7 +5193,7 @@ function CustomItemTable({
           {orderedMeters.map((meter, index) => {
             const combinedResult = combinedResults.get(meter.asset_meter_id);
             const unit = meter.assignments[0]?.unit;
-            const tenantOnlyAssignment = Boolean(meter.assignments[0]?.tenant_id);
+            const tenantOnlyAssignment = !meter.turnoverPart && Boolean(meter.assignments[0]?.tenant_id);
             const isVacant = !meter.is_rate_source && !contractFor(meter);
             const allocationOwner = allocationOwnerFor(meter);
             const displayUnitKey = (candidate: MeterReadingRow) => {
@@ -5057,7 +5342,7 @@ function CustomItemTable({
             const unitAllocationResultCount = firstInUnit && unit?.unit_id && !allocationSource && !allocationParent
               ? allocationResults.filter((result) => result.assignment.unit_id === unit.unit_id).length
               : 0;
-            const inputControl = <div className="input-with-state"><div className="reading-input-actions"><input className="reading-input" inputMode="decimal" disabled={confirmed || Boolean(meter.specialCalculation)} value={values[meter.asset_meter_id] ?? ""} onChange={(event) => onChange(meter, event.target.value)} onBlur={() => onBlur(meter)} onKeyDown={(event) => {
+            const inputControl = <div className="input-with-state"><div className="reading-input-actions"><input className="reading-input" inputMode="decimal" disabled={(confirmed && !(turnoverDemo && meter.turnoverPart)) || Boolean(meter.specialCalculation) || turnoverMeterIds.has(meter.asset_meter_id)} value={values[meter.asset_meter_id] ?? ""} onChange={(event) => onChange(meter, event.target.value)} onBlur={() => onBlur(meter)} onKeyDown={(event) => {
               if (!["Enter", "ArrowUp", "ArrowDown"].includes(event.key)) return;
               event.preventDefault();
               const inputs = Array.from(event.currentTarget.closest("table")?.querySelectorAll<HTMLInputElement>("input.reading-input:not(:disabled)") ?? []);
@@ -5072,7 +5357,7 @@ function CustomItemTable({
                   <td className="tenant-cell tenant-identity" rowSpan={tenantMeters.length + tenantAllocationResultCount}>
                     <span className="merged-value">
                       {allocationOwner ? allocationOwner.meter_label ?? allocationOwner.meter_code : <TenantNameWithRounding
-                        name={contract?.contract?.tenant?.tenant_name ?? "空室"}
+                        name={`${contract?.contract?.tenant?.tenant_name ?? "空室"}${meter.turnoverPart ? turnoverTenantSuffix(meter.turnoverPart) : ""}`}
                         contracts={tenantMeters.map((tenantMeter) => contractFor(tenantMeter)).filter((item): item is ContractUnit => Boolean(item))}
                       />}
                     </span>
