@@ -94,7 +94,8 @@ button {
   padding: 40px;
   background: #fff;
 }
-.login-form form {
+.login-form form,
+.login-form-content {
   width: min(420px, 100%);
 }
 .login-form h2 {
@@ -146,6 +147,25 @@ select:focus {
 }
 .primary:disabled {
   opacity: 0.6;
+}
+.google-login {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+}
+.google-login svg {
+  flex: 0 0 auto;
+  padding: 2px;
+  border-radius: 50%;
+  background: #fff;
+}
+.login-note {
+  margin: 18px 0 0;
+  color: #71807b;
+  font-size: 11px;
+  line-height: 1.7;
+  text-align: center;
 }
 .secondary {
   background: #e5eeea;
@@ -899,6 +919,22 @@ td ul {
 .configuration-table input:disabled { color: #89938f; background: #e1e5e3; cursor: not-allowed; }
 .resizable-configuration-table { table-layout: fixed; }
 .resizable-configuration-table th { position: relative; }
+.configuration-header-stack { display: inline-flex; flex-direction: column; gap: 2px; line-height: 1.25; }
+.configuration-header-stack > span:first-child { font-size: 10px; font-weight: 500; }
+.fixed-charge-modal { width: min(760px, calc(100vw - 32px)); }
+.fixed-charge-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; padding: 16px; border-radius: 10px; background: #f7faf8; }
+.fixed-charge-form h3, .fixed-charge-list h3 { grid-column: 1 / -1; margin: 0; }
+.fixed-charge-form label { display: grid; gap: 6px; color: #42554e; font-size: 12px; font-weight: 600; }
+.fixed-charge-form label select, .fixed-charge-form label input { width: 100%; }
+.fixed-charge-form .primary { align-self: end; }
+.fixed-charge-list { display: grid; gap: 8px; margin-top: 18px; }
+.fixed-charge-list-row { display: flex; align-items: center; justify-content: space-between; gap: 20px; width: 100%; padding: 11px 13px; border: 1px solid #d7e4df; border-radius: 8px; color: #163d33; background: #fff; text-align: left; }
+.fixed-charge-list-row:hover { border-color: #87ad9f; background: #f5faf7; }
+.fixed-charge-list-row > span:first-child { display: grid; gap: 2px; }
+.fixed-charge-list-row small { color: #6d7f78; }
+.evidence-panel .surcharge-carry-checkbox { display: flex; flex-direction: row; align-items: center; gap: 8px; margin: 4px 0 10px; }
+.evidence-panel .surcharge-carry-checkbox input { width: auto; margin: 0; flex: 0 0 auto; }
+@media (max-width: 680px) { .fixed-charge-form { grid-template-columns: 1fr; } }
 .resizable-configuration-table td select,
 .resizable-configuration-table td input:not([type="checkbox"]) { width: 100%; min-width: 0; }
 .resizable-configuration-table td:not(.align-left) select,
