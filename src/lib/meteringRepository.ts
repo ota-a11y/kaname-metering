@@ -1029,15 +1029,15 @@ export async function loadMonthlyFixedCharges(
   client: SupabaseClient,
   assetId: string,
   billingMonth: string,
-): Promise<Array<{ meter_reading_contract_id: string; lease_contract_unit_id: string; asset_meter_sub_item_id: string; amount: number }>> {
+): Promise<Array<{ meter_reading_contract_id: string; lease_contract_unit_id: string; asset_meter_sub_item_id: string; amount: number; annual_billing_month: number | null }>> {
   const { data, error } = await client
     .from("meter_reading_month_fixed_charge")
-    .select("billing_month, meter_reading_contract_id, lease_contract_unit_id, asset_meter_sub_item_id, amount")
+    .select("billing_month, meter_reading_contract_id, lease_contract_unit_id, asset_meter_sub_item_id, amount, annual_billing_month")
     .eq("asset_id", assetId)
     .lte("billing_month", `${billingMonth}-01`)
     .order("billing_month", { ascending: false });
   fail("月額定額を読み込めませんでした", error);
-  const latest = new Map<string, { meter_reading_contract_id: string; lease_contract_unit_id: string; asset_meter_sub_item_id: string; amount: number }>();
+  const latest = new Map<string, { meter_reading_contract_id: string; lease_contract_unit_id: string; asset_meter_sub_item_id: string; amount: number; annual_billing_month: number | null }>();
   for (const row of data ?? []) {
     const key = `${row.lease_contract_unit_id}|${row.asset_meter_sub_item_id}`;
     if (!latest.has(key)) latest.set(key, {
@@ -1045,6 +1045,7 @@ export async function loadMonthlyFixedCharges(
       lease_contract_unit_id: row.lease_contract_unit_id,
       asset_meter_sub_item_id: row.asset_meter_sub_item_id,
       amount: Number(row.amount),
+      annual_billing_month: row.annual_billing_month == null ? null : Number(row.annual_billing_month),
     });
   }
   return Array.from(latest.values());
@@ -1059,6 +1060,7 @@ export async function saveMonthlyFixedCharge(
   leaseContractUnitId: string,
   subItemId: string,
   amount: number,
+  annualBillingMonth: number | null = null,
 ): Promise<string> {
   let effectiveContractId = contractId;
   if (!effectiveContractId) {
@@ -1095,6 +1097,7 @@ export async function saveMonthlyFixedCharge(
     lease_contract_unit_id: leaseContractUnitId,
     asset_meter_sub_item_id: subItemId,
     amount,
+    annual_billing_month: annualBillingMonth,
   }, { onConflict: "asset_id,billing_month,lease_contract_unit_id,asset_meter_sub_item_id" });
   fail("月額定額を保存できませんでした", error);
   return effectiveContractId as string;
@@ -1141,15 +1144,31 @@ export async function loadSurchargeEvidence(
   billingMonth: string,
   surchargeId: string,
 ) {
-  const { data, error } = await client
+  const currentMonth = `${billingMonth}-01`;
+  const [{ data, error }, previous] = await Promise.all([client
     .from("meter_reading_month_surcharge")
-    .select("unit_price, purchase_period_start, purchase_period_end, purchase_usage, purchase_amount_inclusive")
+    .select("unit_price, purchase_period_start, purchase_period_end, purchase_usage, purchase_amount_inclusive, adjusted_unit_price, carry_shortfall_forward, shortfall_amount_exclusive, carried_shortfall_exclusive")
     .eq("asset_id", assetId)
-    .eq("billing_month", `${billingMonth}-01`)
+    .eq("billing_month", currentMonth)
     .eq("asset_meter_surcharge_id", surchargeId)
-    .maybeSingle();
+    .maybeSingle(), client
+      .from("meter_reading_month_surcharge")
+      .select("carry_shortfall_forward, shortfall_amount_exclusive")
+      .eq("asset_id", assetId)
+      .eq("asset_meter_surcharge_id", surchargeId)
+      .lt("billing_month", currentMonth)
+      .order("billing_month", { ascending: false })
+      .limit(1)
+      .maybeSingle()]);
   fail("増額分の仕入データを読み込めませんでした", error);
-  return data as { unit_price: number | null; purchase_period_start: string | null; purchase_period_end: string | null; purchase_usage: number | null; purchase_amount_inclusive: number | null } | null;
+  fail("前月の回収不足額を読み込めませんでした", previous.error);
+  const previousCarryover = previous.data?.carry_shortfall_forward ? Number(previous.data.shortfall_amount_exclusive ?? 0) : 0;
+  return {
+    ...(data ?? { unit_price: null, purchase_period_start: null, purchase_period_end: null, purchase_usage: null, purchase_amount_inclusive: null, adjusted_unit_price: null, carry_shortfall_forward: false, shortfall_amount_exclusive: 0, carried_shortfall_exclusive: null }),
+    carryover_amount_exclusive: Number(data?.carried_shortfall_exclusive ?? 0) > 0
+      ? Number(data?.carried_shortfall_exclusive)
+      : previousCarryover,
+  } as { unit_price: number | null; purchase_period_start: string | null; purchase_period_end: string | null; purchase_usage: number | null; purchase_amount_inclusive: number | null; adjusted_unit_price: number | null; carry_shortfall_forward: boolean; shortfall_amount_exclusive: number; carried_shortfall_exclusive: number; carryover_amount_exclusive: number };
 }
 
 export async function saveSurchargeEvidence(
@@ -1163,6 +1182,10 @@ export async function saveSurchargeEvidence(
     periodEnd: string | null;
     purchaseUsage: number;
     purchaseAmountInclusive: number;
+    adjustedUnitPrice: number | null;
+    carryShortfallForward: boolean;
+    shortfallAmountExclusive: number;
+    carriedShortfallExclusive: number;
   },
 ) {
   const { error } = await client.from("meter_reading_month_surcharge").upsert({
@@ -1174,6 +1197,10 @@ export async function saveSurchargeEvidence(
     purchase_period_end: values.periodEnd,
     purchase_usage: values.purchaseUsage,
     purchase_amount_inclusive: values.purchaseAmountInclusive,
+    adjusted_unit_price: values.adjustedUnitPrice,
+    carry_shortfall_forward: values.carryShortfallForward,
+    shortfall_amount_exclusive: values.shortfallAmountExclusive,
+    carried_shortfall_exclusive: values.carriedShortfallExclusive,
   }, { onConflict: "asset_id,billing_month,asset_meter_surcharge_id" });
   fail("増額分の仕入データを保存できませんでした", error);
 }
@@ -1221,6 +1248,8 @@ export async function loadMeteringConfiguration(
     { pattern_name: "当月から2か月分", start_month_offset: 0, start_day_type: "first", start_meter_day_offset: 0, end_month_offset: 1, end_day_type: "last", end_meter_day_offset: 0, sort_order: 8 },
     { pattern_name: "検針期間（前々月検針日を含める）", start_month_offset: -2, start_day_type: "meter", start_meter_day_offset: 0, end_month_offset: 0, end_day_type: "meter", end_meter_day_offset: 0, sort_order: 9 },
     { pattern_name: "検針期間（前々月検針日を含めない）", start_month_offset: -2, start_day_type: "meter", start_meter_day_offset: 1, end_month_offset: 0, end_day_type: "meter", end_meter_day_offset: 0, sort_order: 10 },
+    { pattern_name: "当月から1年分", start_month_offset: 0, start_day_type: "first", start_meter_day_offset: 0, end_month_offset: 11, end_day_type: "last", end_meter_day_offset: 0, sort_order: 11 },
+    { pattern_name: "翌月から1年分", start_month_offset: 1, start_day_type: "first", start_meter_day_offset: 0, end_month_offset: 12, end_day_type: "last", end_meter_day_offset: 0, sort_order: 12 },
   ];
   const currentPeriods = await client
     .from("asset_billing_period_pattern")
@@ -1433,7 +1462,7 @@ export async function saveMeteringSettings(
       asset_meter_date_setting_id: row.asset_meter_date_setting_id,
       price_mode: row.sub_item_kind === "basic" ? "fixed" : row.price_mode,
       default_unit_price: row.sub_item_kind === "basic" ? null : row.default_unit_price,
-      tax_mode: row.sub_item_kind === "custom" && row.calculation_mode === "fixed" ? "exclusive" : row.tax_mode,
+      tax_mode: row.sub_item_kind === "custom" && (row.calculation_mode === "fixed" || row.calculation_mode === "annual_fixed") ? "exclusive" : row.tax_mode,
       tax_rounding_mode: row.tax_rounding_mode,
       show_unit_price_on_invoice: row.show_unit_price_on_invoice,
       show_usage_on_invoice: row.show_usage_on_invoice,

@@ -233,7 +233,7 @@ export type MeterSubItem = {
   show_unit_price_on_invoice: boolean;
   show_usage_on_invoice: boolean;
   is_monthly_fixed: boolean;
-  calculation_mode: "meter" | "fixed" | "allocated_amount";
+  calculation_mode: "meter" | "fixed" | "annual_fixed" | "allocated_amount";
   amount_calculation_scope: "meter" | "unit" | "tenant";
   variable_price_for_unpriced_only?: boolean;
 };

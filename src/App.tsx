@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useState } from "react";
 import type { Session } from "@supabase/supabase-js";
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { canAccessMetering } from "./lib/access";
@@ -88,20 +88,31 @@ export function App() {
 }
 
 function Login({ profile }: { profile: UserProfile | null }) {
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [error, setError] = useState("");
+  const [error, setError] = useState(() =>
+    new URLSearchParams(window.location.search).has("error")
+      ? "Googleログインを完了できませんでした。@sk-housing.jp のアカウントを選択して再度お試しください。"
+      : "",
+  );
   const [submitting, setSubmitting] = useState(false);
-  const submit = async (event: FormEvent) => {
-    event.preventDefault();
+  const signInWithGoogle = async () => {
+    if (!supabase) {
+      setError("Supabaseの接続情報が設定されていません。");
+      return;
+    }
     setSubmitting(true);
     setError("");
-    const result = await supabase!.auth.signInWithPassword({
-      email: email.trim(),
-      password,
+    const redirectUrl = new URL("login", new URL(import.meta.env.BASE_URL, window.location.origin));
+    const { error: signInError } = await supabase.auth.signInWithOAuth({
+      provider: "google",
+      options: {
+        redirectTo: redirectUrl.toString(),
+        queryParams: { hd: "sk-housing.jp", prompt: "select_account" },
+      },
     });
-    setSubmitting(false);
-    if (result.error) setError(result.error.message);
+    if (signInError) {
+      setSubmitting(false);
+      setError("Googleログインを開始できませんでした。時間をおいて再度お試しください。");
+    }
   };
   return (
     <main className="login-shell">
@@ -124,45 +135,30 @@ function Login({ profile }: { profile: UserProfile | null }) {
         <small>KANAMETER</small>
       </section>
       <section className="login-form">
-        <form onSubmit={submit}>
+        <div className="login-form-content">
           <p className="eyebrow">SIGN IN</p>
           <h2>KANAMEアカウントでログイン</h2>
           <p className="muted">
-            登録済みのメールアドレスとパスワードを使用します。
+            KANAMEと同じGoogle Workspaceアカウントを使用します。
           </p>
-          <label>
-            メールアドレス
-            <input
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              autoComplete="email"
-              required
-            />
-          </label>
-          <label>
-            パスワード
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              autoComplete="current-password"
-              required
-            />
-          </label>
           {error && <p className="error">{error}</p>}
           {profile && !canAccessMetering(profile) && (
             <p className="error">
               このアカウントは検針アプリを利用できません。
             </p>
           )}
-          <button className="primary" disabled={submitting}>
-            {submitting ? "ログイン中…" : "ログイン"}
+          <button className="primary google-login" type="button" onClick={() => void signInWithGoogle()} disabled={submitting}>
+            {submitting ? "Googleへ接続中…" : <><GoogleMark />Googleアカウントでログイン</>}
           </button>
-        </form>
+          <p className="login-note">@sk-housing.jp のGoogle Workspaceアカウントをご利用ください。</p>
+        </div>
       </section>
     </main>
   );
+}
+
+function GoogleMark() {
+  return <svg aria-hidden="true" viewBox="0 0 48 48" width="18" height="18"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5Z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.91c-.58 2.96-2.28 5.47-4.81 7.16l7.73 6C44.34 37.94 46.98 31.81 46.98 24.55Z"/><path fill="#FBBC05" d="M10.53 28.59A14.4 14.4 0 0 1 9.75 24c0-1.59.27-3.13.76-4.59l-7.98-6.19A23.9 23.9 0 0 0 0 24c0 3.87.93 7.54 2.56 10.78l7.97-6.19Z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.9-5.82l-7.73-6C30.02 37.91 27.26 39 24 39c-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 43.62 14.62 48 24 48Z"/></svg>;
 }
 function AccessDenied({ profile }: { profile: UserProfile | null }) {
   return (
